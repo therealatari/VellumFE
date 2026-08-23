@@ -55,6 +55,7 @@ pub(super) struct RoomSections {
 pub(super) struct CreatureFieldConfig {
     pub(super) show_grid: bool,
     pub(super) show_order: bool,
+    pub(super) cycle_wrap: bool,
 }
 
 /// Targets window per-window display options (TargetsWidgetData).
@@ -407,6 +408,7 @@ impl VellumGuiApp {
                 view.creature_field = Some(CreatureFieldConfig {
                     show_grid: data.show_grid,
                     show_order: data.show_order,
+                    cycle_wrap: data.cycle_wrap,
                 });
             }
             Some(crate::config::WindowDef::GS4Experience { data, .. }) => {
@@ -723,6 +725,7 @@ impl VellumGuiApp {
                 {
                     data.show_grid = cfg.show_grid;
                     data.show_order = cfg.show_order;
+                    data.cycle_wrap = cfg.cycle_wrap;
                     self.app_core.schedule_layout_autosave();
                 }
             }
@@ -1177,6 +1180,16 @@ impl VellumGuiApp {
                 .on_hover_text(
                     "Number the creatures left to right along the bottom — \
                      the next/previous targeting order.",
+                )
+                .changed();
+            changed |= ui
+                .checkbox(&mut next.cycle_wrap, "Wrap target cycling")
+                .on_hover_text(
+                    "target_next / target_previous step in the field's drawn \
+                     left-to-right order (not the game's TARGET NEXT room \
+                     order) and wrap from the last creature back to the \
+                     first. Off: the step stops at either end. Corpses are \
+                     always skipped — the game cannot target dead creatures.",
                 )
                 .changed();
             if changed {

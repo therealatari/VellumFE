@@ -14,6 +14,7 @@ mod keybinds;
 mod layout;
 mod state;
 mod streams;
+mod targeting;
 mod webui;
 
 pub use automation::AutomationOwner;

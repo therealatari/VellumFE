@@ -423,6 +423,8 @@ impl VellumGuiApp {
             action,
             KeyAction::InteractMode
                 | KeyAction::StopTravel
+                | KeyAction::TargetNext
+                | KeyAction::TargetPrevious
                 | KeyAction::ToggleSounds
                 | KeyAction::TogglePerformanceStats
                 | KeyAction::TtsNext

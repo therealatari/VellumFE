@@ -306,6 +306,14 @@ pub enum KeyAction {
     // Travel
     StopTravel, // Cancel the active .go2 trip (Esc does this by default)
 
+    // Targeting: step the reticule across the creature field in drawn
+    // (left→right screen) order and emit an explicit `target #<exist_id>`.
+    // Deliberately NOT the game's TARGET NEXT, whose room order is a
+    // newest-first stack unrelated to screen position — and which has no
+    // PREVIOUS counterpart at all.
+    TargetNext,
+    TargetPrevious,
+
     // Interact mode: pointer-free entity focus cycling (controller-friendly)
     InteractMode, // Toggle interact mode on/off
 
@@ -655,6 +663,26 @@ impl KeyAction {
             action: KeyAction::StopTravel,
             label: "Stop Travel",
             category: "Travel",
+            scope: ActionScope::Controller,
+        },
+        // ---- Targeting ----
+        // "(field, ...)" in the labels is load-bearing: this cycles the
+        // creature field's screen order, which visits different creatures
+        // than the native verb's room order. Corpses are always skipped —
+        // the game cannot target dead creatures, so a cycle that included
+        // them would only emit commands the server rejects.
+        ActionDef {
+            name: "target_next",
+            action: KeyAction::TargetNext,
+            label: "Target Next (field, right)",
+            category: "Targeting",
+            scope: ActionScope::Controller,
+        },
+        ActionDef {
+            name: "target_previous",
+            action: KeyAction::TargetPrevious,
+            label: "Target Previous (field, left)",
+            category: "Targeting",
             scope: ActionScope::Controller,
         },
         // ---- Interact / menu navigation (controller-friendly) ----

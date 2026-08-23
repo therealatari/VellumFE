@@ -98,6 +98,11 @@ pub struct AppCore {
     pub creature_field_synced_gen: u64,
     /// Skin-supplied ground-plane camera for the field, mtime-throttled.
     pub creature_field_camera: crate::core::creature_cards::FieldCameraCache,
+    /// Game commands core logic queued outside the typed-command path (e.g.
+    /// target cycling): the keybind-action dispatch returns no outcomes, so
+    /// core-initiated sends ride the same per-frame `take_outbound` drain as
+    /// travel/foreach automation.
+    pub(crate) queued_game_commands: Vec<String>,
 
     /// Performance statistics tracking
     pub perf_stats: PerformanceStats,
@@ -489,6 +494,7 @@ impl AppCore {
             creature_field: Default::default(),
             creature_field_synced_gen: 0,
             creature_field_camera: Default::default(),
+            queued_game_commands: Vec::new(),
             perf_stats: PerformanceStats::new(),
             show_perf_stats: false,
             sound_player: None,
@@ -691,6 +697,7 @@ impl AppCore {
             creature_field: Default::default(),
             creature_field_synced_gen: 0,
             creature_field_camera: Default::default(),
+            queued_game_commands: Vec::new(),
             perf_stats: PerformanceStats::new(),
             show_perf_stats: false,
             sound_player,

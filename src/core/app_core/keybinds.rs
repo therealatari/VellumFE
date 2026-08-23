@@ -272,6 +272,16 @@ impl AppCore {
                 self.stop_travel();
             }
 
+            // Targeting: field-order cycling (screen left→right), emitting an
+            // explicit `target #<exist_id>` through the outbound drain. Works
+            // from keyboard and controller alike.
+            KeyAction::TargetNext => {
+                self.target_step_field(super::targeting::TargetStep::Next);
+            }
+            KeyAction::TargetPrevious => {
+                self.target_step_field(super::targeting::TargetStep::Previous);
+            }
+
             // Interact mode (pointer-free entity focus cycling)
             KeyAction::InteractMode => {
                 self.toggle_interact_mode();

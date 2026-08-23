@@ -570,6 +570,9 @@ impl AppCore {
         }
         let mut commands = self.travel.take_outbound();
         commands.extend(self.foreach.take_outbound());
+        // Core-initiated sends (target cycling, …) queued outside the typed
+        // path; see `queued_game_commands`.
+        commands.append(&mut self.queued_game_commands);
         // Inventory continuation-following: timeouts advance and due
         // `_inventory manager ...` requests go out with everything else.
         let now_ms = chrono::Utc::now().timestamp_millis().max(0) as u64;

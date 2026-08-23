@@ -892,6 +892,11 @@ pub struct CreatureFieldWidgetData {
     /// Draw the left-to-right targeting order pips along the bottom.
     #[serde(default)]
     pub show_order: bool,
+    /// target_next/target_previous wrap from the field's last creature back
+    /// to the first (off: the step is a no-op at either end). Corpses are
+    /// always skipped regardless — the game cannot target dead creatures.
+    #[serde(default = "default_true")]
+    pub cycle_wrap: bool,
 }
 
 impl Default for CreatureFieldWidgetData {
@@ -899,6 +904,7 @@ impl Default for CreatureFieldWidgetData {
         Self {
             show_grid: true,
             show_order: false,
+            cycle_wrap: true,
         }
     }
 }

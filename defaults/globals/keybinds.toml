@@ -21,6 +21,7 @@
 #   scroll_current_window_up_page, scroll_current_window_down_page,
 #   start_search, next_search_match, prev_search_match, clear_search,
 #   toggle_performance_stats, interact_mode,
+#   target_next, target_previous,
 #   tts_next, tts_previous, tts_pause_resume, tts_mute_toggle
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -124,6 +125,15 @@ f12 = "toggle_performance_stats"
 # Interact mode (GUI): cycle room entities with arrows, Enter opens the
 # context menu, Esc exits. Built for controller d-pads via key mappers.
 f6 = "interact_mode"
+
+# Field-order target cycling: step the reticule to the creature immediately
+# right/left AS DRAWN on the creature field, sending an explicit target
+# #<id>. Not the game's TARGET NEXT (room order = newest-first stack), and
+# unlike it, stepping backwards works. Corpses are always skipped — the game
+# cannot target dead creatures. Unbound by default (arrows belong to the
+# command line); uncomment to use:
+# "alt+]" = "target_next"
+# "alt+[" = "target_previous"
 
 # Text-to-Speech (Accessibility)
 # Ctrl+Alt combinations avoid terminal interception
