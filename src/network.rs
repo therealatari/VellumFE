@@ -438,6 +438,43 @@ impl<T> Drop for AbortOnDrop<T> {
     }
 }
 
+/// Decode one wire line into a String. Valid UTF-8 passes through untouched
+/// (no copy — the buffer becomes the String); anything else is decoded as
+/// Windows-1252, the game's true stream encoding. The fallback is reliable
+/// because a stray CP1252 high byte (e.g. 0x92 in Membrach's Greed discern
+/// text, lich-5 #430) is structurally invalid UTF-8, so it can't be
+/// misclassified. This covers Lich sending UTF-8 (today), Lich sending
+/// CP1252 (lich-5 #1533), and direct connections reading the game's own
+/// CP1252 bytes — the old `read_line`-into-String path returned
+/// Err(InvalidData) on any non-UTF-8 byte and we hard-disconnected.
+fn decode_wire_line(bytes: Vec<u8>) -> String {
+    match String::from_utf8(bytes) {
+        Ok(s) => s,
+        Err(e) => decode_cp1252(&e.into_bytes()),
+    }
+}
+
+/// Windows-1252 to Unicode: identical to Latin-1 except 0x80–0x9F, which map
+/// to typographic characters per the WHATWG windows-1252 table (the five
+/// undefined bytes pass through as their C1 control codepoints).
+fn decode_cp1252(bytes: &[u8]) -> String {
+    const CP1252_80_9F: [char; 32] = [
+        '\u{20AC}', '\u{0081}', '\u{201A}', '\u{0192}', '\u{201E}', '\u{2026}',
+        '\u{2020}', '\u{2021}', '\u{02C6}', '\u{2030}', '\u{0160}', '\u{2039}',
+        '\u{0152}', '\u{008D}', '\u{017D}', '\u{008F}', '\u{0090}', '\u{2018}',
+        '\u{2019}', '\u{201C}', '\u{201D}', '\u{2022}', '\u{2013}', '\u{2014}',
+        '\u{02DC}', '\u{2122}', '\u{0161}', '\u{203A}', '\u{0153}', '\u{009D}',
+        '\u{017E}', '\u{0178}',
+    ];
+    bytes
+        .iter()
+        .map(|&b| match b {
+            0x80..=0x9F => CP1252_80_9F[(b - 0x80) as usize],
+            _ => b as char,
+        })
+        .collect()
+}
+
 async fn run_stream(
     stream: TcpStream,
     server_tx: mpsc::Sender<ServerMessage>,
@@ -453,14 +490,17 @@ async fn run_stream(
     let server_tx_clone = server_tx.clone();
     let read_handle = tokio::spawn(async move {
         loop {
-            let mut line = String::new();
-            match reader.read_line(&mut line).await {
+            // Read raw bytes, not a String: `read_line` fails the whole read
+            // on any non-UTF-8 byte, and the game stream is really CP1252.
+            let mut buf = Vec::new();
+            match reader.read_until(b'\n', &mut buf).await {
                 Ok(0) => {
                     info!("Connection closed by server");
                     let _ = server_tx_clone.send(ServerMessage::Disconnected).await;
                     break;
                 }
                 Ok(_) => {
+                    let mut line = decode_wire_line(buf);
                     let trimmed_len = line.trim_end_matches(['\r', '\n']).len();
                     line.truncate(trimmed_len);
                     if let Some(logger) = &raw_logger {
@@ -1217,6 +1257,48 @@ mod eaccess {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ========== decode_wire_line tests ==========
+
+    #[test]
+    fn test_decode_wire_line_ascii_passthrough() {
+        assert_eq!(decode_wire_line(b"You swing a broadsword!".to_vec()), "You swing a broadsword!");
+    }
+
+    #[test]
+    fn test_decode_wire_line_valid_utf8_passthrough() {
+        // A curly apostrophe as genuine UTF-8 (what Lich scripts emit today)
+        // must survive untouched, not be re-interpreted as CP1252.
+        let utf8 = "Membrach\u{2019}s Greed".as_bytes().to_vec();
+        assert_eq!(decode_wire_line(utf8), "Membrach\u{2019}s Greed");
+    }
+
+    #[test]
+    fn test_decode_wire_line_cp1252_apostrophe() {
+        // The exact lich-5 #430 byte: 0x92 = CP1252 right single quote.
+        // Previously this killed the connection.
+        let mut bytes = b"Membrach".to_vec();
+        bytes.push(0x92);
+        bytes.extend_from_slice(b"s Greed");
+        assert_eq!(decode_wire_line(bytes), "Membrach\u{2019}s Greed");
+    }
+
+    #[test]
+    fn test_decode_wire_line_cp1252_punctuation_sweep() {
+        // Quotes, em/en dash, ellipsis, euro — the 0x80–0x9F remap range.
+        let bytes = vec![0x93, 0x94, 0x96, 0x97, 0x85, 0x80];
+        assert_eq!(
+            decode_wire_line(bytes),
+            "\u{201C}\u{201D}\u{2013}\u{2014}\u{2026}\u{20AC}"
+        );
+    }
+
+    #[test]
+    fn test_decode_wire_line_latin1_range() {
+        // 0xA0+ bytes are the same codepoint in CP1252 and Latin-1: é = 0xE9.
+        let bytes = vec![b'c', b'a', b'f', 0xE9];
+        assert_eq!(decode_wire_line(bytes), "caf\u{E9}");
+    }
 
     // ========== fix_game_host_port tests ==========
 
