@@ -68,16 +68,22 @@ impl VellumGuiApp {
 
                 if let Some((controls, (content_w, content_h))) = positioned {
                     // Anchor-grid mode (combat window etc.): controls at
-                    // the game's pixel positions inside a fixed canvas.
+                    // the game's pixel positions inside a fixed canvas,
+                    // uniformly scaled so egui's fonts fit the rects the
+                    // game sized for its own smaller dialog font (see
+                    // dialog_grid_scale).
+                    let scale = Self::dialog_grid_scale(ui, &dialog, &controls);
                     let (canvas_rect, _) = ui.allocate_exact_size(
-                        egui::vec2(content_w, content_h),
+                        egui::vec2(content_w * scale, content_h * scale),
                         egui::Sense::hover(),
                     );
                     let origin = canvas_rect.min;
                     for control in &controls {
                         let (x, y, w, h) = control.rect;
-                        let rect =
-                            egui::Rect::from_min_size(origin + egui::vec2(x, y), egui::vec2(w, h));
+                        let rect = egui::Rect::from_min_size(
+                            origin + egui::vec2(x, y) * scale,
+                            egui::vec2(w, h) * scale,
+                        );
                         match control.kind {
                             crate::data::ui_state::PositionedControlKind::Button(index) => {
                                 let Some(button) = dialog.buttons.get(index) else {

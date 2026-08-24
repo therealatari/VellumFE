@@ -276,6 +276,89 @@ fn ordered_selection_endpoints_orders_reversed_drags() {
     );
 }
 
+/// The dialog grid scale grows a panel exactly when its labels outgrow the
+/// game's declared rects, and never shrinks or balloons one.
+#[test]
+fn dialog_grid_scale_fits_labels_and_clamps() {
+    use crate::data::ui_state::{
+        DialogButton, DialogControlLayout, DialogState, PositionedControl, PositionedControlKind,
+    };
+    use eframe::egui;
+
+    let button = |label: &str, width: u16| DialogButton {
+        id: format!("btn_{label}"),
+        label: label.to_string(),
+        command: String::new(),
+        is_close: false,
+        is_radio: false,
+        selected: false,
+        autosend: false,
+        group: None,
+        layout: Some(DialogControlLayout {
+            top: Some(0),
+            left: Some(0),
+            width: Some(width),
+            height: Some(20),
+            ..Default::default()
+        }),
+    };
+    let controls_for = |dialog: &DialogState| -> Vec<PositionedControl> {
+        dialog
+            .buttons
+            .iter()
+            .enumerate()
+            .map(|(i, b)| PositionedControl {
+                kind: PositionedControlKind::Button(i),
+                rect: (
+                    0.0,
+                    0.0,
+                    b.layout.as_ref().and_then(|l| l.width).unwrap_or(55) as f32,
+                    20.0,
+                ),
+            })
+            .collect()
+    };
+
+    let ctx = egui::Context::default();
+    let mut scales: Vec<f32> = Vec::new();
+    let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+        // A label with lots of room: no scaling, and never a shrink.
+        let mut roomy = DialogState::empty("combat".into(), None);
+        roomy.buttons.push(button("hide", 200));
+        scales.push(VellumGuiApp::dialog_grid_scale(
+            ui,
+            &roomy,
+            &controls_for(&roomy),
+        ));
+
+        // Combat's real shape: "defensive" in a 55px slot must scale up.
+        let mut tight = DialogState::empty("combat".into(), None);
+        tight.buttons.push(button("defensive", 55));
+        scales.push(VellumGuiApp::dialog_grid_scale(
+            ui,
+            &tight,
+            &controls_for(&tight),
+        ));
+
+        // A pathological label in a sliver of a slot hits the clamp.
+        let mut verbose = DialogState::empty("combat".into(), None);
+        verbose.buttons.push(button("prepare to quickstrike", 30));
+        scales.push(VellumGuiApp::dialog_grid_scale(
+            ui,
+            &verbose,
+            &controls_for(&verbose),
+        ));
+    });
+
+    assert_eq!(scales[0], 1.0, "fitting labels must not rescale the panel");
+    assert!(
+        scales[1] > 1.0 && scales[1] <= 1.6,
+        "combat's 55px 'defensive' button must grow, got {}",
+        scales[1]
+    );
+    assert_eq!(scales[2], 1.6, "runaway labels stop at the clamp");
+}
+
 /// The frame-start claim pass must make buffer copy independent of window
 /// render order: even when an earlier-rendering widget (the command input's
 /// ownership guard, a focused TextEdit) strips the raw Copy event before the

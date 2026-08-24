@@ -480,8 +480,19 @@ impl VellumGuiApp {
             .as_ref()
             .map(|(_, size)| *size)
             .unwrap_or((190.0, 24.0));
-        let (canvas_rect, _) =
-            ui.allocate_exact_size(egui::vec2(content_w, content_h), egui::Sense::hover());
+        // The game's grid coordinates assume the classic ~11px Windows
+        // dialog font (combat gives "defensive" a 55px button); egui's
+        // fonts need more room, so the whole canvas renders uniformly
+        // scaled. Footer-band math below stays in UNSCALED grid space —
+        // it compares against the game's own `top` values.
+        let scale = positioned
+            .as_ref()
+            .map(|(controls, _)| Self::dialog_grid_scale(ui, dialog, controls))
+            .unwrap_or(1.0);
+        let (canvas_rect, _) = ui.allocate_exact_size(
+            egui::vec2(content_w * scale, content_h * scale),
+            egui::Sense::hover(),
+        );
         let origin = canvas_rect.min;
 
         // Positioned commanded images the canvas loop actually painted (skin
@@ -493,7 +504,24 @@ impl VellumGuiApp {
             use crate::data::ui_state::PositionedControlKind;
             for control in controls {
                 let (x, y, w, h) = control.rect;
-                let rect = egui::Rect::from_min_size(origin + egui::vec2(x, y), egui::vec2(w, h));
+                let rect = egui::Rect::from_min_size(
+                    origin + egui::vec2(x, y) * scale,
+                    egui::vec2(w, h) * scale,
+                );
+                // A hair of air between rows: Wrayth's grid stacks 20px rows
+                // edge to edge (flat Win32 controls), and egui's framed
+                // widgets read as one solid slab without a seam. Art-aligned
+                // controls (skins, bars, icons) keep their exact rects.
+                let rect = if matches!(
+                    control.kind,
+                    PositionedControlKind::Button(_)
+                        | PositionedControlKind::DropDown(_)
+                        | PositionedControlKind::SpinBox(_)
+                ) {
+                    rect.shrink2(egui::vec2(0.5, 1.0))
+                } else {
+                    rect
+                };
                 match control.kind {
                     PositionedControlKind::Button(i) => {
                         if let Some(b) = dialog.buttons.get(i) {
@@ -798,6 +826,70 @@ impl VellumGuiApp {
     /// layout), instead of ui.put'ing an egui ProgressBar that centers itself
     /// at its own min-size and overflows the 15px rows UberBar uses. Trough +
     /// fill (fraction of width) + centered customText.
+    /// How much a dialog's anchor grid must uniformly grow for its
+    /// text-bearing controls to fit the live egui fonts. Wrayth sized these
+    /// rects for the classic ~11px Windows dialog font — combat's
+    /// "defensive" button is 55px wide — and egui's button font plus frame
+    /// padding needs roughly 1.4x that, which showed as truncated labels
+    /// and rows rendered as one touching slab. One uniform factor keeps the
+    /// dialog's shape exactly (anchors, stretches, and alignment all scale
+    /// together, so nothing can newly overlap).
+    ///
+    /// Measured from the dialog's STATIC text controls only — buttons,
+    /// labels, positioned links. Dropdowns are deliberately excluded: their
+    /// option lists change with the room (combat's target list), and a
+    /// scale that tracked them would resize the whole panel as creatures
+    /// wander in and out. The clamp floor leaves well-fitting dialogs
+    /// untouched; the ceiling keeps one verbose label from ballooning the
+    /// panel — a still-tight label truncates no worse than before.
+    pub(in crate::frontend::gui::app) fn dialog_grid_scale(
+        ui: &egui::Ui,
+        dialog: &crate::data::ui_state::DialogState,
+        controls: &[crate::data::ui_state::PositionedControl],
+    ) -> f32 {
+        use crate::data::ui_state::PositionedControlKind;
+        const GRID_SCALE_MAX: f32 = 1.6;
+        let style = ui.style();
+        let button_font = egui::TextStyle::Button.resolve(style);
+        let body_font = egui::TextStyle::Body.resolve(style);
+        let small_font = egui::TextStyle::Small.resolve(style);
+        let button_pad = style.spacing.button_padding.x * 2.0 + 2.0;
+        let width_of = |text: &str, font: &egui::FontId| -> f32 {
+            ui.ctx().fonts_mut(|fonts| {
+                fonts
+                    .layout_no_wrap(text.to_string(), font.clone(), egui::Color32::WHITE)
+                    .size()
+                    .x
+            })
+        };
+        let mut scale = 1.0f32;
+        for control in controls {
+            let declared = control.rect.2;
+            if declared <= 1.0 {
+                continue;
+            }
+            let needed = match control.kind {
+                PositionedControlKind::Button(i) => dialog
+                    .buttons
+                    .get(i)
+                    .map(|b| width_of(&b.label, &button_font) + button_pad),
+                PositionedControlKind::Label(i) => dialog
+                    .display_labels
+                    .get(i)
+                    .map(|l| width_of(&l.value, &body_font)),
+                PositionedControlKind::Link(i) => dialog
+                    .links
+                    .get(i)
+                    .map(|l| width_of(&l.label, &small_font)),
+                _ => None,
+            };
+            if let Some(needed) = needed {
+                scale = scale.max(needed / declared);
+            }
+        }
+        scale.clamp(1.0, GRID_SCALE_MAX)
+    }
+
     /// A dialog-panel button that honors the skin's `[controls.button]`
     /// nine-slice (state-keyed) when present, falling back to a plain egui
     /// button. Returns the response so callers handle clicks uniformly.
