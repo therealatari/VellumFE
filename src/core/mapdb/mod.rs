@@ -479,8 +479,14 @@ pub fn stringprocs_dir_for(mapdb_path: &std::path::Path) -> Option<std::path::Pa
     None
 }
 
+/// Newest map data in a directory. Lich's `map-<timestamp>.json` builds win,
+/// compared by the timestamp in the name (the build identity — file mtimes
+/// scramble under copies/restores). A directory with no timestamped build
+/// falls back to the newest-by-mtime `map*.json`, so a folder of downloaded
+/// releases (`mapdb-<tag>.json`) works as a scan target too.
 pub fn find_latest_mapdb(game_data_dir: &std::path::Path) -> Option<std::path::PathBuf> {
     let mut best: Option<(u64, std::path::PathBuf)> = None;
+    let mut best_mtime: Option<(std::time::SystemTime, std::path::PathBuf)> = None;
     for entry in std::fs::read_dir(game_data_dir).ok()? {
         // Skip an entry we can't read rather than aborting the whole scan — a
         // single transient FS/permission error (files vanishing mid-scan is
@@ -492,23 +498,61 @@ pub fn find_latest_mapdb(game_data_dir: &std::path::Path) -> Option<std::path::P
             Some(name) => name.to_owned(),
             None => continue,
         };
-        let Some(ts) = name
+        if let Some(ts) = name
             .strip_prefix("map-")
             .and_then(|rest| rest.strip_suffix(".json"))
             .and_then(|ts| ts.parse::<u64>().ok())
-        else {
+        {
+            if best.as_ref().map(|(t, _)| ts > *t).unwrap_or(true) {
+                best = Some((ts, path));
+            }
             continue;
-        };
-        if best.as_ref().map(|(t, _)| ts > *t).unwrap_or(true) {
-            best = Some((ts, path));
+        }
+        if name.starts_with("map") && name.ends_with(".json") {
+            let Ok(modified) = entry.metadata().and_then(|m| m.modified()) else {
+                continue;
+            };
+            if best_mtime.as_ref().map(|(t, _)| modified > *t).unwrap_or(true) {
+                best_mtime = Some((modified, path));
+            }
         }
     }
-    best.map(|(_, path)| path)
+    if let Some((_, path)) = best {
+        return Some(path);
+    }
+    best_mtime.map(|(_, path)| path)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn latest_mapdb_prefers_timestamped_builds_then_mtime() {
+        let tmp = std::env::temp_dir().join(format!("vellum_latest_mapdb_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        // No timestamped builds: newest-by-mtime map*.json wins, so a folder
+        // of downloaded releases works as a scan target.
+        std::fs::write(tmp.join("mapdb-v0.3.0.json"), "[]").unwrap();
+        std::fs::write(tmp.join("overrides-v0.3.0.json"), "{}").unwrap(); // never a candidate
+        assert_eq!(
+            find_latest_mapdb(&tmp).as_deref(),
+            Some(tmp.join("mapdb-v0.3.0.json").as_path())
+        );
+
+        // A Lich timestamped build outranks any mtime candidate, and the
+        // largest timestamp wins regardless of file mtimes.
+        std::fs::write(tmp.join("map-100.json"), "[]").unwrap();
+        std::fs::write(tmp.join("map-200.json"), "[]").unwrap();
+        assert_eq!(
+            find_latest_mapdb(&tmp).as_deref(),
+            Some(tmp.join("map-200.json").as_path())
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 
     #[test]
     fn parses_cartographer_evaluate_script_refs() {

@@ -758,8 +758,8 @@ static REGISTRY: LazyLock<Vec<SettingDef>> = LazyLock::new(|| {
         // ---- Map -----------------------------------------------------
         opt_text_entry!("map.lich_dir", "Lich Directory", "Map",
             "Lich install dir for mapdb discovery (empty = auto)", map.lich_dir),
-        opt_text_entry!("map.mapdb_path", "Mapdb Path", "Map",
-            "Explicit mapdb JSON file (overrides discovery)", map.mapdb_path),
+        opt_text_entry!("map.mapdb_path", "Map Data Path", "Map",
+            "Folder = newest map data inside (recommended); a specific .json file pins that exact build (overrides discovery)", map.mapdb_path),
         text_entry!("map.mapdb_repo", "Mapdb Repo", "Map",
             "GitHub owner/repo for mapdb downloads (empty disables)", map.mapdb_repo),
         bool_entry!("map.mapping_mode", "Mapping Mode", "Map",

@@ -36,9 +36,10 @@ pub fn lich_game_dir_name(game: Option<&str>) -> &'static str {
 }
 
 /// Resolve which mapdb to load from the configured options. Priority:
-/// explicit file > downloaded release > Lich folder. Downloaded releases
-/// carry GemStone data, so DragonRealms sessions skip straight to the
-/// Lich folder (which is per-game).
+/// explicit path (a folder scans for the newest map data inside; a file
+/// pins that exact build) > downloaded release > Lich folder. Downloaded
+/// releases carry GemStone data, so DragonRealms sessions skip straight to
+/// the Lich folder (which is per-game).
 pub fn resolve_source(
     mapdb_path: Option<&str>,
     lich_dir: Option<&str>,
@@ -50,7 +51,15 @@ pub fn resolve_source(
         (!t.is_empty()).then_some(t)
     }
     if let Some(path) = mapdb_path.and_then(non_empty) {
-        return MapDbSource::File(PathBuf::from(path));
+        let path = PathBuf::from(path);
+        // A folder means "the newest map data inside" — the primary way to
+        // point at a Lich data dir, which rotates map-<timestamp>.json on
+        // every update, so pinning one file there is guaranteed to dangle
+        // eventually. An explicit file stays available for the odd case.
+        if path.is_dir() {
+            return MapDbSource::GameDataDir(path);
+        }
+        return MapDbSource::File(path);
     }
     let game_dir = lich_game_dir_name(game);
     if !game_dir.starts_with("DR") {
@@ -439,7 +448,24 @@ impl MapService {
                 self.db_state = DbState::NotLoaded;
                 return;
             }
-            MapDbSource::File(path) => Some(path.clone()),
+            MapDbSource::File(path) => {
+                // Fail a dangling explicit file here with a teaching error
+                // instead of the worker's bare OS error: the common cause is
+                // a pin to a Lich map-<timestamp>.json that Lich has since
+                // rotated away, and the fix is folder mode.
+                if !path.is_file() {
+                    let msg = format!(
+                        "mapdb file not found: {} — set the map data path to its \
+                         folder instead to always load the newest map data there",
+                        path.display()
+                    );
+                    self.db_state = DbState::Failed;
+                    self.db_error = Some(msg);
+                    self.revision += 1;
+                    return;
+                }
+                Some(path.clone())
+            }
             MapDbSource::GameDataDir(dir) => find_latest_mapdb(dir),
         };
         let Some(path) = path else {
@@ -1339,6 +1365,31 @@ mod tests {
             resolve_source(Some("  "), Some(""), None, downloads.path()),
             MapDbSource::File(downloaded)
         );
+        // An explicit path that is a FOLDER means "newest map data inside" —
+        // it scans instead of pinning, so Lich rotating map-<timestamp>.json
+        // never dangles the config.
+        let scan_dir = tempfile::tempdir().unwrap();
+        let dir_str = scan_dir.path().to_string_lossy().to_string();
+        assert_eq!(
+            resolve_source(Some(&dir_str), Some("C:/lich"), None, downloads.path()),
+            MapDbSource::GameDataDir(scan_dir.path().to_path_buf())
+        );
+    }
+
+    #[test]
+    fn dangling_explicit_file_fails_with_folder_mode_hint() {
+        let tmp = std::env::temp_dir();
+        let mut svc = MapService::new(
+            tmp.join("vellum-map-svc-dangle-test"),
+            tmp.join("vellum-map-svc-dangle-overrides.json"),
+        );
+        svc.ensure_db(MapDbSource::File(
+            tmp.join("vellum-nonexistent-map-1785611370.json"),
+        ));
+        assert_eq!(svc.db_state(), DbState::Failed);
+        let err = svc.db_error.as_deref().unwrap();
+        assert!(err.contains("not found"), "got: {err}");
+        assert!(err.contains("folder"), "hint missing: {err}");
     }
 
     #[test]

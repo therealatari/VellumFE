@@ -1091,9 +1091,12 @@ impl VellumGuiApp {
                                 "Map" => {
                                     focus_collapsing(ui, &mut focus_section, "Map", |ui| {
                                         ui.label(
-                                            "Map data comes from a downloaded release or your \
-                                             Lich install (data/<game>/map-<timestamp>.json); \
-                                             downloaded data wins.",
+                                            "Map data source, first match wins: Map Data Path \
+                                             (point it at a FOLDER to always load the newest map \
+                                             data inside — a specific file pins that exact build \
+                                             and breaks when Lich rotates it), else a downloaded \
+                                             release, else the Lich directory \
+                                             (data/<game>/map-<timestamp>.json).",
                                         );
                                         state.render_category_grid(ui, "Map");
                                         let repo_draft = state.text_draft("map.mapdb_repo");
