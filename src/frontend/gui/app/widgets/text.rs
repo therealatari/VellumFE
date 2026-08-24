@@ -799,6 +799,50 @@ impl VellumGuiApp {
         Self::buffer_selection(ctx).is_some_and(|sel| sel.anchor != sel.head)
     }
 
+    /// Frame-scoped flag: this frame's Copy/Cut belongs to the active buffer
+    /// selection, claimed by [`Self::claim_buffer_copy_event`].
+    pub(super) fn pending_buffer_copy_id() -> egui::Id {
+        egui::Id::new("vellum_buffer_copy_pending")
+    }
+
+    /// Frame-start pre-pass, run in the root update BEFORE any window
+    /// renders: when a buffer selection is active, claim this frame's
+    /// Copy/Cut event by stripping it from the input and raising a
+    /// frame-scoped flag the selection-owning text window acts on when it
+    /// renders. This makes buffer copy independent of window render order.
+    ///
+    /// Previously the owning window read the event from `ui.input` during
+    /// its OWN render, so any widget that rendered earlier and also removed
+    /// Copy — the command input's ownership guard, or any focused TextEdit —
+    /// starved it, and Ctrl+C silently did nothing. Which widget rendered
+    /// first depends on zone/tab order, i.e. on window positions in the
+    /// layout, so adding or moving an unrelated window could break copy in
+    /// exactly the window that owned the selection.
+    pub(in crate::frontend::gui::app) fn claim_buffer_copy_event(ctx: &egui::Context) {
+        // Always drop last frame's flag first: if the owning window never
+        // rendered (hidden mid-frame), a stale flag must not fire a copy on
+        // some later frame without a fresh Ctrl+C.
+        ctx.data_mut(|data| data.remove::<bool>(Self::pending_buffer_copy_id()));
+        if !Self::active_buffer_selection_present(ctx) {
+            return;
+        }
+        let requested = ctx.input(|input| {
+            input
+                .events
+                .iter()
+                .any(|event| matches!(event, egui::Event::Copy | egui::Event::Cut))
+        });
+        if !requested {
+            return;
+        }
+        ctx.input_mut(|input| {
+            input
+                .events
+                .retain(|event| !matches!(event, egui::Event::Copy | egui::Event::Cut));
+        });
+        ctx.data_mut(|data| data.insert_temp(Self::pending_buffer_copy_id(), true));
+    }
+
     pub(super) fn store_buffer_selection(
         ctx: &egui::Context,
         selection: Option<GuiBufferSelection>,
@@ -1908,12 +1952,21 @@ impl VellumGuiApp {
                 }
 
                 // Ctrl+C / Ctrl+X copy the selected range straight from the
-                // buffer, so lines scrolled out of view are included.
-                if ui.input(|i| {
-                    i.events
-                        .iter()
-                        .any(|e| matches!(e, egui::Event::Copy | egui::Event::Cut))
-                }) {
+                // buffer, so lines scrolled out of view are included. The
+                // usual trigger is the frame-start claim flag (see
+                // claim_buffer_copy_event — it strips the raw event before
+                // any window renders, so render order can't starve us); the
+                // raw-event check remains for contexts that don't run the
+                // pre-pass, e.g. the widget test harness.
+                let copy_requested = ctx
+                    .data(|data| data.get_temp::<bool>(Self::pending_buffer_copy_id()))
+                    .unwrap_or(false)
+                    || ui.input(|i| {
+                        i.events
+                            .iter()
+                            .any(|e| matches!(e, egui::Event::Copy | egui::Event::Cut))
+                    });
+                if copy_requested {
                     if let Some(sel) = &selection {
                         if sel.scroll_id == scroll_id && sel.anchor != sel.head {
                             let text = Self::buffer_selection_copy_text(
@@ -1922,10 +1975,14 @@ impl VellumGuiApp {
                             if !text.is_empty() {
                                 ctx.copy_text(text);
                             }
-                            // Consume the event so a command input rendering
-                            // later this frame can't also claim the clipboard
-                            // (bug #3). The command-input widget makes the same
-                            // check up front for the reverse order.
+                            // Consume both the flag and any raw event so a
+                            // command input rendering later this frame can't
+                            // also claim the clipboard (bug #3). The
+                            // command-input widget makes the same check up
+                            // front for the reverse order.
+                            ctx.data_mut(|data| {
+                                data.remove::<bool>(Self::pending_buffer_copy_id());
+                            });
                             ctx.input_mut(|input| {
                                 input.events.retain(|event| {
                                     !matches!(event, egui::Event::Copy | egui::Event::Cut)

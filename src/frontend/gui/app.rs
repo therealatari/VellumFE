@@ -2328,6 +2328,10 @@ impl eframe::App for VellumGuiApp {
         #[cfg(feature = "gamepad")]
         self.poll_gamepad(&ctx);
         self.handle_global_input(&ctx, frame);
+        // Claim this frame's Copy/Cut for an active buffer selection BEFORE
+        // any window renders, so which window renders first (zone/tab order,
+        // i.e. window positions) can never decide whether Ctrl+C works.
+        Self::claim_buffer_copy_event(&ctx);
         // Resolve command-input keybinds for this frame so the input widget's
         // submit/history/clear-line honor rebinds (single source of truth).
         self.stash_command_input_keys(&ctx);

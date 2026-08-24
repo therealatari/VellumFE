@@ -276,6 +276,73 @@ fn ordered_selection_endpoints_orders_reversed_drags() {
     );
 }
 
+/// The frame-start claim pass must make buffer copy independent of window
+/// render order: even when an earlier-rendering widget (the command input's
+/// ownership guard, a focused TextEdit) strips the raw Copy event before the
+/// selection-owning window renders, the flag still delivers the copy. And
+/// the flag is frame-scoped: a later frame without a fresh Ctrl+C must not
+/// re-fire it.
+#[test]
+fn buffer_copy_survives_event_stripped_by_earlier_widget() {
+    use eframe::egui;
+    let mut harness = ScrollHarness::new("main", 300.0);
+    harness.push_lines(3);
+    let base = harness
+        .content
+        .generation
+        .wrapping_sub(harness.content.lines.len() as u64);
+    VellumGuiApp::store_buffer_selection(
+        &harness.ctx,
+        Some(GuiBufferSelection {
+            scroll_id: "main".to_string(),
+            anchor: (base, 0),
+            head: (base, 4),
+            dragging: false,
+        }),
+    );
+
+    let copied = |output: &egui::FullOutput| -> Option<String> {
+        output.platform_output.commands.iter().find_map(|c| match c {
+            egui::OutputCommand::CopyText(text) => Some(text.clone()),
+            _ => None,
+        })
+    };
+
+    // Frame 1: Ctrl+C arrives; the pre-pass claims it, then a widget that
+    // renders BEFORE the owning window strips whatever Copy events remain
+    // (the pre-claim already removed them). The owning window must still
+    // produce the clipboard text from the flag alone.
+    let mut input = harness.raw_input();
+    input.events = vec![egui::Event::Copy];
+    let content = harness.content.clone();
+    let font_id = harness.font_id.clone();
+    let output = harness.ctx.run_ui(input, |ui| {
+        VellumGuiApp::claim_buffer_copy_event(ui.ctx());
+        ui.ctx().input_mut(|i| {
+            i.events
+                .retain(|e| !matches!(e, egui::Event::Copy | egui::Event::Cut));
+        });
+        VellumGuiApp::render_text_content(ui, &content, "main", None, &font_id, true, None, false);
+    });
+    assert_eq!(
+        copied(&output).as_deref(),
+        Some("line"),
+        "flag-delivered copy must not depend on the raw event surviving"
+    );
+
+    // Frame 2: no Ctrl+C. The flag must not linger and re-fire a copy.
+    let input = harness.raw_input();
+    let output = harness.ctx.run_ui(input, |ui| {
+        VellumGuiApp::claim_buffer_copy_event(ui.ctx());
+        VellumGuiApp::render_text_content(ui, &content, "main", None, &font_id, true, None, false);
+    });
+    assert_eq!(
+        copied(&output),
+        None,
+        "the claim flag is frame-scoped and must not go stale"
+    );
+}
+
 #[test]
 fn buffer_selection_copy_text_spans_lines_and_slices_endpoints() {
     use crate::data::StyledLine;
