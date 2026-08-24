@@ -482,10 +482,25 @@ impl MessageProcessor {
         // line is recorded under both streams when the mode keeps the
         // original.
         if let Some(remote) = self.remote.as_mut() {
-            let shared = std::sync::Arc::new(line.clone());
-            remote.push_text(&self.current_stream, shared.clone());
-            if should_send_to_original && self.current_stream != original_stream {
-                remote.push_text(&original_stream, shared);
+            // suppress_remote_tap: a prompt separator the remote story feed
+            // must not receive (no story text reached it this chunk — see
+            // the prompt handler's show_remote gate).
+            if !self.suppress_remote_tap {
+                let shared = std::sync::Arc::new(line.clone());
+                remote.push_text(&self.current_stream, shared.clone());
+                if should_send_to_original && self.current_stream != original_stream {
+                    remote.push_text(&original_stream, shared);
+                }
+                // Remote story activity for the prompt gate: only lines
+                // actually pushed under "main" count — text that will fall
+                // back into the LOCAL main window arrives here under its own
+                // stream name and lands in the remote client's own feed.
+                if !highlight_result.line_is_silent
+                    && (self.current_stream == "main"
+                        || (should_send_to_original && original_stream == "main"))
+                {
+                    self.remote_chunk_has_story_text = true;
+                }
             }
         }
 

@@ -2310,6 +2310,110 @@ fn push_test_segment(processor: &mut MessageProcessor, text: &str) {
     });
 }
 
+/// Rysk's mobile prompt spam (beta 43): on a headless host whose layout has
+/// no thoughts/arrivals windows, those streams fall back into the LOCAL main
+/// window and arm the prompt separator — but remote clients route the same
+/// lines to their own feeds, so the phone's story collected a lone prompt
+/// line for every background thought/arrival/death. The remote story feed
+/// must gate its prompt separators on its OWN activity.
+#[test]
+fn remote_story_feed_skips_prompts_armed_only_by_fallback_text() {
+    let mut processor = create_test_processor();
+    let mut game_state = GameState::new();
+    let mut ui_state = UiState::new();
+    ui_state
+        .windows
+        .insert("main".to_string(), make_text_window("main", &["main"]));
+    processor.update_text_stream_subscribers(&ui_state);
+
+    let (sink, handles, _events) = crate::core::remote::RemoteSink::new(100);
+    processor.remote = Some(sink);
+
+    fn run_prompt(
+        processor: &mut MessageProcessor,
+        game_state: &mut GameState,
+        ui_state: &mut UiState,
+    ) {
+        processor.process_element(
+            &ParsedElement::Prompt {
+                time: "0".to_string(),
+                text: "s>".to_string(),
+            },
+            game_state,
+            ui_state,
+            &mut std::collections::HashMap::new(),
+            &mut None,
+            &mut false,
+            &mut None,
+            &mut None,
+            &mut None,
+            None,
+        );
+    }
+    let remote_prompts = |handles: &crate::core::remote::RemoteServerHandles| -> usize {
+        handles
+            .buffer
+            .lock()
+            .unwrap()
+            .tail("main", 100)
+            .iter()
+            .filter(|l| {
+                l.line
+                    .segments
+                    .iter()
+                    .map(|s| s.text.as_str())
+                    .collect::<String>()
+                    .trim()
+                    == "s>"
+            })
+            .count()
+    };
+
+    // Baseline: the first prompt is a change ("" -> "s>") and shows
+    // everywhere, remote story included.
+    run_prompt(&mut processor, &mut game_state, &mut ui_state);
+    assert_eq!(remote_prompts(&handles), 1);
+
+    // A background thought: no thoughts window, so it falls back into the
+    // LOCAL main window, while the remote client shows it in its own feed.
+    processor.current_stream = "thoughts".to_string();
+    push_test_segment(&mut processor, "Someone thinks aloud.");
+    processor.flush_current_stream_with_tts(&mut ui_state, None);
+    processor.current_stream = "main".to_string();
+    assert_eq!(
+        handles.buffer.lock().unwrap().tail("thoughts", 100).len(),
+        1,
+        "the thought reaches the phone's own feed"
+    );
+
+    let local_lines_before = text_line_count(&ui_state, "main");
+    run_prompt(&mut processor, &mut game_state, &mut ui_state);
+
+    // Locally the separator still renders — the thought text landed in the
+    // main window (Wrayth parity).
+    assert_eq!(
+        text_line_count(&ui_state, "main"),
+        local_lines_before + 1,
+        "local main window keeps its prompt separator"
+    );
+    // Remotely the story feed saw nothing this chunk: no stranded prompt.
+    assert_eq!(
+        remote_prompts(&handles),
+        1,
+        "an idle chunk must not push a lone prompt into the phone's story"
+    );
+
+    // Genuine story text re-arms the remote separator.
+    push_test_segment(&mut processor, "You wave.");
+    processor.flush_current_stream_with_tts(&mut ui_state, None);
+    run_prompt(&mut processor, &mut game_state, &mut ui_state);
+    assert_eq!(
+        remote_prompts(&handles),
+        2,
+        "story text brings the separator back"
+    );
+}
+
 fn text_line_count(ui_state: &UiState, window: &str) -> usize {
     match &ui_state.windows.get(window).expect("window exists").content {
         WindowContent::Text(c) => c.lines.len(),

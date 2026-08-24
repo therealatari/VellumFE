@@ -178,6 +178,20 @@ pub struct MessageProcessor {
 
     /// Track if chunk (since last prompt) has main stream text
     chunk_has_main_text: bool,
+    /// Story ("main") text reached REMOTE clients since the last prompt.
+    /// Tracked separately from `chunk_has_main_text`, which also arms when
+    /// stream text falls back into the local main window because its own
+    /// window is missing (headless layouts without thoughts/arrivals
+    /// windows). Remote clients route those lines to their own feeds, so
+    /// the phone's story must gate its prompt separators on ITS OWN
+    /// activity — otherwise every background thought/arrival strands a
+    /// lone prompt line in the phone's story.
+    remote_chunk_has_story_text: bool,
+    /// True while flushing a prompt the remote story feed should NOT
+    /// receive (nothing reached it since the last prompt); the flush's
+    /// remote tap skips the push. The local main window still shows the
+    /// separator — the fallback text landed there.
+    suppress_remote_tap: bool,
     /// Familiar-stream text arrived since the last prompt. Drives the prompt
     /// echo into the familiar window (arena-spectate round separators).
     chunk_has_familiar_text: bool,
@@ -386,6 +400,8 @@ impl MessageProcessor {
             remote: None,
             pending_client_commands: Vec::new(),
             chunk_has_main_text: false,
+            remote_chunk_has_story_text: false,
+            suppress_remote_tap: false,
             chunk_has_familiar_text: false,
             emitting_familiar_separator: false,
             chunk_has_silent_updates: false,

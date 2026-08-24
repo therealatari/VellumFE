@@ -459,6 +459,13 @@ impl MessageProcessor {
                 // But we always show the prompt if it changed (e.g., "R>" -> ">" when roundtime ends)
                 let prompt_changed = text.trim() != game_state.last_prompt.trim();
                 let should_skip = !self.chunk_has_main_text && !prompt_changed;
+                // Remote clients gate the separator on THEIR story feed's
+                // activity: stream text that fell back into the local main
+                // window (headless layout without thoughts/arrivals windows)
+                // arms chunk_has_main_text, but the phone routed those lines
+                // to their own feeds — pushing this prompt would strand a
+                // lone separator in the phone's story per background line.
+                let show_remote = self.remote_chunk_has_story_text || prompt_changed;
 
                 // Always reset to main stream when a prompt is received
                 // (prompts mark the end of a server response, returning control to main)
@@ -491,8 +498,13 @@ impl MessageProcessor {
                         });
                     }
 
-                    // Finish prompt line
+                    // Finish prompt line. The remote tap is suppressed when
+                    // the phone's story feed saw nothing this chunk (the
+                    // local main window still shows the separator — the
+                    // fallback text landed there).
+                    self.suppress_remote_tap = !show_remote;
                     self.flush_current_stream_with_tts(ui_state, tts_manager);
+                    self.suppress_remote_tap = false;
                 }
 
                 // Echo the prompt into the familiar window as a separator
@@ -561,6 +573,7 @@ impl MessageProcessor {
 
                 // Reset chunk tracking for next prompt
                 self.chunk_has_main_text = false;
+                self.remote_chunk_has_story_text = false;
                 self.chunk_has_silent_updates = false;
 
                 // Reset discard flag - prompts always return to main stream
