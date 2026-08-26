@@ -24,6 +24,7 @@ mod layout;
 mod macros;
 pub mod menu_keybind_validator;
 mod paths;
+pub mod png_meta;
 pub mod pool;
 mod presets;
 pub mod profiles;

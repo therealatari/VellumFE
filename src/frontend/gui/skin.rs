@@ -611,6 +611,12 @@ pub struct CreatureArt {
     pub anchors: HashMap<String, [f32; 2]>,
     /// Sidecar-authored floor footprint (contact-shadow ellipse), if any.
     pub footprint: Option<crate::config::pool::CreatureFootprint>,
+    /// Sidecar-authored world-unit height for THIS image, overriding the
+    /// per-family size the field otherwise applies.
+    pub size: Option<f32>,
+    /// Sidecar-authored ground clearance for a floating neutral pose,
+    /// fraction of the drawn sprite height.
+    pub lift: Option<f32>,
 }
 
 impl CreatureArt {
@@ -1974,6 +1980,8 @@ fn load_creature_art(ctx: &egui::Context, path: &Path, skin_name: &str) -> Optio
         bbox,
         anchors: sidecar.anchors,
         footprint: sidecar.footprint,
+        size: sidecar.size,
+        lift: sidecar.lift,
     })
 }
 
@@ -2308,29 +2316,16 @@ pub fn calibration_toml_for(
         }
     };
 
-    // Round in f64: the f32 -> f64 cast would otherwise smear 0.09 into
-    // 0.09000000357... in the written file. Four decimals is sub-pixel on
-    // any realistic doll image and keeps the file readable.
-    let rounded = |v: f32, places: f64| (v as f64 * places).round() / places;
-
-    let mut anchors_table = Table::new();
-    let mut keys: Vec<&String> = anchors.keys().collect();
-    keys.sort();
-    for key in keys {
-        let [x, y] = anchors[key];
-        let mut pair = Array::new();
-        pair.push(rounded(x, 10_000.0));
-        pair.push(rounded(y, 10_000.0));
-        anchors_table.insert(key, value(pair));
-    }
-    target.insert("anchors", Item::Table(anchors_table));
-
-    let mut dots_table = Table::new();
-    dots_table.insert("wound_color", value(dots.wound_color.as_str()));
-    dots_table.insert("scar_color", value(dots.scar_color.as_str()));
-    dots_table.insert("opacity", value(rounded(dots.opacity, 100.0)));
-    dots_table.insert("diameter", value(rounded(dots.diameter, 1_000.0)));
-    target.insert("dots", Item::Table(dots_table));
+    // Table construction is shared with the pool sidecar writers
+    // (config::pool) so every calibration write rounds and sorts alike.
+    target.insert(
+        "anchors",
+        Item::Table(crate::config::pool::anchors_toml_table(anchors)),
+    );
+    target.insert(
+        "dots",
+        Item::Table(crate::config::pool::dots_toml_table(dots)),
+    );
 
     Ok(doc.to_string())
 }

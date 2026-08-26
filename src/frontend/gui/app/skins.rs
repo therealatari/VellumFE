@@ -82,25 +82,15 @@ impl VellumGuiApp {
             if let Some(sidecar) =
                 crate::config::pool::read_sidecar::<crate::config::pool::DollSidecar>(&abs)
             {
-                let rounded = |v: f32, places: f64| (v as f64 * places).round() / places;
-                let mut anchors = Table::new();
-                let mut keys: Vec<&String> = sidecar.anchors.keys().collect();
-                keys.sort();
-                for key in keys {
-                    let [x, y] = sidecar.anchors[key];
-                    let mut pair = Array::new();
-                    pair.push(rounded(x, 10_000.0));
-                    pair.push(rounded(y, 10_000.0));
-                    anchors.insert(key, value(pair));
-                }
-                let mut dots = Table::new();
-                dots.insert("wound_color", value(sidecar.dots.wound_color.as_str()));
-                dots.insert("scar_color", value(sidecar.dots.scar_color.as_str()));
-                dots.insert("opacity", value(rounded(sidecar.dots.opacity, 100.0)));
-                dots.insert("diameter", value(rounded(sidecar.dots.diameter, 1_000.0)));
                 let doll = doc["injury_doll"].as_table_mut().expect("just inserted");
-                doll.insert("anchors", Item::Table(anchors));
-                doll.insert("dots", Item::Table(dots));
+                doll.insert(
+                    "anchors",
+                    Item::Table(crate::config::pool::anchors_toml_table(&sidecar.anchors)),
+                );
+                doll.insert(
+                    "dots",
+                    Item::Table(crate::config::pool::dots_toml_table(&sidecar.dots)),
+                );
             }
         }
 

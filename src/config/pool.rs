@@ -401,17 +401,37 @@ fn copy_dir_shallow(src: &Path, dest: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// A sidecar schema's `kind` discriminator. All sidecar types share the
+/// `<image>.toml` slot; the discriminator keeps a doll's metadata from
+/// silently parsing as a frame's. Legacy sidecars without a `kind` field
+/// still load (every writer stamps it going forward).
+pub trait SidecarKind {
+    const KIND: &'static str;
+    /// The `kind` the file declared, if any.
+    fn declared_kind(&self) -> Option<&str>;
+}
+
 /// Doll sidecar: calibration anchors and dot styling that travel with the
 /// artwork (a Jinx doll can ship pre-calibrated). Same shapes as the
 /// `[injury_doll]` skin section.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct DollSidecar {
+    /// Schema discriminator; see [`SidecarKind`].
+    #[serde(default)]
+    pub kind: Option<String>,
     /// Body part (protocol name, lowercase) -> anchor as fractions of the
     /// image.
     #[serde(default)]
     pub anchors: HashMap<String, [f32; 2]>,
     #[serde(default)]
     pub dots: DollDotSpec,
+}
+
+impl SidecarKind for DollSidecar {
+    const KIND: &'static str = "doll";
+    fn declared_kind(&self) -> Option<&str> {
+        self.kind.as_deref()
+    }
 }
 
 /// Creature-sprite sidecar: pose anchoring metadata that travels with one
@@ -423,12 +443,31 @@ pub struct DollSidecar {
 /// doll part names for wound placement.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct CreatureSidecar {
+    /// Schema discriminator; see [`SidecarKind`].
+    #[serde(default)]
+    pub kind: Option<String>,
     #[serde(default)]
     pub anchors: HashMap<String, [f32; 2]>,
     /// Contact-shadow / floor-footprint ellipse. Absent = the renderer's
     /// generic standee shadow.
     #[serde(default)]
     pub footprint: Option<CreatureFootprint>,
+    /// World-unit height of THIS image's creature, overriding the
+    /// per-family size the field otherwise uses — art from different
+    /// sources stays in scale with each other. Absent = family default.
+    #[serde(default)]
+    pub size: Option<f32>,
+    /// Ground clearance for a neutral pose that floats (wisps, spectres),
+    /// as a fraction of the drawn sprite height. Absent = grounded.
+    #[serde(default)]
+    pub lift: Option<f32>,
+}
+
+impl SidecarKind for CreatureSidecar {
+    const KIND: &'static str = "creature";
+    fn declared_kind(&self) -> Option<&str> {
+        self.kind.as_deref()
+    }
 }
 
 /// Footprint ellipse for a creature sprite: how much floor the pose
@@ -461,12 +500,22 @@ impl CreatureFootprint {
 /// or four ([top, right, bottom, left]).
 #[derive(Debug, Clone, Deserialize)]
 pub struct FrameSidecar {
+    /// Schema discriminator; see [`SidecarKind`].
+    #[serde(default)]
+    pub kind: Option<String>,
     pub slice: SliceSpec,
     /// Source-pixels → screen-points multiplier. Optional: consumers use
     /// [`FrameSidecar::effective_scale`], which derives a sane value when
     /// the metadata omits one.
     #[serde(default)]
     pub scale: Option<f32>,
+}
+
+impl SidecarKind for FrameSidecar {
+    const KIND: &'static str = "frame";
+    fn declared_kind(&self) -> Option<&str> {
+        self.kind.as_deref()
+    }
 }
 
 /// On-screen border thickness (points) a scale-less frame normalizes to —
@@ -508,19 +557,96 @@ impl SliceSpec {
     }
 }
 
-/// Read an image's sidecar toml into `T`. `None` when the sidecar doesn't
-/// exist or doesn't parse (a broken sidecar is logged, not fatal — the
-/// image still lists, just without its metadata).
-pub fn read_sidecar<T: serde::de::DeserializeOwned>(image_abs_path: &Path) -> Option<T> {
+/// Read an image's sidecar toml into `T`. `None` when no metadata exists
+/// or it doesn't parse (a broken sidecar is logged, not fatal — the image
+/// still lists, just without its metadata).
+///
+/// Resolution order: the `.toml` sidecar file (the working copy) wins;
+/// with no sidecar file, metadata embedded in the PNG itself (the travel
+/// format — see `config::png_meta`) is read and extracted to a fresh
+/// sidecar file, so a shared image self-hydrates on first use. A `kind`
+/// mismatch (a doll sidecar read as a frame) is rejected with a warning;
+/// legacy metadata without a `kind` still loads.
+pub fn read_sidecar<T: serde::de::DeserializeOwned + SidecarKind>(
+    image_abs_path: &Path,
+) -> Option<T> {
     let path = image_abs_path.with_extension("toml");
-    let contents = std::fs::read_to_string(&path).ok()?;
-    match toml::from_str(&contents) {
-        Ok(value) => Some(value),
+    if let Ok(contents) = std::fs::read_to_string(&path) {
+        return parse_sidecar::<T>(&contents, &path.display().to_string());
+    }
+    // No sidecar file: hydrate from metadata embedded in the image.
+    let embedded = crate::config::png_meta::read_embedded(image_abs_path)?;
+    let value = parse_sidecar::<T>(&embedded, &image_abs_path.display().to_string())?;
+    match crate::config::write_atomic(&path, embedded) {
+        Ok(()) => invalidate_cache(), // has_sidecar flags must show the new file
+        Err(err) => tracing::warn!(
+            "cannot extract embedded metadata to {}: {}",
+            path.display(),
+            err
+        ),
+    }
+    Some(value)
+}
+
+fn parse_sidecar<T: serde::de::DeserializeOwned + SidecarKind>(
+    contents: &str,
+    source: &str,
+) -> Option<T> {
+    let value: T = match toml::from_str(contents) {
+        Ok(value) => value,
         Err(err) => {
-            tracing::warn!("ignoring invalid sidecar {}: {}", path.display(), err);
+            tracing::warn!("ignoring invalid sidecar {}: {}", source, err);
+            return None;
+        }
+    };
+    match value.declared_kind() {
+        Some(kind) if !kind.eq_ignore_ascii_case(T::KIND) => {
+            tracing::warn!(
+                "sidecar {} declares kind '{}', wanted '{}' — ignoring",
+                source,
+                kind,
+                T::KIND
+            );
             None
         }
+        _ => Some(value),
     }
+}
+
+/// Round for TOML output in f64: the raw f32 -> f64 cast would smear 0.09
+/// into 0.09000000357... in the written file. Four decimals is sub-pixel
+/// on any realistic art. Shared by every calibration writer.
+pub fn toml_rounded(v: f32, places: f64) -> f64 {
+    (v as f64 * places).round() / places
+}
+
+/// Build the `anchors` TOML table every calibration writer emits: sorted
+/// keys, `[x, y]` pairs rounded to four decimals.
+pub fn anchors_toml_table(anchors: &HashMap<String, [f32; 2]>) -> toml_edit::Table {
+    use toml_edit::{value, Array, Table};
+    let mut table = Table::new();
+    let mut keys: Vec<&String> = anchors.keys().collect();
+    keys.sort();
+    for key in keys {
+        let [x, y] = anchors[key];
+        let mut pair = Array::new();
+        pair.push(toml_rounded(x, 10_000.0));
+        pair.push(toml_rounded(y, 10_000.0));
+        table.insert(key, value(pair));
+    }
+    table
+}
+
+/// Build the `dots` TOML table (doll dot styling), shared by every
+/// calibration writer.
+pub fn dots_toml_table(dots: &DollDotSpec) -> toml_edit::Table {
+    use toml_edit::{value, Table};
+    let mut table = Table::new();
+    table.insert("wound_color", value(dots.wound_color.as_str()));
+    table.insert("scar_color", value(dots.scar_color.as_str()));
+    table.insert("opacity", value(toml_rounded(dots.opacity, 100.0)));
+    table.insert("diameter", value(toml_rounded(dots.diameter, 1_000.0)));
+    table
 }
 
 /// Rewrite (or create) a doll sidecar's `anchors` and `dots` tables,
@@ -532,41 +658,120 @@ pub fn write_doll_sidecar(
     anchors: &HashMap<String, [f32; 2]>,
     dots: &DollDotSpec,
 ) -> anyhow::Result<()> {
-    use toml_edit::{value, Array, DocumentMut, Item, Table};
+    use toml_edit::Item;
+    write_sidecar_tables(image_abs_path, DollSidecar::KIND, |doc| {
+        doc.insert("anchors", Item::Table(anchors_toml_table(anchors)));
+        doc.insert("dots", Item::Table(dots_toml_table(dots)));
+        Ok(())
+    })
+}
+
+/// Rewrite (or create) a creature sidecar: anchors, footprint, and the
+/// per-image field-scale fields, preserving any other content.
+pub fn write_creature_sidecar(
+    image_abs_path: &Path,
+    sidecar: &CreatureSidecar,
+) -> anyhow::Result<()> {
+    use toml_edit::{value, Item, Table};
+    write_sidecar_tables(image_abs_path, CreatureSidecar::KIND, |doc| {
+        doc.insert("anchors", Item::Table(anchors_toml_table(&sidecar.anchors)));
+        match &sidecar.footprint {
+            Some(fp) => {
+                let mut table = Table::new();
+                table.insert("rx", value(toml_rounded(fp.rx, 10_000.0)));
+                if let Some(ry) = fp.ry {
+                    table.insert("ry", value(toml_rounded(ry, 10_000.0)));
+                }
+                if let Some([x, y]) = fp.center {
+                    let mut pair = toml_edit::Array::new();
+                    pair.push(toml_rounded(x, 10_000.0));
+                    pair.push(toml_rounded(y, 10_000.0));
+                    table.insert("center", value(pair));
+                }
+                doc.insert("footprint", Item::Table(table));
+            }
+            None => {
+                doc.remove("footprint");
+            }
+        }
+        for (key, field) in [("size", sidecar.size), ("lift", sidecar.lift)] {
+            match field {
+                Some(v) => {
+                    doc.insert(key, value(toml_rounded(v, 10_000.0)));
+                }
+                None => {
+                    doc.remove(key);
+                }
+            }
+        }
+        Ok(())
+    })
+}
+
+/// Rewrite (or create) a frame sidecar's nine-slice geometry, preserving
+/// any other content.
+pub fn write_frame_sidecar(
+    image_abs_path: &Path,
+    slice: [f32; 4],
+    scale: Option<f32>,
+) -> anyhow::Result<()> {
+    use toml_edit::value;
+    write_sidecar_tables(image_abs_path, FrameSidecar::KIND, |doc| {
+        let uniform = slice.iter().all(|inset| *inset == slice[0]);
+        if uniform {
+            doc.insert("slice", value(toml_rounded(slice[0], 10.0)));
+        } else {
+            let mut arr = toml_edit::Array::new();
+            for inset in slice {
+                arr.push(toml_rounded(inset, 10.0));
+            }
+            doc.insert("slice", value(arr));
+        }
+        match scale {
+            Some(scale) => {
+                doc.insert("scale", value(toml_rounded(scale, 10_000.0)));
+            }
+            None => {
+                doc.remove("scale");
+            }
+        }
+        Ok(())
+    })
+}
+
+/// Shared sidecar-writer plumbing: parse the existing sidecar (preserving
+/// hand-written content byte-for-byte), let `fill` upsert its tables,
+/// stamp the `kind` discriminator, write atomically, and bake the same
+/// TOML into the image as embedded metadata (`png_meta`) so the file
+/// stays shareable with its calibration inside. A non-PNG image skips the
+/// bake with a debug note — the sidecar file is the working copy either
+/// way.
+fn write_sidecar_tables(
+    image_abs_path: &Path,
+    kind: &str,
+    fill: impl FnOnce(&mut toml_edit::DocumentMut) -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    use toml_edit::{value, DocumentMut};
 
     let path = image_abs_path.with_extension("toml");
     let contents = std::fs::read_to_string(&path).unwrap_or_default();
     let mut doc: DocumentMut = contents
         .parse()
         .map_err(|err| anyhow::anyhow!("{} is not valid TOML: {}", path.display(), err))?;
-
-    // Same rounding as the skin calibration writer: four decimals is
-    // sub-pixel on any realistic doll image.
-    let rounded = |v: f32, places: f64| (v as f64 * places).round() / places;
-
-    let mut anchors_table = Table::new();
-    let mut keys: Vec<&String> = anchors.keys().collect();
-    keys.sort();
-    for key in keys {
-        let [x, y] = anchors[key];
-        let mut pair = Array::new();
-        pair.push(rounded(x, 10_000.0));
-        pair.push(rounded(y, 10_000.0));
-        anchors_table.insert(key, value(pair));
-    }
-    doc.insert("anchors", Item::Table(anchors_table));
-
-    let mut dots_table = Table::new();
-    dots_table.insert("wound_color", value(dots.wound_color.as_str()));
-    dots_table.insert("scar_color", value(dots.scar_color.as_str()));
-    dots_table.insert("opacity", value(rounded(dots.opacity, 100.0)));
-    dots_table.insert("diameter", value(rounded(dots.diameter, 1_000.0)));
-    doc.insert("dots", Item::Table(dots_table));
-
-    crate::config::write_atomic(&path, doc.to_string())
+    doc.insert("kind", value(kind));
+    fill(&mut doc)?;
+    let toml = doc.to_string();
+    crate::config::write_atomic(&path, &toml)
         .map_err(|err| anyhow::anyhow!("cannot write {}: {}", path.display(), err))?;
     // The listing cache carries has_sidecar; a fresh sidecar must show now.
     invalidate_cache();
+    if let Err(err) = crate::config::png_meta::write_embedded(image_abs_path, &toml) {
+        tracing::debug!(
+            "not embedding metadata in {}: {}",
+            image_abs_path.display(),
+            err
+        );
+    }
     Ok(())
 }
 
@@ -669,6 +874,139 @@ mod tests {
         assert_eq!(parsed.anchors["head"], [0.5, 0.1]);
         assert_eq!(parsed.anchors["chest"], [0.5, 0.3]);
         assert_eq!(parsed.dots.wound_color, "#aa0000");
+    }
+
+    #[test]
+    fn sidecar_kind_mismatch_is_rejected_legacy_accepted() {
+        let dir = tempfile::tempdir().unwrap();
+        let image = dir.path().join("art.png");
+        std::fs::write(&image, b"png").unwrap();
+
+        // Legacy sidecar without a kind: accepted by any schema (that is
+        // how every pre-discriminator sidecar in the wild reads).
+        std::fs::write(dir.path().join("art.toml"), "[anchors]\nhead = [0.5, 0.1]\n").unwrap();
+        assert!(read_sidecar::<DollSidecar>(&image).is_some());
+        assert!(read_sidecar::<CreatureSidecar>(&image).is_some());
+
+        // A declared kind gates cross-schema reads, case-insensitively.
+        std::fs::write(
+            dir.path().join("art.toml"),
+            "kind = \"doll\"\n[anchors]\nhead = [0.5, 0.1]\n",
+        )
+        .unwrap();
+        assert!(read_sidecar::<DollSidecar>(&image).is_some());
+        assert!(read_sidecar::<CreatureSidecar>(&image).is_none());
+        assert!(read_sidecar::<FrameSidecar>(&image).is_none());
+    }
+
+    #[test]
+    fn creature_sidecar_roundtrips_size_lift_footprint_through_writer() {
+        let dir = tempfile::tempdir().unwrap();
+        let image = dir.path().join("coyote.png");
+        std::fs::write(&image, b"png").unwrap();
+
+        let mut sidecar = CreatureSidecar {
+            size: Some(1.25),
+            lift: Some(0.1),
+            footprint: Some(CreatureFootprint {
+                rx: 0.46,
+                ry: None,
+                center: Some([0.5, 0.63]),
+            }),
+            ..Default::default()
+        };
+        sidecar.anchors.insert("feet".to_string(), [0.48, 0.63]);
+        sidecar.anchors.insert("mouth".to_string(), [0.2, 0.3]);
+        write_creature_sidecar(&image, &sidecar).unwrap();
+
+        let read: CreatureSidecar = read_sidecar(&image).unwrap();
+        assert_eq!(read.kind.as_deref(), Some("creature"));
+        assert_eq!(read.size, Some(1.25));
+        assert_eq!(read.lift, Some(0.1));
+        assert_eq!(read.anchors["mouth"], [0.2, 0.3]);
+        let fp = read.footprint.unwrap();
+        assert_eq!(fp.rx, 0.46);
+        assert_eq!(fp.center, Some([0.5, 0.63]));
+        assert!(fp.ry.is_none());
+
+        // Clearing optional fields removes them from the file.
+        sidecar.size = None;
+        sidecar.footprint = None;
+        write_creature_sidecar(&image, &sidecar).unwrap();
+        let read: CreatureSidecar = read_sidecar(&image).unwrap();
+        assert!(read.size.is_none());
+        assert!(read.footprint.is_none());
+        assert_eq!(read.lift, Some(0.1));
+    }
+
+    #[test]
+    fn frame_sidecar_writer_emits_uniform_or_per_side() {
+        let dir = tempfile::tempdir().unwrap();
+        let image = dir.path().join("brass.png");
+        std::fs::write(&image, b"png").unwrap();
+
+        write_frame_sidecar(&image, [300.0; 4], None).unwrap();
+        let read: FrameSidecar = read_sidecar(&image).unwrap();
+        assert_eq!(read.kind.as_deref(), Some("frame"));
+        assert_eq!(read.slice.insets(), [300.0; 4]);
+        assert!(read.scale.is_none());
+        // The uniform form writes one number, not a 4-array.
+        let text = std::fs::read_to_string(dir.path().join("brass.toml")).unwrap();
+        assert!(text.contains("slice = 300"), "uniform slice: {text}");
+
+        write_frame_sidecar(&image, [1.0, 2.0, 3.0, 4.0], Some(0.5)).unwrap();
+        let read: FrameSidecar = read_sidecar(&image).unwrap();
+        assert_eq!(read.slice.insets(), [1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(read.scale, Some(0.5));
+    }
+
+    #[cfg(feature = "gui")]
+    #[test]
+    fn embedded_metadata_hydrates_a_sidecar_on_first_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let image = dir.path().join("shared.png");
+        image::save_buffer(&image, &[0xff; 4], 1, 1, image::ExtendedColorType::Rgba8).unwrap();
+
+        // A shared image arrives with metadata inside and no sidecar file.
+        crate::config::png_meta::write_embedded(
+            &image,
+            "kind = \"creature\"\nsize = 2.0\n[anchors]\nfeet = [0.5, 0.9]\n",
+        )
+        .unwrap();
+        assert!(!dir.path().join("shared.toml").exists());
+
+        let read: CreatureSidecar = read_sidecar(&image).unwrap();
+        assert_eq!(read.size, Some(2.0));
+        assert_eq!(read.anchors["feet"], [0.5, 0.9]);
+        // First read extracted the working copy next to the art.
+        assert!(dir.path().join("shared.toml").exists());
+
+        // The sidecar file now wins: divergent edits there are what loads.
+        std::fs::write(dir.path().join("shared.toml"), "kind = \"creature\"\nsize = 3.0\n")
+            .unwrap();
+        let read: CreatureSidecar = read_sidecar(&image).unwrap();
+        assert_eq!(read.size, Some(3.0));
+    }
+
+    #[cfg(feature = "gui")]
+    #[test]
+    fn sidecar_writers_bake_embedded_metadata_into_png_images() {
+        let dir = tempfile::tempdir().unwrap();
+        let image = dir.path().join("cal.png");
+        image::save_buffer(&image, &[0xff; 4], 1, 1, image::ExtendedColorType::Rgba8).unwrap();
+
+        let mut anchors = HashMap::new();
+        anchors.insert("head".to_string(), [0.5, 0.1]);
+        write_doll_sidecar(&image, &anchors, &DollDotSpec::default()).unwrap();
+
+        // The image now carries the identical TOML inside: share the PNG
+        // alone and the calibration travels.
+        let embedded = crate::config::png_meta::read_embedded(&image).unwrap();
+        let sidecar_file = std::fs::read_to_string(dir.path().join("cal.toml")).unwrap();
+        assert_eq!(embedded, sidecar_file);
+        assert!(embedded.contains("kind = \"doll\""));
+        // And the baked PNG still decodes.
+        assert!(image::open(&image).is_ok());
     }
 
     #[test]
