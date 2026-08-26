@@ -20,6 +20,7 @@
 //! See docs/GUI_AUDIT.md for the feature-parity roadmap.
 
 pub mod app;
+pub mod image_store;
 pub mod launcher;
 pub mod map_view;
 pub mod persistence;

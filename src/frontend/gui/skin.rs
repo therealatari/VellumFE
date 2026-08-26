@@ -693,9 +693,10 @@ pub struct SkinState {
     loaded_id: Option<String>,
     manifest: SkinManifest,
     root: PathBuf,
-    /// Loaded textures keyed by manifest image path. `None` records a load
-    /// failure so a bad path warns once instead of retrying every frame.
-    textures: HashMap<String, Option<egui::TextureHandle>>,
+    /// Loaded textures keyed by manifest image path (+ "#gray" twins),
+    /// synced incrementally — unchanged files keep their textures across
+    /// appearance changes and skin switches.
+    store: super::image_store::ImageStore,
     /// Widget sprite lookups built once per skin load.
     widget_art: Option<std::sync::Arc<SkinWidgetArt>>,
     applied: bool,
@@ -783,7 +784,6 @@ impl SkinState {
         self.pool_frames = load_pool_frames(&self.needed_pool_frames);
         self.pool_status_icons = load_pool_set("statusicons", self.statusicon_set.as_deref());
         self.pool_compass = load_pool_set("compass", self.compass_set.as_deref());
-        self.textures.clear();
         self.widget_art = None;
         self.manifest_mtime = None;
         self.shared_sheet_names.clear();
@@ -811,7 +811,7 @@ impl SkinState {
         // require one.
         self.merge_shared_sheets();
 
-        self.load_textures(ctx, active.unwrap_or("shared-icons"));
+        self.sync_textures(ctx, active.unwrap_or("shared-icons"));
         self.widget_art = self.build_widget_art();
 
         // Reset the creature-card art cache for the new skin: bases resolve
@@ -916,9 +916,13 @@ impl SkinState {
             if cache.overlays.contains_key(&path) {
                 continue;
             }
-            let root = cache.root.clone();
-            let name = cache.skin_name.clone();
-            let tex = load_texture(ctx, &root, &path, &name);
+            let abs = skins::resolve_image_path(&cache.root, &path);
+            let tex = super::image_store::load_texture_file(
+                ctx,
+                &abs,
+                &format!("skin:{}:{}", cache.skin_name, path),
+                &cache.skin_name,
+            );
             cache.overlays.insert(path, tex);
         }
     }
@@ -1091,13 +1095,10 @@ impl SkinState {
 
     fn build_widget_art(&self) -> Option<std::sync::Arc<SkinWidgetArt>> {
         let tex = |path: &String| {
-            self.textures
-                .get(path)
-                .and_then(|handle| handle.as_ref())
-                .map(|handle| SkinTexture {
-                    texture: handle.id(),
-                    size: handle.size_vec2(),
-                })
+            self.store.texture(path).map(|handle| SkinTexture {
+                texture: handle.id(),
+                size: handle.size_vec2(),
+            })
         };
 
         let mut art = SkinWidgetArt::default();
@@ -1180,8 +1181,7 @@ impl SkinState {
         // Decorative edge overlays (strip + corner ornament per edge).
         let edge_tex = |path: &Option<String>| -> Option<SkinTexture> {
             path.as_ref()
-                .and_then(|p| self.textures.get(p))
-                .and_then(|t| t.as_ref())
+                .and_then(|p| self.store.texture(p))
                 .map(|t| SkinTexture {
                     texture: t.id(),
                     size: t.size_vec2(),
@@ -1531,7 +1531,11 @@ impl SkinState {
         })
     }
 
-    fn load_textures(&mut self, ctx: &egui::Context, skin_name: &str) {
+    /// Sync the texture store to everything the manifest, pool sets, and
+    /// declared overrides reference. Incremental: unchanged files keep
+    /// their textures (a checkbox toggle no longer re-decodes the world),
+    /// no-longer-referenced entries free theirs, edited files reload.
+    fn sync_textures(&mut self, ctx: &egui::Context, skin_name: &str) {
         let mut images: Vec<String> = self
             .manifest
             .windows
@@ -1606,33 +1610,17 @@ impl SkinState {
                     .flat_map(|spec| spec.overlays.values().cloned()),
             );
         }
-        for image in images {
-            if self.textures.contains_key(&image) {
-                continue;
-            }
-            let handle = load_texture(ctx, &self.root, &image, skin_name);
-            self.textures.insert(image, handle);
-        }
         // Grayscale twins for hotbar sheets (barbar's gs variant), cached
         // under a synthetic "<path>#gray" key.
-        for spec in self.manifest.sheets.values() {
-            let key = format!("{}#gray", spec.path);
-            if self.textures.contains_key(&key) {
-                continue;
-            }
-            // Skip the twin when the base image itself failed (one warning
-            // is enough).
-            let handle = if matches!(self.textures.get(&spec.path), Some(Some(_))) {
-                load_texture_desaturated(ctx, &self.root, &spec.path, skin_name)
-            } else {
-                None
-            };
-            self.textures.insert(key, handle);
-        }
+        let mut gray_paths: Vec<String> = self
+            .manifest
+            .sheets
+            .values()
+            .map(|spec| spec.path.clone())
+            .collect();
         // Lazy grayscale twins: built only for what the checkboxes demand
         // (status icons when "gray inactive" is on, doll art when
-        // "grayscale doll" is on). Unchecking rebuilds without them.
-        let mut gray_paths: Vec<String> = Vec::new();
+        // "grayscale doll" is on). Unchecking drops them.
         if self.gray_status_icons {
             gray_paths.extend(self.manifest.icons.values().cloned());
             gray_paths.extend(self.pool_status_icons.values().cloned());
@@ -1680,18 +1668,28 @@ impl SkinState {
                 );
             }
         }
-        for path in gray_paths {
-            let key = format!("{path}#gray");
-            if self.textures.contains_key(&key) {
-                continue;
-            }
-            let handle = if matches!(self.textures.get(&path), Some(Some(_))) {
-                load_texture_desaturated(ctx, &self.root, &path, skin_name)
-            } else {
-                None
-            };
-            self.textures.insert(key, handle);
-        }
+        // One wanted list: bases first, then gray twins (order lets the
+        // store skip a twin whose base failed). Keys stay the manifest /
+        // pool-relative strings every lookup site uses; resolution to a
+        // file happens here so the store can key change detection on it.
+        let mut wanted: Vec<super::image_store::WantedImage> = images
+            .into_iter()
+            .map(|key| super::image_store::WantedImage {
+                path: skins::resolve_image_path(&self.root, &key),
+                key,
+                gray: false,
+            })
+            .collect();
+        wanted.extend(
+            gray_paths
+                .into_iter()
+                .map(|path| super::image_store::WantedImage {
+                    key: format!("{path}{}", super::image_store::GRAY_SUFFIX),
+                    path: skins::resolve_image_path(&self.root, &path),
+                    gray: true,
+                }),
+        );
+        self.store.sync(ctx, &wanted, skin_name);
     }
 
     /// Resolve the background for a window, falling back to the manifest's
@@ -1699,7 +1697,7 @@ impl SkinState {
     /// background, or its image failed to load.
     pub fn background_for(&self, window_name: &str) -> Option<ResolvedBackground> {
         let spec = skins::window_background(&self.manifest, window_name)?;
-        let texture = self.textures.get(&spec.image)?.as_ref()?;
+        let texture = self.store.texture(&spec.image)?;
         let opacity = spec.opacity.clamp(0.0, 1.0);
         let tint = spec
             .tint
@@ -1728,7 +1726,7 @@ impl SkinState {
         match background_override {
             Some(path) if path.eq_ignore_ascii_case("none") => None,
             Some(path) => {
-                let texture = self.textures.get(path)?.as_ref()?;
+                let texture = self.store.texture(path)?;
                 Some(ResolvedBackground {
                     texture: texture.id(),
                     tex_size: texture.size_vec2(),
@@ -1779,7 +1777,7 @@ impl SkinState {
     }
 
     fn resolve_border(&self, spec: &skins::BorderSpec) -> Option<ResolvedBorder> {
-        let texture = self.textures.get(&spec.image)?.as_ref()?;
+        let texture = self.store.texture(&spec.image)?;
         Some(ResolvedBorder {
             texture: texture.id(),
             tex_size: texture.size_vec2(),
@@ -1919,46 +1917,13 @@ fn merge_shared_sheets_into(
     added
 }
 
-fn load_texture(
-    ctx: &egui::Context,
-    root: &Path,
-    image_path: &str,
-    skin_name: &str,
-) -> Option<egui::TextureHandle> {
-    load_texture_impl(ctx, root, image_path, skin_name, false)
-}
-
 /// Decode one creature-card base image and derive its anchors from the
 /// alpha bbox: head = top-centre, feet = bottom-centre. Calibration for the
 /// common case comes free from the art itself; a `<image>.toml` sidecar
 /// (anchors + footprint) overrides the derivation per image, so pose art
 /// grounds itself (manifest anchors still win when authored).
 fn load_creature_art(ctx: &egui::Context, path: &Path, skin_name: &str) -> Option<CreatureArt> {
-    let bytes = match std::fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(err) => {
-            tracing::warn!(
-                "Skin '{}': cannot read creature art {}: {}",
-                skin_name,
-                path.display(),
-                err
-            );
-            return None;
-        }
-    };
-    let decoded = match image::load_from_memory(&bytes) {
-        Ok(decoded) => decoded,
-        Err(err) => {
-            tracing::warn!(
-                "Skin '{}': cannot decode creature art {}: {}",
-                skin_name,
-                path.display(),
-                err
-            );
-            return None;
-        }
-    };
-    let rgba = decoded.to_rgba8();
+    let rgba = super::image_store::decode_rgba_logged(path, skin_name)?;
     let (w, h) = (rgba.width(), rgba.height());
     if w == 0 || h == 0 {
         return None;
@@ -2012,17 +1977,6 @@ fn load_creature_art(ctx: &egui::Context, path: &Path, skin_name: &str) -> Optio
     })
 }
 
-/// Desaturated twin of a texture (hotbar sheet grayscale variants);
-/// registered under a distinct texture name so both coexist.
-fn load_texture_desaturated(
-    ctx: &egui::Context,
-    root: &Path,
-    image_path: &str,
-    skin_name: &str,
-) -> Option<egui::TextureHandle> {
-    load_texture_impl(ctx, root, image_path, skin_name, true)
-}
-
 /// Decode + downscale one image into a picker thumbnail texture. Quieter
 /// than the full loader (a broken pool image just shows no preview).
 fn load_thumbnail_impl(
@@ -2032,8 +1986,7 @@ fn load_thumbnail_impl(
 ) -> Option<egui::TextureHandle> {
     const THUMB_EDGE: u32 = 48;
     let path = skins::resolve_image_path(root, image_path);
-    let bytes = std::fs::read(&path).ok()?;
-    let decoded = image::load_from_memory(&bytes).ok()?;
+    let decoded = image::DynamicImage::ImageRgba8(super::image_store::decode_rgba(&path)?);
     // `thumbnail` is the image crate's fast aspect-preserving resize.
     let rgba = decoded.thumbnail(THUMB_EDGE, THUMB_EDGE).to_rgba8();
     let size = [rgba.width() as usize, rgba.height() as usize];
@@ -2060,8 +2013,7 @@ pub struct SampledColors {
 /// colors. Bounded work: decodes once at skin load, thumbnails big images.
 fn sample_image_colors(root: &Path, image_path: &str) -> Option<SampledColors> {
     let path = skins::resolve_image_path(root, image_path);
-    let bytes = std::fs::read(&path).ok()?;
-    let decoded = image::load_from_memory(&bytes).ok()?;
+    let decoded = image::DynamicImage::ImageRgba8(super::image_store::decode_rgba(&path)?);
     // Cap sampling cost on large atlases.
     let small = decoded.thumbnail(96, 96);
     let rgba = small.to_rgba8();
@@ -2130,58 +2082,6 @@ fn sample_image_colors(root: &Path, image_path: &str) -> Option<SampledColors> {
         edge,
         has_content: true,
     })
-}
-
-fn load_texture_impl(
-    ctx: &egui::Context,
-    root: &Path,
-    image_path: &str,
-    skin_name: &str,
-    desaturate: bool,
-) -> Option<egui::TextureHandle> {
-    // Skin folder first, then the shared image pool (global/images/).
-    let path = skins::resolve_image_path(root, image_path);
-    let bytes = match std::fs::read(&path) {
-        Ok(bytes) => bytes,
-        Err(err) => {
-            tracing::warn!(
-                "Skin '{}': cannot read {}: {}",
-                skin_name,
-                path.display(),
-                err
-            );
-            return None;
-        }
-    };
-    let decoded = match image::load_from_memory(&bytes) {
-        Ok(decoded) => decoded,
-        Err(err) => {
-            tracing::warn!(
-                "Skin '{}': cannot decode {}: {}",
-                skin_name,
-                path.display(),
-                err
-            );
-            return None;
-        }
-    };
-    let mut rgba = decoded.to_rgba8();
-    if desaturate {
-        // barbar's gs variant: luminance recolor, alpha preserved.
-        for px in rgba.pixels_mut() {
-            let [r, g, b, a] = px.0;
-            let luma = (0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32).round() as u8;
-            px.0 = [luma, luma, luma, a];
-        }
-    }
-    let size = [rgba.width() as usize, rgba.height() as usize];
-    let color_image = egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
-    let suffix = if desaturate { "#gray" } else { "" };
-    Some(ctx.load_texture(
-        format!("skin:{}:{}{}", skin_name, image_path, suffix),
-        color_image,
-        egui::TextureOptions::LINEAR,
-    ))
 }
 
 /// Build the shapes that paint a window background into `rect`. The caller
@@ -3908,6 +3808,41 @@ cell = 32
         );
         // Missing everywhere: the skin-local path names the natural spot.
         assert_eq!(skins::resolve_image_path(&skin, "c.png"), skin.join("c.png"));
+    }
+
+    #[test]
+    fn unrelated_appearance_changes_keep_loaded_textures() {
+        // Phase 2 regression guard: before the ImageStore, ANY declaration
+        // change tore down and re-decoded every texture. Now an unrelated
+        // toggle must leave loaded art untouched (same TextureId).
+        let env = test_env();
+        write_png(&pool_dir().join("statusicons/runic/stunned.png"), 2);
+        write_png(&pool_dir().join("backgrounds/paper.png"), 2);
+
+        let mut state = SkinState::default();
+        state.set_status_icon_config(Some("runic"), &HashMap::new());
+        state.apply_if_changed(&env.ctx, None, None);
+        let icon_id = state.widget_art().unwrap().icon("stunned").unwrap().texture;
+
+        // Declare a new pool background: a reload pass runs, but the icon's
+        // texture survives it untouched.
+        state.set_needed_pool_backgrounds(vec!["backgrounds/paper.png".to_string()]);
+        state.apply_if_changed(&env.ctx, None, None);
+        assert_eq!(
+            state.widget_art().unwrap().icon("stunned").unwrap().texture,
+            icon_id
+        );
+        assert!(state
+            .background_for_with_override("main", Some("backgrounds/paper.png"))
+            .is_some());
+
+        // Grayscale toggle: the color icon still keeps its texture, and the
+        // gray twin appears alongside it.
+        state.set_grayscale(true, false);
+        state.apply_if_changed(&env.ctx, None, None);
+        let art = state.widget_art().unwrap();
+        assert_eq!(art.icon("stunned").unwrap().texture, icon_id);
+        assert!(art.icon_gray("stunned").is_some());
     }
 
     #[test]
