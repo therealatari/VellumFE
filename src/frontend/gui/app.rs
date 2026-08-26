@@ -547,6 +547,8 @@ pub struct VellumGuiApp {
     touch_wheel_editor: Option<editors::TouchWheelEditorState>,
     launcher_editor: Option<editors::LauncherEditorState>,
     doll_calibration: Option<editors::DollCalibrationState>,
+    frame_calibration: Option<editors::FrameCalibrationState>,
+    creature_calibration: Option<editors::CreatureCalibrationState>,
     pack_editor: Option<editors::PackEditorState>,
     alertpacks_editor: Option<editors::AlertPacksEditorState>,
     /// Editor window Id to raise to the top on the next frame. Set when a
@@ -1083,6 +1085,8 @@ impl VellumGuiApp {
             touch_wheel_editor: None,
             launcher_editor: None,
             doll_calibration: None,
+            frame_calibration: None,
+            creature_calibration: None,
             pack_editor: None,
             alertpacks_editor: None,
             pending_editor_raise: None,

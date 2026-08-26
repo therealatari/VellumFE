@@ -73,6 +73,11 @@ pub(super) enum GuiWindowMenuCommand {
     SetDollImage(Option<String>),
     /// Open the doll calibrator (injury doll windows).
     CalibrateDoll,
+    /// Open the frame calibrator (nine-slice geometry for pool frames).
+    CalibrateFrames,
+    /// Open the creature calibrator (creature field windows): anchors,
+    /// footprint, world size, lift — saved to each image's sidecar.
+    CalibrateCreatures,
     /// Per-window named doll set binding (stored on the shared layout
     /// def): Some(name) renders `[injury_doll.sets.<name>]` art in this
     /// window; None reverts to the default doll with condition variants.
@@ -301,6 +306,8 @@ pub(super) struct WindowAppearanceView {
     has_skin_border: bool,
     /// Injury doll widget: offer the pool doll picker + calibrator.
     is_doll: bool,
+    /// Creature field widget: offer the creature calibrator.
+    is_creature_field: bool,
     /// Pool doll images as (pool-relative path, display stem, thumbnail).
     doll_images: Vec<(String, String, Option<(egui::TextureId, egui::Vec2)>)>,
     /// Global doll override (pool-relative path); None = skin default.
@@ -489,6 +496,8 @@ impl VellumGuiApp {
             | C::DissolveGroup
             | C::OpenMapExplorer
             | C::CalibrateDoll
+            | C::CalibrateFrames
+            | C::CalibrateCreatures
             | C::EditHandIcons
             | C::EditDashboard
             | C::EditTabs
@@ -671,6 +680,8 @@ impl VellumGuiApp {
             | GuiWindowMenuCommand::SetDollImage(_)
             | GuiWindowMenuCommand::SetDollSet(_)
             | GuiWindowMenuCommand::CalibrateDoll
+            | GuiWindowMenuCommand::CalibrateFrames
+            | GuiWindowMenuCommand::CalibrateCreatures
             | GuiWindowMenuCommand::SetDollGrayscale(_)
             | GuiWindowMenuCommand::SetCompassSet(_)
             | GuiWindowMenuCommand::SetHandIcon { .. }
@@ -891,6 +902,16 @@ impl VellumGuiApp {
             GuiWindowMenuCommand::CalibrateDoll => {
                 self.open_doll_calibration();
             }
+            GuiWindowMenuCommand::CalibrateFrames => {
+                let current = self
+                    .tab_settings
+                    .get(tab_key)
+                    .and_then(|settings| settings.skin_frame.clone());
+                self.open_frame_calibration(current);
+            }
+            GuiWindowMenuCommand::CalibrateCreatures => {
+                self.open_creature_calibration();
+            }
             GuiWindowMenuCommand::SetDollSet(set) => {
                 self.with_layout_def_for_tab(tab_key, |def| {
                     if let crate::config::WindowDef::InjuryDoll { data, .. } = def {
@@ -1093,6 +1114,7 @@ impl VellumGuiApp {
                 .and_then(|tab| self.skin_state.border_for(&tab.window_name))
                 .is_some(),
             is_doll,
+            is_creature_field: widget_type == Some(WidgetType::CreatureField),
             doll_images,
             doll_override: self.ui_settings.doll_image.clone(),
             doll_sets: if is_doll {
@@ -2030,6 +2052,27 @@ impl VellumGuiApp {
         }
         if view.is_doll && ui.selectable_label(false, "Calibrate doll…").clicked() {
             command = Some(GuiWindowMenuCommand::CalibrateDoll);
+        }
+        if view.is_creature_field
+            && ui
+                .selectable_label(false, "Calibrate creatures…")
+                .on_hover_text(
+                    "Anchors, footprint, world size and lift for pool creature art — \
+                     saved to each image's sidecar",
+                )
+                .clicked()
+        {
+            command = Some(GuiWindowMenuCommand::CalibrateCreatures);
+        }
+        if ui
+            .selectable_label(false, "Calibrate frames…")
+            .on_hover_text(
+                "Nine-slice geometry for pool frame images; uncalibrated frames \
+                 don't appear in the frame picker until saved here",
+            )
+            .clicked()
+        {
+            command = Some(GuiWindowMenuCommand::CalibrateFrames);
         }
         if view.is_dashboard
             && ui

@@ -6,9 +6,11 @@ mod alertpacks;
 mod colors;
 #[cfg(feature = "gamepad")]
 mod controller;
+mod creature_calibration;
 mod custom_windows;
 mod dashboard;
 mod doll_calibration;
+mod frame_calibration;
 mod hand_icons;
 mod highlights;
 mod hotbars;
@@ -32,7 +34,9 @@ pub(super) use colors::ColorsEditorState;
 pub(super) use controller::ControllerEditorState;
 pub(super) use custom_windows::CustomWindowsEditorState;
 pub(super) use dashboard::DashboardEditorState;
+pub(super) use creature_calibration::CreatureCalibrationState;
 pub(super) use doll_calibration::DollCalibrationState;
+pub(super) use frame_calibration::FrameCalibrationState;
 pub(super) use hand_icons::HandIconsEditorState;
 pub(super) use highlights::HighlightEditorState;
 pub(super) use hotbars::HotbarEditorState;
@@ -100,6 +104,8 @@ impl VellumGuiApp {
         self.render_launcher_editor(ctx);
         self.render_touch_wheel_editor(ctx);
         self.render_doll_calibration(ctx);
+        self.render_frame_calibration(ctx);
+        self.render_creature_calibration(ctx);
         self.render_pack_editor(ctx);
         self.render_alertpacks_editor(ctx);
     }
