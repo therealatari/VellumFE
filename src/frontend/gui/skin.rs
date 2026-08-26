@@ -3555,6 +3555,376 @@ cell = 32
         assert!(SkinWidgetArt::default().is_empty());
     }
 
+    // ------------------------------------------------------------------
+    // Characterization tests for the skin-system overhaul: these pin the
+    // load/precedence behavior of the CURRENT design (manifest + pool +
+    // overrides through one SkinState) so the phased rewrite can prove it
+    // preserved what users see. Each builds a real ~/.vellum-fe tree in a
+    // tempdir and drives the same `apply_if_changed` path the app uses.
+    // ------------------------------------------------------------------
+
+    struct TestEnv {
+        _guard: std::sync::MutexGuard<'static, ()>,
+        _dir: tempfile::TempDir,
+        ctx: egui::Context,
+    }
+
+    impl Drop for TestEnv {
+        fn drop(&mut self) {
+            std::env::remove_var("VELLUM_FE_DIR");
+        }
+    }
+
+    fn test_env() -> TestEnv {
+        let guard = crate::config::VELLUM_FE_DIR_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("VELLUM_FE_DIR", dir.path());
+        crate::config::pool::invalidate_cache();
+        TestEnv {
+            _guard: guard,
+            _dir: dir,
+            ctx: egui::Context::default(),
+        }
+    }
+
+    /// Write a real decodable PNG, `px` square, creating parent dirs.
+    /// Distinct sizes let assertions tell which source won a slot.
+    fn write_png(path: &Path, px: u32) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        let pixels = vec![0xffu8; (px * px * 4) as usize];
+        image::save_buffer(path, &pixels, px, px, image::ExtendedColorType::Rgba8).unwrap();
+    }
+
+    fn pool_dir() -> PathBuf {
+        crate::config::Config::global_images_dir().unwrap()
+    }
+
+    fn skin_dir(name: &str) -> PathBuf {
+        let dir = crate::config::Config::skins_dir().unwrap().join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn skinless_status_icons_pool_set_with_override_precedence() {
+        let env = test_env();
+        write_png(&pool_dir().join("statusicons/runic/stunned.png"), 2);
+        write_png(&pool_dir().join("statusicons/runic/hidden.png"), 2);
+        write_png(&pool_dir().join("statusicons/custom.png"), 4);
+
+        let mut overrides = HashMap::new();
+        overrides.insert("hidden".to_string(), crate::data::IconRef::None);
+        overrides.insert(
+            "bleeding".to_string(),
+            crate::data::IconRef::Image {
+                path: "statusicons/custom.png".to_string(),
+            },
+        );
+        let mut state = SkinState::default();
+        state.set_status_icon_config(Some("runic"), &overrides);
+        state.apply_if_changed(&env.ctx, None, None);
+
+        let art = state.widget_art().expect("pool icons alone make art");
+        // Pool set fills the glyph, keyed by role stem, case-insensitively.
+        assert!(art.icon("stunned").is_some());
+        assert!(art.icon("STUNNED").is_some());
+        // IconRef::None removes the pool-resolved entry entirely.
+        assert!(art.icon("hidden").is_none());
+        // IconRef::Image resolves a pool path the set never mentioned.
+        let bleeding = art.icon("bleeding").expect("override image resolves");
+        assert_eq!(bleeding.size, egui::vec2(4.0, 4.0));
+    }
+
+    #[test]
+    fn skin_icons_beat_the_pool_set() {
+        let env = test_env();
+        write_png(&pool_dir().join("statusicons/runic/stunned.png"), 2);
+        let skin = skin_dir("test");
+        write_png(&skin.join("stunned.png"), 4);
+        std::fs::write(
+            skin.join("skin.toml"),
+            "[icons]\nstunned = \"stunned.png\"\n",
+        )
+        .unwrap();
+
+        let mut state = SkinState::default();
+        state.set_status_icon_config(Some("runic"), &HashMap::new());
+        state.apply_if_changed(&env.ctx, Some("test"), None);
+
+        let art = state.widget_art().unwrap();
+        // The 4px skin sprite won over the 2px pool sprite.
+        assert_eq!(art.icon("stunned").unwrap().size, egui::vec2(4.0, 4.0));
+    }
+
+    #[test]
+    fn compass_pool_set_replaces_skin_wholesale_and_none_strips() {
+        let env = test_env();
+        let skin = skin_dir("test");
+        write_png(&skin.join("rose.png"), 4);
+        write_png(&skin.join("n.png"), 4);
+        std::fs::write(
+            skin.join("skin.toml"),
+            "[compass]\nrose = \"rose.png\"\nn = \"n.png\"\n",
+        )
+        .unwrap();
+        write_png(&pool_dir().join("compass/brass/rose.png"), 2);
+        write_png(&pool_dir().join("compass/brass/ne.png"), 2);
+
+        // No set selected: the skin's compass art stands.
+        let mut state = SkinState::default();
+        state.apply_if_changed(&env.ctx, Some("test"), None);
+        let art = state.widget_art().unwrap();
+        assert_eq!(art.compass_rose.unwrap().size, egui::vec2(4.0, 4.0));
+        assert!(art.compass_dir("n").is_some());
+
+        // A pool set with a rose replaces the skin's compass WHOLESALE:
+        // the skin's "n" does not leak into the pool set's canvas.
+        state.set_compass_set(Some("brass"));
+        state.apply_if_changed(&env.ctx, Some("test"), None);
+        let art = state.widget_art().unwrap();
+        assert_eq!(art.compass_rose.unwrap().size, egui::vec2(2.0, 2.0));
+        assert!(art.compass_dir("ne").is_some());
+        assert!(art.compass_dir("n").is_none());
+
+        // The "none" sentinel strips all compass art — and since the
+        // compass was this skin's ONLY art, the whole bundle collapses to
+        // None (renderers then use their vector drawings).
+        state.set_compass_set(Some("none"));
+        state.apply_if_changed(&env.ctx, Some("test"), None);
+        assert!(state.widget_art().is_none());
+    }
+
+    #[test]
+    fn doll_override_replaces_default_kills_variants_but_named_sets_survive() {
+        let env = test_env();
+        let skin = skin_dir("test");
+        for name in ["base.png", "head_i1.png", "downed.png", "sil.png"] {
+            write_png(&skin.join(name), 4);
+        }
+        std::fs::write(
+            skin.join("skin.toml"),
+            r#"
+            [injury_doll]
+            base = "base.png"
+            [injury_doll.anchors]
+            head = [0.9, 0.9]
+            [injury_doll.head]
+            injury1 = "head_i1.png"
+
+            [[injury_doll.variants]]
+            name = "downed"
+            when = { type = "indicator", id = "prone", active = true }
+            [injury_doll.variants.skin]
+            base = "downed.png"
+
+            [injury_doll.sets.sil]
+            base = "sil.png"
+            "#,
+        )
+        .unwrap();
+        write_png(&pool_dir().join("dolls/human.png"), 2);
+        std::fs::write(
+            pool_dir().join("dolls/human.toml"),
+            "[anchors]\nhead = [0.4, 0.2]\n",
+        )
+        .unwrap();
+
+        // Override active: pool base + sidecar anchors, skin overlays and
+        // variants gone, but named sets keep the art windows bound to.
+        let mut state = SkinState::default();
+        state.apply_if_changed(&env.ctx, Some("test"), Some("dolls/human.png"));
+        let art = state.widget_art().unwrap();
+        assert_eq!(art.doll_base.unwrap().size, egui::vec2(2.0, 2.0));
+        assert!(art.doll_parts.is_empty());
+        assert_eq!(art.doll_anchor("head"), egui::vec2(0.4, 0.2));
+        assert!(art.doll_variants.is_empty());
+        assert!(art.doll_set_named("sil").is_some());
+
+        // The "none" sentinel strips the default doll; sets still survive.
+        state.apply_if_changed(&env.ctx, Some("test"), Some("none"));
+        let art = state.widget_art().unwrap();
+        assert!(art.doll_base.is_none());
+        assert!(art.doll_set_named("sil").is_some());
+
+        // No override: the skin's own doll, overlays, and variants load.
+        state.apply_if_changed(&env.ctx, Some("test"), None);
+        let art = state.widget_art().unwrap();
+        assert_eq!(art.doll_base.unwrap().size, egui::vec2(4.0, 4.0));
+        assert!(art.doll_overlay("head", 1).is_some());
+        assert_eq!(art.doll_variants.len(), 1);
+        assert_eq!(art.doll_anchor("head"), egui::vec2(0.9, 0.9));
+    }
+
+    #[test]
+    fn background_override_none_pool_path_and_fallback() {
+        let env = test_env();
+        let skin = skin_dir("test");
+        write_png(&skin.join("bg.png"), 4);
+        std::fs::write(
+            skin.join("skin.toml"),
+            "[window.default.background]\nimage = \"bg.png\"\n",
+        )
+        .unwrap();
+        write_png(&pool_dir().join("backgrounds/paper.png"), 2);
+
+        let mut state = SkinState::default();
+        state.set_needed_pool_backgrounds(vec!["backgrounds/paper.png".to_string()]);
+        state.apply_if_changed(&env.ctx, Some("test"), None);
+
+        // "none" kills the background outright.
+        assert!(state
+            .background_for_with_override("main", Some("none"))
+            .is_none());
+        // A pool path renders with the readable defaults: cover + scrim.
+        let bg = state
+            .background_for_with_override("main", Some("backgrounds/paper.png"))
+            .unwrap();
+        assert_eq!(bg.tex_size, egui::vec2(2.0, 2.0));
+        assert_eq!(bg.fit, BackgroundFit::Cover);
+        assert_eq!(bg.scrim_alpha, (0.25 * 255.0) as u8);
+        // No override falls through to the manifest's default entry.
+        let bg = state.background_for_with_override("main", None).unwrap();
+        assert_eq!(bg.tex_size, egui::vec2(4.0, 4.0));
+        // Skinless with no override: nothing.
+        state.apply_if_changed(&env.ctx, None, None);
+        assert!(state.background_for_with_override("main", None).is_none());
+    }
+
+    #[test]
+    fn border_override_resolves_none_named_pool_then_falls_back() {
+        let env = test_env();
+        let skin = skin_dir("test");
+        write_png(&skin.join("ornate.png"), 4);
+        write_png(&skin.join("winborder.png"), 4);
+        std::fs::write(
+            skin.join("skin.toml"),
+            r#"
+            [frames.ornate]
+            image = "ornate.png"
+            slice = [2.0, 2.0, 2.0, 2.0]
+
+            [window.default.border]
+            image = "winborder.png"
+            slice = [1.0, 1.0, 1.0, 1.0]
+            "#,
+        )
+        .unwrap();
+        write_png(&pool_dir().join("frames/brass.png"), 2);
+        std::fs::write(pool_dir().join("frames/brass.toml"), "slice = 300\n").unwrap();
+
+        let mut state = SkinState::default();
+        state.set_needed_pool_frames(vec!["brass".to_string()]);
+        state.apply_if_changed(&env.ctx, Some("test"), None);
+
+        // "none" kills the frame even though the skin defines a default.
+        assert!(state
+            .border_for_with_override("main", Some("none"))
+            .is_none());
+        // A named skin frame wins.
+        let border = state.border_for_with_override("main", Some("ornate")).unwrap();
+        assert_eq!(border.slice, [2.0, 2.0, 2.0, 2.0]);
+        // A pool frame resolves through its sidecar, scale derived so the
+        // largest inset lands at DEFAULT_FRAME_BORDER_PT on screen.
+        let border = state.border_for_with_override("main", Some("Brass")).unwrap();
+        assert_eq!(border.slice, [300.0; 4]);
+        assert!((border.scale - 15.0 / 300.0).abs() < 1e-6);
+        // An unknown name (stale layout) falls back to the skin's mapping.
+        let border = state.border_for_with_override("main", Some("ghost")).unwrap();
+        assert_eq!(border.slice, [1.0, 1.0, 1.0, 1.0]);
+        // Pool frames keep working with no skin at all.
+        state.apply_if_changed(&env.ctx, None, None);
+        assert!(state
+            .border_for_with_override("main", Some("brass"))
+            .is_some());
+        assert!(state.border_for_with_override("main", None).is_none());
+    }
+
+    #[test]
+    fn frame_names_skip_sidecarless_pool_frames_and_reserved_none() {
+        let env = test_env();
+        write_png(&pool_dir().join("frames/withsc.png"), 2);
+        std::fs::write(pool_dir().join("frames/withsc.toml"), "slice = 8\n").unwrap();
+        write_png(&pool_dir().join("frames/nosc.png"), 2);
+        let skin = skin_dir("test");
+        write_png(&skin.join("fancy.png"), 4);
+        std::fs::write(
+            skin.join("skin.toml"),
+            r#"
+            [frames.fancy]
+            image = "fancy.png"
+            slice = [2.0, 2.0, 2.0, 2.0]
+
+            [frames.none]
+            image = "fancy.png"
+            slice = [2.0, 2.0, 2.0, 2.0]
+            "#,
+        )
+        .unwrap();
+
+        let mut state = SkinState::default();
+        state.apply_if_changed(&env.ctx, Some("test"), None);
+        // Sidecar-less pool frames are omitted (they can't nine-slice);
+        // the reserved "none" name never lists.
+        assert_eq!(state.frame_names(), ["fancy", "withsc"]);
+    }
+
+    #[test]
+    fn shared_sheets_load_without_a_skin() {
+        let env = test_env();
+        let icons = crate::config::Config::global_icons_dir().unwrap();
+        write_png(&icons.join("combat.png"), 2);
+        std::fs::write(
+            icons.join("icons.toml"),
+            "[sheets.combat]\npath = \"combat.png\"\ncell = 1\n",
+        )
+        .unwrap();
+
+        let mut state = SkinState::default();
+        state.apply_if_changed(&env.ctx, None, None);
+        let art = state.widget_art().expect("shared sheets alone make art");
+        assert!(art.sheet_cell("combat", 1, false).is_some());
+        assert_eq!(art.sheet_cell_count("combat"), Some(4));
+        assert!(state.sheet_is_shared("combat"));
+        assert!(state.sheet_is_shared("COMBAT"));
+    }
+
+    #[test]
+    fn resolve_image_path_prefers_skin_dir_then_pool_then_names_local() {
+        let env = test_env();
+        let _ = &env; // env redirect + lock only
+        let skin = skin_dir("test");
+        write_png(&skin.join("a.png"), 2);
+        write_png(&pool_dir().join("a.png"), 2);
+        write_png(&pool_dir().join("b.png"), 2);
+
+        assert_eq!(skins::resolve_image_path(&skin, "a.png"), skin.join("a.png"));
+        assert_eq!(
+            skins::resolve_image_path(&skin, "b.png"),
+            pool_dir().join("b.png")
+        );
+        // Missing everywhere: the skin-local path names the natural spot.
+        assert_eq!(skins::resolve_image_path(&skin, "c.png"), skin.join("c.png"));
+    }
+
+    #[test]
+    fn creature_art_is_inert_without_an_active_skin() {
+        let env = test_env();
+        // Art exists in the pool, but the cache gates on an active skin —
+        // the documented coupling the overhaul removes.
+        write_png(&pool_dir().join("creatures/coyote.png"), 2);
+
+        let mut state = SkinState::default();
+        state.apply_if_changed(&env.ctx, None, None);
+        state.prepare_creature_art(&env.ctx, &[("coyote".to_string(), None)]);
+        let cache = state.creature_art.lock().unwrap();
+        assert!(!cache.active);
+        assert!(cache.bases.is_empty());
+    }
+
     #[test]
     fn parse_hex_rgb_accepts_with_and_without_hash() {
         assert_eq!(
