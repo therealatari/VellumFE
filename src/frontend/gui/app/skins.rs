@@ -30,6 +30,8 @@ impl VellumGuiApp {
             doll_grayscale: ui.doll_grayscale,
             hand_icon_size: ui.hand_icon_size,
             status_icons: ui.status_icons.clone(),
+            control_frames: ui.control_frames.clone(),
+            edge_set: ui.edge_set.clone(),
         };
         if self.app_core.config.appearance != next {
             self.app_core.config.appearance = next;

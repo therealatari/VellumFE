@@ -2200,8 +2200,14 @@ impl eframe::App for VellumGuiApp {
             self.tab_settings
                 .values()
                 .filter_map(|settings| settings.skin_frame.clone())
-                .chain(self.ui_settings.default_frame.clone()),
+                .chain(self.ui_settings.default_frame.clone())
+                // Control faces are pool frames too.
+                .chain(self.ui_settings.control_frames.values().cloned()),
         );
+        self.skin_state
+            .set_control_frames(&self.ui_settings.control_frames);
+        self.skin_state
+            .set_edge_set(self.ui_settings.edge_set.as_deref());
         self.skin_state.set_status_icon_config(
             self.ui_settings.status_icons.set.as_deref(),
             &self.ui_settings.status_icons.overrides,
@@ -2213,6 +2219,19 @@ impl eframe::App for VellumGuiApp {
                 .values()
                 .filter_map(|settings| settings.background_image.clone())
                 .chain(self.ui_settings.default_background.clone()),
+        );
+        // Pool dolls bound per-window (doll_set holding a pool path) load
+        // as named sets, so bindings work with or without a skin.
+        self.skin_state.set_needed_pool_dolls(
+            self.app_core
+                .layout
+                .windows
+                .iter()
+                .filter_map(|def| match def {
+                    crate::config::WindowDef::InjuryDoll { data, .. } => data.doll_set.clone(),
+                    _ => None,
+                })
+                .filter(|binding| binding.contains('/')),
         );
         // Pool images named by hand-widget icon states and hotbar button
         // icons load with the skin (declared loads, like frames).

@@ -525,6 +525,9 @@ impl SkinWidgetArt {
             && self.doll_sets.is_empty()
             && self.sheets.is_empty()
             && self.pool_icons.is_empty()
+            // Skinless assignments can be the only art in the bundle.
+            && self.controls.is_empty()
+            && self.edges.is_empty()
     }
 
     /// Registered hotbar sheet names (lowercased), sorted for editor lists.
@@ -720,11 +723,25 @@ pub struct SkinState {
     /// Pool images referenced by hand-widget icon states (pool-relative
     /// paths); like backgrounds, only referenced ones load.
     needed_pool_icons: Vec<String>,
+    /// Pool dolls referenced by per-window `doll_set` bindings (pool
+    /// paths, "dolls/x.png"): each loads as a named doll set keyed by its
+    /// path, so two doll windows can show two different pool dolls with
+    /// no skin at all.
+    needed_pool_dolls: Vec<String>,
     /// Active statusicons pool set (lowercase `<set>_` prefix).
     statusicon_set: Option<String>,
     /// Compass pool set override (lowercase prefix); replaces the skin's
     /// `[compass]` when its rose is present.
     compass_set: Option<String>,
+    /// Control-face assignments (lowercase control key -> pool frame
+    /// stem); each wins over the skin's `[controls.<key>]`.
+    control_frames: HashMap<String, String>,
+    /// Edge-overlay pool set; replaces the skin's `[edges]` when it has
+    /// any strips. "none" strips edge art entirely.
+    edge_set: Option<String>,
+    /// Resolved edge set: lowercase role ("top", "top-ornament", ...) ->
+    /// pool path.
+    pool_edges: HashMap<String, String>,
     /// Build grayscale twins for status icons ("gray when inactive").
     gray_status_icons: bool,
     /// Build grayscale twins for doll art ("grayscale doll").
@@ -788,6 +805,7 @@ impl SkinState {
         self.pool_frames = load_pool_frames(&self.needed_pool_frames);
         self.pool_status_icons = load_pool_set("statusicons", self.statusicon_set.as_deref());
         self.pool_compass = load_pool_set("compass", self.compass_set.as_deref());
+        self.pool_edges = load_pool_set("edges", self.edge_set.as_deref());
         self.widget_art = None;
         self.manifest_mtime = None;
         self.shared_sheet_names.clear();
@@ -1012,6 +1030,19 @@ impl SkinState {
         }
     }
 
+    /// Declare which pool dolls per-window `doll_set` bindings reference
+    /// (pool paths). Call before `apply_if_changed`; a change triggers a
+    /// reload.
+    pub fn set_needed_pool_dolls(&mut self, paths: impl IntoIterator<Item = String>) {
+        let mut paths: Vec<String> = paths.into_iter().collect();
+        paths.sort();
+        paths.dedup();
+        if paths != self.needed_pool_dolls {
+            self.needed_pool_dolls = paths;
+            self.applied = false;
+        }
+    }
+
     /// Declare which grayscale twins settings demand. Twins are built only
     /// while a checkbox asks for them (checked + saved -> next frame) and
     /// dropped when it clears — nobody pays for gray they don't use.
@@ -1029,6 +1060,29 @@ impl SkinState {
         let set = set.map(|s| s.to_ascii_lowercase());
         if set != self.compass_set {
             self.compass_set = set;
+            self.applied = false;
+        }
+    }
+
+    /// Declare the control-face assignments (control key -> pool frame
+    /// stem). Call before `apply_if_changed`; a change triggers a reload.
+    pub fn set_control_frames(&mut self, assignments: &HashMap<String, String>) {
+        let assignments: HashMap<String, String> = assignments
+            .iter()
+            .map(|(key, stem)| (key.to_ascii_lowercase(), stem.to_ascii_lowercase()))
+            .collect();
+        if assignments != self.control_frames {
+            self.control_frames = assignments;
+            self.applied = false;
+        }
+    }
+
+    /// Declare the edge-overlay pool set. Call before `apply_if_changed`;
+    /// a change triggers a reload.
+    pub fn set_edge_set(&mut self, set: Option<&str>) {
+        let set = set.map(|s| s.to_ascii_lowercase());
+        if set != self.edge_set {
+            self.edge_set = set;
             self.applied = false;
         }
     }
@@ -1190,6 +1244,21 @@ impl SkinState {
                 art.controls.insert(key.to_ascii_lowercase(), border);
             }
         }
+        // User control-face assignments beat the skin's `[controls]` —
+        // and work with no skin at all. A name resolves like the window
+        // frame picker: the skin's `[frames.*]` first, then pool frames.
+        for (key, stem) in &self.control_frames {
+            let border = skins::named_frame(&self.manifest, stem)
+                .and_then(|spec| self.resolve_border(spec))
+                .or_else(|| {
+                    self.pool_frames
+                        .get(stem)
+                        .and_then(|spec| self.resolve_border(spec))
+                });
+            if let Some(border) = border {
+                art.controls.insert(key.clone(), border);
+            }
+        }
         // Decorative edge overlays (strip + corner ornament per edge).
         let edge_tex = |path: &Option<String>| -> Option<SkinTexture> {
             path.as_ref()
@@ -1232,6 +1301,54 @@ impl SkinState {
                     scale: spec.scale.max(0.05),
                 },
             );
+        }
+        // An edge pool set replaces the skin's `[edges]` wholesale (same
+        // reasoning as the compass: a set is one coherent look). Roles:
+        // `<side>.png` strips, `<side>-ornament.png` corner art; paint
+        // parameters ride in each strip's edge sidecar. The "none"
+        // sentinel strips edge art entirely.
+        if self
+            .edge_set
+            .as_deref()
+            .is_some_and(|set| set.eq_ignore_ascii_case("none"))
+        {
+            art.edges.clear();
+        } else if !self.pool_edges.is_empty() {
+            art.edges.clear();
+            for side in ["top", "right", "bottom", "left"] {
+                let strip = self.pool_edges.get(side).and_then(tex);
+                let ornament = self
+                    .pool_edges
+                    .get(&format!("{side}-ornament"))
+                    .and_then(tex);
+                if strip.is_none() && ornament.is_none() {
+                    continue;
+                }
+                let sidecar = self
+                    .pool_edges
+                    .get(side)
+                    .map(|path| skins::resolve_image_path(&self.root, path))
+                    .and_then(|abs| {
+                        crate::config::pool::read_sidecar::<crate::config::pool::EdgeSidecar>(&abs)
+                    })
+                    .unwrap_or_default();
+                let scale = sidecar.scale.unwrap_or(1.0).max(0.05);
+                art.edges.insert(
+                    side.to_string(),
+                    ResolvedEdge {
+                        strip,
+                        ornament,
+                        tile: sidecar.tile,
+                        anchor_end: sidecar
+                            .anchor
+                            .as_deref()
+                            .map(|a| a.eq_ignore_ascii_case("end"))
+                            .unwrap_or(false),
+                        thickness: sidecar.thickness.map(|t| t * scale),
+                        scale,
+                    },
+                );
+            }
         }
         // A compass pool set with a rose replaces the skin's compass
         // wholesale (rose + direction overlays are same-canvas art; mixing
@@ -1458,6 +1575,36 @@ impl SkinState {
                 .insert(name.clone(), load_doll_set(name, skin));
         }
 
+        // Pool dolls bound per-window load as named sets keyed by their
+        // pool path — two doll windows can show two different pool dolls,
+        // skin or no skin. Base from the pool image, anchors/dots from its
+        // sidecar, severity as generated dots (like the global override).
+        for path in &self.needed_pool_dolls {
+            let Some(texture) = tex(path) else {
+                continue;
+            };
+            let abs = skins::resolve_image_path(&self.root, path);
+            let sidecar = crate::config::pool::read_sidecar::<crate::config::pool::DollSidecar>(
+                &abs,
+            )
+            .unwrap_or_default();
+            let mut set = LoadedDollSet {
+                base: Some(texture),
+                dots: ResolvedDotStyle::from_spec(&sidecar.dots),
+                ..Default::default()
+            };
+            for (part, anchor) in &sidecar.anchors {
+                set.anchors.insert(
+                    part.to_ascii_lowercase(),
+                    egui::vec2(anchor[0].clamp(0.0, 1.0), anchor[1].clamp(0.0, 1.0)),
+                );
+            }
+            if self.gray_doll {
+                set.base_gray = tex(&format!("{path}#gray"));
+            }
+            art.doll_sets.insert(path.clone(), set);
+        }
+
         art.ui_palette = self.build_ui_palette();
 
         if art.is_empty() {
@@ -1581,9 +1728,11 @@ impl SkinState {
         images.extend(self.pool_frames.values().map(|frame| frame.image.clone()));
         images.extend(self.needed_pool_backgrounds.iter().cloned());
         images.extend(self.needed_pool_icons.iter().cloned());
+        images.extend(self.needed_pool_dolls.iter().cloned());
         images.extend(self.doll_override.iter().cloned());
         images.extend(self.pool_status_icons.values().cloned());
         images.extend(self.pool_compass.values().cloned());
+        images.extend(self.pool_edges.values().cloned());
         images.extend(
             self.statusicon_overrides
                 .values()
@@ -1646,6 +1795,7 @@ impl SkinState {
             );
         }
         if self.gray_doll {
+            gray_paths.extend(self.needed_pool_dolls.iter().cloned());
             match &self.doll_override {
                 Some(path) => gray_paths.push(path.clone()),
                 None => {
@@ -3844,6 +3994,86 @@ cell = 32
         let art = state.widget_art().unwrap();
         assert_eq!(art.icon("stunned").unwrap().texture, icon_id);
         assert!(art.icon_gray("stunned").is_some());
+    }
+
+    #[test]
+    fn pool_dolls_bind_per_window_as_named_sets_without_a_skin() {
+        // Phase 4: a window's doll_set binding may hold a pool path; each
+        // loads as a named set keyed by that path, so two doll windows can
+        // show two different pool dolls with no skin at all.
+        let env = test_env();
+        write_png(&pool_dir().join("dolls/human.png"), 2);
+        write_png(&pool_dir().join("dolls/elf.png"), 4);
+        std::fs::write(
+            pool_dir().join("dolls/elf.toml"),
+            "kind = \"doll\"\n[anchors]\nhead = [0.3, 0.1]\n",
+        )
+        .unwrap();
+
+        let mut state = SkinState::default();
+        state.set_needed_pool_dolls(vec![
+            "dolls/human.png".to_string(),
+            "dolls/elf.png".to_string(),
+        ]);
+        state.apply_if_changed(&env.ctx, None, None);
+        let art = state.widget_art().expect("pool doll sets alone make art");
+        let human = art.doll_set_named("dolls/human.png").unwrap();
+        assert_eq!(human.base.unwrap().size, egui::vec2(2.0, 2.0));
+        let elf = art.doll_set_named("dolls/elf.png").unwrap();
+        assert_eq!(elf.base.unwrap().size, egui::vec2(4.0, 4.0));
+        // Sidecar anchors ride along per window.
+        assert_eq!(elf.anchor("head"), egui::vec2(0.3, 0.1));
+        // Dropping a binding evicts its set on the next apply.
+        state.set_needed_pool_dolls(vec!["dolls/human.png".to_string()]);
+        state.apply_if_changed(&env.ctx, None, None);
+        let art = state.widget_art().unwrap();
+        assert!(art.doll_set_named("dolls/elf.png").is_none());
+        assert!(art.doll_set_named("dolls/human.png").is_some());
+    }
+
+    #[test]
+    fn control_faces_and_edge_sets_work_without_a_skin() {
+        let env = test_env();
+        // A calibrated pool frame assigned as the button face.
+        write_png(&pool_dir().join("frames/brass.png"), 2);
+        std::fs::write(pool_dir().join("frames/brass.toml"), "slice = 300\n").unwrap();
+        // An edge set: top strip with paint params, right ornament only.
+        write_png(&pool_dir().join("edges/vines/top.png"), 2);
+        std::fs::write(
+            pool_dir().join("edges/vines/top.toml"),
+            "kind = \"edge\"\ntile = true\nthickness = 24\nscale = 0.5\n",
+        )
+        .unwrap();
+        write_png(&pool_dir().join("edges/vines/right-ornament.png"), 4);
+
+        let mut state = SkinState::default();
+        let mut controls = HashMap::new();
+        controls.insert("button".to_string(), "brass".to_string());
+        state.set_control_frames(&controls);
+        state.set_needed_pool_frames(vec!["brass".to_string()]);
+        state.set_edge_set(Some("vines"));
+        state.apply_if_changed(&env.ctx, None, None);
+
+        let art = state.widget_art().expect("assignments alone make art");
+        // The button face nine-slices with the frame's sidecar geometry.
+        let button = art.control_border("button", "hover").unwrap();
+        assert_eq!(button.slice, [300.0; 4]);
+        // Edge strips carry their sidecar paint params (thickness × scale).
+        let top = art.edge("top").unwrap();
+        assert!(top.strip.is_some());
+        assert!(top.tile);
+        assert_eq!(top.thickness, Some(12.0));
+        let right = art.edge("right").unwrap();
+        assert!(right.strip.is_none());
+        assert_eq!(right.ornament.unwrap().size, egui::vec2(4.0, 4.0));
+        assert!(art.edge("bottom").is_none());
+
+        // The "none" sentinel strips edge art.
+        state.set_edge_set(Some("none"));
+        state.apply_if_changed(&env.ctx, None, None);
+        let art = state.widget_art().unwrap();
+        assert!(!art.has_edges());
+        assert!(art.control_border("button", "normal").is_some());
     }
 
     #[test]

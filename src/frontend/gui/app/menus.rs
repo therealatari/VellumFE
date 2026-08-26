@@ -75,6 +75,15 @@ pub(super) enum GuiWindowMenuCommand {
     CalibrateDoll,
     /// Open the frame calibrator (nine-slice geometry for pool frames).
     CalibrateFrames,
+    /// Global decorative edge-overlay set (pool `edges/<set>/`); None
+    /// follows the skin, "none" strips edge art.
+    SetEdgeSet(Option<String>),
+    /// Global control-face assignment: a dialog control key rendered with
+    /// a pool frame; None reverts to the skin's `[controls]` art.
+    SetControlFrame {
+        control: String,
+        frame: Option<String>,
+    },
     /// Open the creature calibrator (creature field windows): anchors,
     /// footprint, world size, lift — saved to each image's sidecar.
     CalibrateCreatures,
@@ -308,6 +317,12 @@ pub(super) struct WindowAppearanceView {
     is_doll: bool,
     /// Creature field widget: offer the creature calibrator.
     is_creature_field: bool,
+    /// Pool edge-overlay sets (global pick).
+    edge_sets: Vec<String>,
+    /// Global edge-set selection (None = skin default).
+    edge_set: Option<String>,
+    /// Global control-face assignments (control key -> pool frame stem).
+    control_frames: std::collections::HashMap<String, String>,
     /// Pool doll images as (pool-relative path, display stem, thumbnail).
     doll_images: Vec<(String, String, Option<(egui::TextureId, egui::Vec2)>)>,
     /// Global doll override (pool-relative path); None = skin default.
@@ -498,6 +513,8 @@ impl VellumGuiApp {
             | C::CalibrateDoll
             | C::CalibrateFrames
             | C::CalibrateCreatures
+            | C::SetEdgeSet(_)
+            | C::SetControlFrame { .. }
             | C::EditHandIcons
             | C::EditDashboard
             | C::EditTabs
@@ -682,6 +699,8 @@ impl VellumGuiApp {
             | GuiWindowMenuCommand::CalibrateDoll
             | GuiWindowMenuCommand::CalibrateFrames
             | GuiWindowMenuCommand::CalibrateCreatures
+            | GuiWindowMenuCommand::SetEdgeSet(_)
+            | GuiWindowMenuCommand::SetControlFrame { .. }
             | GuiWindowMenuCommand::SetDollGrayscale(_)
             | GuiWindowMenuCommand::SetCompassSet(_)
             | GuiWindowMenuCommand::SetHandIcon { .. }
@@ -912,6 +931,24 @@ impl VellumGuiApp {
             GuiWindowMenuCommand::CalibrateCreatures => {
                 self.open_creature_calibration();
             }
+            GuiWindowMenuCommand::SetEdgeSet(set) => {
+                self.ui_settings.edge_set = set;
+                self.layout_dirty = true;
+                self.sync_appearance_from_ui_settings();
+            }
+            GuiWindowMenuCommand::SetControlFrame { control, frame } => {
+                let key = control.to_ascii_lowercase();
+                match frame {
+                    Some(stem) => {
+                        self.ui_settings.control_frames.insert(key, stem);
+                    }
+                    None => {
+                        self.ui_settings.control_frames.remove(&key);
+                    }
+                }
+                self.layout_dirty = true;
+                self.sync_appearance_from_ui_settings();
+            }
             GuiWindowMenuCommand::SetDollSet(set) => {
                 self.with_layout_def_for_tab(tab_key, |def| {
                     if let crate::config::WindowDef::InjuryDoll { data, .. } = def {
@@ -1115,6 +1152,9 @@ impl VellumGuiApp {
                 .is_some(),
             is_doll,
             is_creature_field: widget_type == Some(WidgetType::CreatureField),
+            edge_sets: crate::config::pool::set_names("edges"),
+            edge_set: self.ui_settings.edge_set.clone(),
+            control_frames: self.ui_settings.control_frames.clone(),
             doll_images,
             doll_override: self.ui_settings.doll_image.clone(),
             doll_sets: if is_doll {
@@ -2154,10 +2194,14 @@ impl VellumGuiApp {
             if view.doll_images.is_empty() {
                 ui.weak("No dolls in the pool — install some with .jinx list / .jinx install");
             }
-            // Per-window named-set binding: shown when the skin names any
-            // sets, or when this window carries a (possibly stale) binding
-            // so it can still be cleared after a skin switch.
-            if !view.doll_sets.is_empty() || view.doll_set_binding.is_some() {
+            // Per-window binding: a skin's named set, or any pool doll by
+            // its path — two doll windows can show two different dolls
+            // with no skin. Also shown when this window carries a
+            // (possibly stale) binding so it can still be cleared.
+            if !view.doll_sets.is_empty()
+                || !view.doll_images.is_empty()
+                || view.doll_set_binding.is_some()
+            {
                 ui.horizontal(|ui| {
                     ui.label("Doll set");
                     let selected_label = view.doll_set_binding.as_deref().unwrap_or("Default");
@@ -2181,17 +2225,43 @@ impl VellumGuiApp {
                                         Some(GuiWindowMenuCommand::SetDollSet(Some(name.clone())));
                                 }
                             }
-                            // A binding the active skin no longer names:
-                            // keep it listed so it's visible and clearable.
+                            // Pool dolls bind by path — no skin required.
+                            if !view.doll_sets.is_empty() && !view.doll_images.is_empty() {
+                                ui.separator();
+                            }
+                            for (path, stem, _) in &view.doll_images {
+                                let selected = view
+                                    .doll_set_binding
+                                    .as_deref()
+                                    .is_some_and(|bound| bound.eq_ignore_ascii_case(path));
+                                if ui
+                                    .selectable_label(selected, stem)
+                                    .on_hover_text(
+                                        "Pool doll for THIS window only (anchors from its \
+                                         sidecar); the global doll pick above is untouched",
+                                    )
+                                    .clicked()
+                                {
+                                    command =
+                                        Some(GuiWindowMenuCommand::SetDollSet(Some(path.clone())));
+                                }
+                            }
+                            // A binding nothing resolves anymore (deleted
+                            // set or doll): keep it listed so it's visible
+                            // and clearable.
                             if let Some(bound) = view.doll_set_binding.as_deref() {
-                                if !view
+                                let known = view
                                     .doll_sets
                                     .iter()
                                     .any(|name| name.eq_ignore_ascii_case(bound))
-                                {
+                                    || view
+                                        .doll_images
+                                        .iter()
+                                        .any(|(path, _, _)| path.eq_ignore_ascii_case(bound));
+                                if !known {
                                     ui.selectable_label(true, bound).on_hover_text(
-                                        "Not in the active skin — this window shows the \
-                                         default doll until the set exists again",
+                                        "Not resolvable right now — this window shows the \
+                                         default doll until the set or doll exists again",
                                     );
                                 }
                             }
@@ -2589,6 +2659,84 @@ impl VellumGuiApp {
                                 }
                             }
                         });
+                });
+            }
+            // Global decorative edge overlays (pool sets; all windows).
+            if !view.edge_sets.is_empty() || view.edge_set.is_some() {
+                ui.horizontal(|ui| {
+                    ui.label("Edge décor");
+                    let selected_label = match view.edge_set.as_deref() {
+                        None => "Skin default",
+                        Some(set) if set.eq_ignore_ascii_case("none") => "None",
+                        Some(set) => set,
+                    };
+                    egui::ComboBox::from_id_salt("gui_window_edge_set")
+                        .selected_text(selected_label)
+                        .show_ui(ui, |ui| {
+                            if ui
+                                .selectable_label(view.edge_set.is_none(), "Skin default")
+                                .clicked()
+                            {
+                                command = Some(GuiWindowMenuCommand::SetEdgeSet(None));
+                            }
+                            let none_selected = view
+                                .edge_set
+                                .as_deref()
+                                .is_some_and(|set| set.eq_ignore_ascii_case("none"));
+                            if ui.selectable_label(none_selected, "None").clicked() {
+                                command = Some(GuiWindowMenuCommand::SetEdgeSet(Some(
+                                    "none".to_string(),
+                                )));
+                            }
+                            for set in &view.edge_sets {
+                                let selected = view
+                                    .edge_set
+                                    .as_deref()
+                                    .is_some_and(|value| value.eq_ignore_ascii_case(set));
+                                if ui.selectable_label(selected, set).clicked() {
+                                    command =
+                                        Some(GuiWindowMenuCommand::SetEdgeSet(Some(set.clone())));
+                                }
+                            }
+                        });
+                });
+            }
+            // Global control faces: dialog buttons/tabs/etc. rendered with
+            // a pool frame (all windows; wins over the skin's [controls]).
+            if !view.skin_frames.is_empty() {
+                ui.collapsing("Control faces", |ui| {
+                    for control in
+                        ["button", "tab", "dropdown", "link", "progressbar", "titlebar"]
+                    {
+                        ui.horizontal(|ui| {
+                            ui.label(control);
+                            let current = view.control_frames.get(control).map(String::as_str);
+                            egui::ComboBox::from_id_salt(format!("gui_control_face_{control}"))
+                                .selected_text(current.unwrap_or("Skin default"))
+                                .show_ui(ui, |ui| {
+                                    if ui
+                                        .selectable_label(current.is_none(), "Skin default")
+                                        .clicked()
+                                    {
+                                        command = Some(GuiWindowMenuCommand::SetControlFrame {
+                                            control: control.to_string(),
+                                            frame: None,
+                                        });
+                                    }
+                                    for name in &view.skin_frames {
+                                        let selected = current
+                                            .is_some_and(|value| value.eq_ignore_ascii_case(name));
+                                        if ui.selectable_label(selected, name).clicked() {
+                                            command =
+                                                Some(GuiWindowMenuCommand::SetControlFrame {
+                                                    control: control.to_string(),
+                                                    frame: Some(name.clone()),
+                                                });
+                                        }
+                                    }
+                                });
+                        });
+                    }
                 });
             }
         });

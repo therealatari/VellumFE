@@ -260,7 +260,7 @@ pub fn set_members(category: &str, set: &str) -> HashMap<String, String> {
 /// sprite sheets, and `dolls` need a manifest no filename convention can
 /// express — none are sets, and foldering them would only break the paths
 /// skins already reference.
-pub const SET_CATEGORIES: &[&str] = &["compass", "statusicons", "hands"];
+pub const SET_CATEGORIES: &[&str] = &["compass", "statusicons", "hands", "edges"];
 
 /// Suffix of the one-time pre-migration backup folder.
 const MIGRATION_BACKUP_SUFFIX: &str = ".pre-sets.bak";
@@ -513,6 +513,37 @@ pub struct FrameSidecar {
 
 impl SidecarKind for FrameSidecar {
     const KIND: &'static str = "frame";
+    fn declared_kind(&self) -> Option<&str> {
+        self.kind.as_deref()
+    }
+}
+
+/// Edge-strip sidecar: paint parameters for one pool edge image
+/// (`edges/<set>/<side>.png`). Mirrors the manifest `[edges.*]` fields
+/// that describe the strip rather than name images.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct EdgeSidecar {
+    /// Schema discriminator; see [`SidecarKind`].
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// `true` tiles the strip along the edge; `false` (default) stretches.
+    #[serde(default)]
+    pub tile: bool,
+    /// Which end the corner ornament anchors to: "start" (top/left,
+    /// default) or "end" (bottom/right).
+    #[serde(default)]
+    pub anchor: Option<String>,
+    /// Inward reach of the overlay in source px (× `scale`); absent = the
+    /// strip's own cross-axis size.
+    #[serde(default)]
+    pub thickness: Option<f32>,
+    /// Source-px → on-screen-point multiplier.
+    #[serde(default)]
+    pub scale: Option<f32>,
+}
+
+impl SidecarKind for EdgeSidecar {
+    const KIND: &'static str = "edge";
     fn declared_kind(&self) -> Option<&str> {
         self.kind.as_deref()
     }

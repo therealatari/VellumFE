@@ -50,6 +50,15 @@ pub struct AppearanceSettings {
     /// grayscale rules).
     #[serde(default, skip_serializing_if = "StatusIconSettings::is_default")]
     pub status_icons: StatusIconSettings,
+    /// Dialog-control face assignments: control key ("button",
+    /// "button.hover", "dropdown", "tab", "link", "progressbar",
+    /// "titlebar") -> pool frame stem. Wins over the skin's `[controls]`.
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub control_frames: std::collections::HashMap<String, String>,
+    /// Decorative edge-overlay set from the pool (`edges/<set>/`); None
+    /// follows the active skin's `[edges]`, "none" strips edge art.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edge_set: Option<String>,
 }
 
 impl Default for AppearanceSettings {
@@ -63,6 +72,8 @@ impl Default for AppearanceSettings {
             doll_grayscale: false,
             hand_icon_size: default_hand_icon_size(),
             status_icons: StatusIconSettings::default(),
+            control_frames: std::collections::HashMap::new(),
+            edge_set: None,
         }
     }
 }

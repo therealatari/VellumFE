@@ -480,6 +480,16 @@ pub struct GuiUiSettings {
     /// about two text lines.
     #[serde(default = "default_hand_icon_size")]
     pub hand_icon_size: f32,
+
+    /// Dialog-control face assignments: control key -> pool frame stem
+    /// (wins over the skin's `[controls]`).
+    #[serde(default)]
+    pub control_frames: std::collections::HashMap<String, String>,
+
+    /// Decorative edge-overlay set from the pool (`edges/<set>/`); None
+    /// follows the active skin's `[edges]`, "none" strips edge art.
+    #[serde(default)]
+    pub edge_set: Option<String>,
 }
 
 /// How the shell draws the boundary between zones.
@@ -574,6 +584,8 @@ impl Default for GuiUiSettings {
             snap_move_sizes_to_grid: false,
             snap_show_guides: default_true(),
             hand_icon_size: default_hand_icon_size(),
+            control_frames: std::collections::HashMap::new(),
+            edge_set: None,
         }
     }
 }
