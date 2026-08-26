@@ -129,7 +129,7 @@ impl VellumGuiApp {
             .creature_art
             .as_ref()
             .map(|a| a.lock().expect("creature art lock"));
-        let art_cache = art_cache.as_deref().filter(|c| c.active);
+        let art_cache = art_cache.as_deref();
 
         // Far -> near (painter's algorithm), ground-z keyed in the solver.
         for &i in &field.draw_order() {

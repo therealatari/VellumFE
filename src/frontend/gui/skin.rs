@@ -644,14 +644,13 @@ pub struct CreatureArtCache {
     pub variant_bases: HashMap<String, Option<CreatureArt>>,
     /// Overlay manifest path -> texture (None = load failed).
     pub overlays: HashMap<String, Option<egui::TextureHandle>>,
-    /// The manifest's `[creature_card]` template.
+    /// The `[creature_card]` template: the active skin's, or the default
+    /// template (pool resolve cascade + convention status overlays) when
+    /// no skin is loaded — creature art never requires a skin.
     pub card: skins::CreatureCardSkin,
-    /// Skin root for the resolve cascade.
+    /// Resolve root: the skin dir, or the image pool when skinless.
     root: PathBuf,
     skin_name: String,
-    /// False when no skin is loaded — renderers fall back to placeholder
-    /// standees without touching the cache.
-    pub active: bool,
 }
 
 // TextureHandle has no Debug; summarize (WidgetRenderSettings derives it).
@@ -668,7 +667,6 @@ impl std::fmt::Debug for CreatureArt {
 impl std::fmt::Debug for CreatureArtCache {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CreatureArtCache")
-            .field("active", &self.active)
             .field("bases", &self.bases.len())
             .field("overlays", &self.overlays.len())
             .finish_non_exhaustive()
@@ -820,16 +818,27 @@ impl SkinState {
         self.sync_textures(ctx, active.unwrap_or("shared-icons"));
         self.widget_art = self.build_widget_art();
 
-        // Reset the creature-card art cache for the new skin: bases resolve
-        // lazily per creature (prepare_creature_art), overlay textures load
-        // there too on first demand.
+        // Reset the creature-card art cache: bases resolve lazily per
+        // creature (prepare_creature_art), overlay textures load there too
+        // on first demand. Skinless, the template is the built-in default
+        // (pool resolve cascade) rooted at the pool, so creature art never
+        // requires a skin; convention status overlays fold in either way.
         {
+            let root = if active.is_some() {
+                self.root.clone()
+            } else {
+                crate::config::Config::global_images_dir().unwrap_or_else(|_| self.root.clone())
+            };
+            let mut card = self.manifest.creature_card.clone();
+            card.overlays
+                .extend(crate::core::creature_cards::convention_status_overlays(
+                    &card.overlays,
+                ));
             let mut cache = self.creature_art.lock().expect("creature art lock");
             *cache = CreatureArtCache {
-                card: self.manifest.creature_card.clone(),
-                root: self.root.clone(),
-                skin_name: active.unwrap_or_default().to_string(),
-                active: active.is_some(),
+                card,
+                root,
+                skin_name: active.unwrap_or("pool").to_string(),
                 ..Default::default()
             };
         }
@@ -851,9 +860,6 @@ impl SkinState {
     ) {
         let cache = self.creature_art.clone();
         let mut cache = cache.lock().expect("creature art lock");
-        if !cache.active {
-            return;
-        }
         for (noun, family) in wanted {
             if cache.bases.contains_key(noun.as_str()) {
                 continue;
@@ -3841,18 +3847,46 @@ cell = 32
     }
 
     #[test]
-    fn creature_art_is_inert_without_an_active_skin() {
+    fn creature_art_resolves_from_the_pool_without_a_skin() {
+        // Phase 4: the active-skin gate is gone — pool creature art plus
+        // the convention status overlays load with no skin at all.
         let env = test_env();
-        // Art exists in the pool, but the cache gates on an active skin —
-        // the documented coupling the overhaul removes.
         write_png(&pool_dir().join("creatures/coyote.png"), 2);
+        write_png(&pool_dir().join("creatures/status/rooted.png"), 2);
+        std::fs::write(
+            pool_dir().join("creatures/coyote.toml"),
+            "kind = \"creature\"\nsize = 1.5\n[anchors]\nfeet = [0.5, 0.9]\n",
+        )
+        .unwrap();
 
         let mut state = SkinState::default();
         state.apply_if_changed(&env.ctx, None, None);
         state.prepare_creature_art(&env.ctx, &[("coyote".to_string(), None)]);
         let cache = state.creature_art.lock().unwrap();
-        assert!(!cache.active);
-        assert!(cache.bases.is_empty());
+        let art = cache.base("coyote").expect("pool art resolves skinless");
+        assert_eq!(art.feet, [0.5, 0.9]);
+        assert_eq!(art.size, Some(1.5));
+        // The convention overlay was synthesized, bound to its flag, and
+        // its texture loaded.
+        let overlay = cache
+            .card
+            .overlays
+            .iter()
+            .find(|o| o.image == "creatures/status/rooted.png")
+            .expect("convention overlay present");
+        assert!(matches!(
+            &overlay.when,
+            crate::config::Condition::CrtrStatus { id, active: true } if id == "rooted"
+        ));
+        assert!(cache
+            .overlays
+            .get("creatures/status/rooted.png")
+            .is_some_and(|tex| tex.is_some()));
+        // An unknown noun still negative-caches instead of erroring.
+        drop(cache);
+        state.prepare_creature_art(&env.ctx, &[("gryphon".to_string(), None)]);
+        let cache = state.creature_art.lock().unwrap();
+        assert!(cache.bases.get("gryphon").is_some_and(|art| art.is_none()));
     }
 
     #[test]

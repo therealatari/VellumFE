@@ -186,6 +186,48 @@ pub fn resolve_base_image(
         .find(|path| path.is_file())
 }
 
+/// Zero-config status overlays from the pool convention: any image at
+/// `creatures/status/<id>.png` binds to the creature-status flag of the
+/// same name (body-wrapped, feed-sourced) with no TOML at all — drop
+/// `rooted.png` in the folder and rooted creatures wear it. An authored
+/// overlay already testing that flag suppresses the convention one, so
+/// explicit configs (custom anchors, animation, ranked art) stay the
+/// power tier. Flag ids are open-ended, matching `CrtrStatus` semantics.
+pub fn convention_status_overlays(existing: &[CardOverlay]) -> Vec<CardOverlay> {
+    let mut covered: Vec<String> = Vec::new();
+    for overlay in existing {
+        overlay.when.referenced_crtr_status_ids(&mut covered);
+    }
+    let mut out: Vec<CardOverlay> = Vec::new();
+    for image in crate::config::pool::list_category("creatures") {
+        if !image
+            .set
+            .as_deref()
+            .is_some_and(|set| set.eq_ignore_ascii_case("status"))
+        {
+            continue;
+        }
+        let id = image.stem().to_ascii_lowercase();
+        if covered.iter().any(|c| c.eq_ignore_ascii_case(&id)) {
+            continue;
+        }
+        out.push(CardOverlay {
+            image: image.pool_path.clone(),
+            space: Default::default(),
+            anchor: None,
+            // Above authored layer-0 art by default; explicit overlays
+            // pick their own layer to reorder.
+            layer: 10,
+            source: Default::default(),
+            timeout_s: None,
+            animate: None,
+            when: crate::config::Condition::CrtrStatus { id, active: true },
+        });
+    }
+    out.sort_by(|a, b| a.image.cmp(&b.image));
+    out
+}
+
 /// The `{family}` value for a noun, from the bundled bestiary: filled only
 /// when every bestiary entry sharing the noun agrees on a family (an
 /// ambiguous noun like "troll" resolves art by noun alone rather than
@@ -352,6 +394,49 @@ pub fn canonical_part(name: &str) -> Option<&'static str> {
 mod card_tests {
     use super::*;
     use crate::config::skins::{AnimateKind, OverlaySource, OverlaySpace, SkinManifest};
+
+    #[test]
+    fn convention_status_overlays_bind_flags_and_respect_authored() {
+        let _guard = crate::config::VELLUM_FE_DIR_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("VELLUM_FE_DIR", dir.path());
+        crate::config::pool::invalidate_cache();
+
+        let status = crate::config::Config::global_image_category_dir("creatures")
+            .unwrap()
+            .join("status");
+        std::fs::create_dir_all(&status).unwrap();
+        std::fs::write(status.join("rooted.png"), b"x").unwrap();
+        std::fs::write(status.join("stunned.png"), b"x").unwrap();
+
+        // The author already handles rooted; only stunned synthesizes.
+        let skin: CreatureCardSkin = toml::from_str(
+            r#"
+            [[overlays]]
+            image = "fancy_roots.png"
+            anchor = "feet"
+            when = { type = "crtr_status", id = "ROOTED" }
+            "#,
+        )
+        .unwrap();
+        let extra = convention_status_overlays(&skin.overlays);
+        assert_eq!(extra.len(), 1);
+        let overlay = &extra[0];
+        assert_eq!(overlay.image, "creatures/status/stunned.png");
+        assert!(overlay.anchor.is_none(), "convention art body-wraps");
+        assert_eq!(overlay.source, OverlaySource::Feed);
+        assert!(matches!(
+            &overlay.when,
+            crate::config::Condition::CrtrStatus { id, active: true } if id == "stunned"
+        ));
+
+        // No authored overlays: both flags bind.
+        assert_eq!(convention_status_overlays(&[]).len(), 2);
+
+        std::env::remove_var("VELLUM_FE_DIR");
+    }
 
     /// The plan's reference manifest, parsed for real: cascade, anchors,
     /// wound art, a feed overlay, a screen-space animated overlay, a
