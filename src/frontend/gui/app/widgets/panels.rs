@@ -489,8 +489,22 @@ impl VellumGuiApp {
             .as_ref()
             .map(|(controls, _)| Self::dialog_grid_scale(ui, dialog, controls))
             .unwrap_or(1.0);
+        // Never reserve more width than the window actually offers: an
+        // allocation wider than the available space becomes a floor egui
+        // enforces on the window, which is what pinned resident panels at
+        // their content width and made them un-shrinkable. Take the width
+        // on offer and, when it is narrower than the grid wants, shrink the
+        // grid to fit instead of overflowing it.
+        let avail_w = ui.available_width().max(1.0);
+        let want_w = content_w * scale;
+        let fit = if want_w > avail_w {
+            avail_w / want_w
+        } else {
+            1.0
+        };
+        let scale = scale * fit;
         let (canvas_rect, _) = ui.allocate_exact_size(
-            egui::vec2(content_w * scale, content_h * scale),
+            egui::vec2((content_w * scale).min(avail_w), content_h * scale),
             egui::Sense::hover(),
         );
         let origin = canvas_rect.min;
@@ -835,13 +849,18 @@ impl VellumGuiApp {
     /// dialog's shape exactly (anchors, stretches, and alignment all scale
     /// together, so nothing can newly overlap).
     ///
-    /// Measured from the dialog's STATIC text controls only — buttons,
-    /// labels, positioned links. Dropdowns are deliberately excluded: their
-    /// option lists change with the room (combat's target list), and a
-    /// scale that tracked them would resize the whole panel as creatures
-    /// wander in and out. The clamp floor leaves well-fitting dialogs
-    /// untouched; the ceiling keeps one verbose label from ballooning the
-    /// panel — a still-tight label truncates no worse than before.
+    /// Measured from CLICKABLE text controls only — buttons and positioned
+    /// links, where a clipped label costs you the ability to read what you
+    /// are about to press. Display-only labels are deliberately excluded:
+    /// read-only reporter panels (UberBar) are nothing but labels in tight
+    /// slots, and measuring them scaled those panels up bodily for no
+    /// interaction benefit. Dropdowns are excluded too — their option lists
+    /// change with the room (combat's target list), so a scale that tracked
+    /// them would resize the panel as creatures wander in and out.
+    ///
+    /// The clamp floor leaves well-fitting dialogs untouched; the ceiling
+    /// keeps one verbose label from ballooning the panel — a still-tight
+    /// label truncates no worse than before.
     pub(in crate::frontend::gui::app) fn dialog_grid_scale(
         ui: &egui::Ui,
         dialog: &crate::data::ui_state::DialogState,
@@ -851,7 +870,6 @@ impl VellumGuiApp {
         const GRID_SCALE_MAX: f32 = 1.6;
         let style = ui.style();
         let button_font = egui::TextStyle::Button.resolve(style);
-        let body_font = egui::TextStyle::Body.resolve(style);
         let small_font = egui::TextStyle::Small.resolve(style);
         let button_pad = style.spacing.button_padding.x * 2.0 + 2.0;
         let width_of = |text: &str, font: &egui::FontId| -> f32 {
@@ -873,10 +891,6 @@ impl VellumGuiApp {
                     .buttons
                     .get(i)
                     .map(|b| width_of(&b.label, &button_font) + button_pad),
-                PositionedControlKind::Label(i) => dialog
-                    .display_labels
-                    .get(i)
-                    .map(|l| width_of(&l.value, &body_font)),
                 PositionedControlKind::Link(i) => dialog
                     .links
                     .get(i)

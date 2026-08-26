@@ -276,12 +276,15 @@ fn ordered_selection_endpoints_orders_reversed_drags() {
     );
 }
 
-/// The dialog grid scale grows a panel exactly when its labels outgrow the
-/// game's declared rects, and never shrinks or balloons one.
+/// The dialog grid scale grows a panel exactly when its CLICKABLE labels
+/// outgrow the game's declared rects, never shrinks or balloons one, and
+/// never rescales a display-only panel (UberBar's read-only label grid was
+/// bodily enlarged and could not be shrunk again).
 #[test]
 fn dialog_grid_scale_fits_labels_and_clamps() {
     use crate::data::ui_state::{
-        DialogButton, DialogControlLayout, DialogState, PositionedControl, PositionedControlKind,
+        DialogButton, DialogControlLayout, DialogLabel, DialogState, PositionedControl,
+        PositionedControlKind,
     };
     use eframe::egui;
 
@@ -348,6 +351,32 @@ fn dialog_grid_scale_fits_labels_and_clamps() {
             &verbose,
             &controls_for(&verbose),
         ));
+
+        // A read-only reporter panel (UberBar): nothing but display labels
+        // in tight slots. Nothing here is clickable, so a clipped label
+        // costs nothing to press wrongly — it must NOT rescale the panel.
+        let mut reporter = DialogState::empty("UberBar".into(), None);
+        reporter.display_labels.push(DialogLabel {
+            id: "ublogv".into(),
+            value: "Encumbrance: None".into(),
+            layout: Some(DialogControlLayout {
+                top: Some(0),
+                left: Some(0),
+                width: Some(50),
+                height: Some(15),
+                ..Default::default()
+            }),
+            justify: None,
+        });
+        let label_controls = vec![PositionedControl {
+            kind: PositionedControlKind::Label(0),
+            rect: (0.0, 0.0, 50.0, 15.0),
+        }];
+        scales.push(VellumGuiApp::dialog_grid_scale(
+            ui,
+            &reporter,
+            &label_controls,
+        ));
     });
 
     assert_eq!(scales[0], 1.0, "fitting labels must not rescale the panel");
@@ -357,6 +386,10 @@ fn dialog_grid_scale_fits_labels_and_clamps() {
         scales[1]
     );
     assert_eq!(scales[2], 1.6, "runaway labels stop at the clamp");
+    assert_eq!(
+        scales[3], 1.0,
+        "a display-only label grid must never be rescaled (UberBar regression)"
+    );
 }
 
 /// The frame-start claim pass must make buffer copy independent of window

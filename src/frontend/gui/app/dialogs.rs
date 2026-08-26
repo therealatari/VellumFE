@@ -73,8 +73,14 @@ impl VellumGuiApp {
                     // game sized for its own smaller dialog font (see
                     // dialog_grid_scale).
                     let scale = Self::dialog_grid_scale(ui, &dialog, &controls);
+                    // Shrink to fit rather than reserving more than the
+                    // window offers: an oversized allocation becomes a
+                    // minimum egui enforces, pinning the window open.
+                    let avail_w = ui.available_width().max(1.0);
+                    let want_w = content_w * scale;
+                    let scale = scale * if want_w > avail_w { avail_w / want_w } else { 1.0 };
                     let (canvas_rect, _) = ui.allocate_exact_size(
-                        egui::vec2(content_w * scale, content_h * scale),
+                        egui::vec2((content_w * scale).min(avail_w), content_h * scale),
                         egui::Sense::hover(),
                     );
                     let origin = canvas_rect.min;
