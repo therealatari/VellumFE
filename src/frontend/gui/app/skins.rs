@@ -9,10 +9,30 @@ impl VellumGuiApp {
     /// look with them), the appearance store is the canonical value core
     /// and web read.
     pub(super) fn set_active_skin(&mut self, skin: Option<String>) {
-        self.ui_settings.active_skin = skin.clone();
+        self.ui_settings.active_skin = skin;
         self.layout_dirty = true;
-        if self.app_core.config.appearance.active_skin != skin {
-            self.app_core.config.appearance.active_skin = skin;
+        self.sync_appearance_from_ui_settings();
+    }
+
+    /// Sync the canonical appearance store from the layout's live look and
+    /// persist when anything changed. The explicit setters call this for
+    /// immediacy (core reads the in-memory store live) and the layout
+    /// save/load funnels call it as the catch-all — every appearance
+    /// mutation marks the layout dirty, so nothing escapes.
+    pub(super) fn sync_appearance_from_ui_settings(&mut self) {
+        let ui = &self.ui_settings;
+        let next = crate::config::appearance::AppearanceSettings {
+            active_skin: ui.active_skin.clone(),
+            doll_image: ui.doll_image.clone(),
+            compass_set: ui.compass_set.clone(),
+            default_frame: ui.default_frame.clone(),
+            default_background: ui.default_background.clone(),
+            doll_grayscale: ui.doll_grayscale,
+            hand_icon_size: ui.hand_icon_size,
+            status_icons: ui.status_icons.clone(),
+        };
+        if self.app_core.config.appearance != next {
+            self.app_core.config.appearance = next;
             self.save_appearance();
         }
     }
@@ -197,12 +217,9 @@ impl VellumGuiApp {
     /// checkpoints, appearance store for core/web. The doll switches next
     /// frame via `SkinState::apply_if_changed`.
     pub(super) fn set_doll_image(&mut self, image: Option<String>) {
-        self.ui_settings.doll_image = image.clone();
+        self.ui_settings.doll_image = image;
         self.layout_dirty = true;
-        if self.app_core.config.appearance.doll_image != image {
-            self.app_core.config.appearance.doll_image = image;
-            self.save_appearance();
-        }
+        self.sync_appearance_from_ui_settings();
     }
 
     /// Handle `action:setskin:<name>` from dot-commands or menus. "none"

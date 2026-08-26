@@ -18,7 +18,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppearanceSettings {
     /// Active GUI skin (dir name under `global/skins/`); None = plain
     /// theme colors.
@@ -28,6 +28,143 @@ pub struct AppearanceSettings {
     /// the active skin's doll.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub doll_image: Option<String>,
+    /// Compass art set from the pool (`compass/<set>/`); None follows the
+    /// active skin's `[compass]`. "none" strips compass art entirely.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compass_set: Option<String>,
+    /// Global default frame for windows without a per-window override (a
+    /// skin `[frames.*]` name or pool frame stem).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_frame: Option<String>,
+    /// Global default background (pool-relative path, or "none" to
+    /// suppress skin backgrounds everywhere).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_background: Option<String>,
+    /// Render the injury doll's art in grayscale (dots keep color).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub doll_grayscale: bool,
+    /// Hand widget icon size in points.
+    #[serde(default = "default_hand_icon_size")]
+    pub hand_icon_size: f32,
+    /// Status icon art selection (pool set + per-indicator overrides +
+    /// grayscale rules).
+    #[serde(default, skip_serializing_if = "StatusIconSettings::is_default")]
+    pub status_icons: StatusIconSettings,
+}
+
+impl Default for AppearanceSettings {
+    fn default() -> Self {
+        Self {
+            active_skin: None,
+            doll_image: None,
+            compass_set: None,
+            default_frame: None,
+            default_background: None,
+            doll_grayscale: false,
+            hand_icon_size: default_hand_icon_size(),
+            status_icons: StatusIconSettings::default(),
+        }
+    }
+}
+
+/// Default matches Wrayth, whose hand icons span about two text lines.
+pub fn default_hand_icon_size() -> f32 {
+    30.0
+}
+
+/// Which art status indicators use, resolved ahead of the built-in vector
+/// pictograms: an optional statusicons pool set supplies defaults by glyph
+/// name, and per-indicator overrides pin any icon reference.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct StatusIconSettings {
+    /// Pool set (`global/images/statusicons/<set>/`); None = no pool
+    /// defaults (skin `[icons]` / vector only).
+    #[serde(default)]
+    pub set: Option<String>,
+    /// Indicator id (any case) -> icon override. `Default` entries are
+    /// dropped on save; absence means "no override".
+    #[serde(default)]
+    pub overrides: std::collections::HashMap<String, crate::data::IconRef>,
+    /// Inactive statuses render their icon in grayscale (instead of the
+    /// default alpha dim). Off = no gray twins are ever built (unless a
+    /// per-indicator override below turns one on).
+    #[serde(default)]
+    pub gray_inactive: bool,
+    /// Per-indicator exceptions to `gray_inactive` (indicator id → force
+    /// on/off). Absent = follow the global toggle.
+    #[serde(default)]
+    pub gray_overrides: std::collections::HashMap<String, bool>,
+}
+
+impl StatusIconSettings {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Repoint image overrides whose art moved into a set folder, returning
+    /// whether anything changed (the caller persists if so).
+    ///
+    /// An override stores a pool path (`statusicons/runic_stunned.png`).
+    /// Foldering the pool makes that path stale, and a stale override
+    /// renders as a missing icon rather than an error — so this rewrites to
+    /// the foldered path when the flat file is gone and the set folder has
+    /// the same role.
+    ///
+    /// Deliberately resolved against the pool as it is now, not against the
+    /// migration's return value: a user who folders their art by hand, or
+    /// whose migration half-completed, gets healed the same way. Overrides
+    /// whose file still exists are never touched.
+    pub fn rewrite_pool_paths(&mut self) -> bool {
+        let mut changed = false;
+        for icon in self.overrides.values_mut() {
+            let crate::data::IconRef::Image { path } = icon else {
+                continue;
+            };
+            // "statusicons/runic_stunned.png" -> category "statusicons",
+            // file "runic_stunned.png". A path already containing a set
+            // folder has two slashes and is left alone.
+            let Some((category, file)) = path.split_once('/') else {
+                continue;
+            };
+            if file.contains('/') {
+                continue;
+            }
+            let stem = file.rsplit_once('.').map_or(file, |(stem, _)| stem);
+            let Some((set, role)) = stem.split_once('_') else {
+                continue;
+            };
+            if set.is_empty() || role.is_empty() {
+                continue;
+            }
+            // set_members is keyed by role, so the lookup is direct — and it
+            // returns the foldered path only if that art actually exists.
+            let Some(foldered) =
+                crate::config::pool::set_members(category, set).remove(&role.to_ascii_lowercase())
+            else {
+                continue;
+            };
+            if foldered != *path {
+                *path = foldered;
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    /// Whether this indicator grays out when inactive: its override if it
+    /// has one, else the global toggle.
+    pub fn gray_for(&self, indicator_id: &str) -> bool {
+        self.gray_overrides
+            .get(indicator_id)
+            .or_else(|| self.gray_overrides.get(&indicator_id.to_ascii_uppercase()))
+            .copied()
+            .unwrap_or(self.gray_inactive)
+    }
+
+    /// Whether ANY indicator needs a gray twin built.
+    pub fn any_gray(&self) -> bool {
+        self.gray_inactive || self.gray_overrides.values().any(|on| *on)
+    }
 }
 
 impl AppearanceSettings {
@@ -136,6 +273,7 @@ mod tests {
         let settings = AppearanceSettings {
             active_skin: Some("stealth".into()),
             doll_image: Some("dolls/elf.png".into()),
+            ..Default::default()
         };
         settings.save(Some("Ultz")).unwrap();
         assert_eq!(AppearanceSettings::load_or_migrate(Some("Ultz")), settings);

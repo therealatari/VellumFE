@@ -224,6 +224,10 @@ impl VellumGuiApp {
     /// runs on the writer thread. Falls back to a synchronous write when the
     /// worker is gone (shutdown path).
     pub(super) fn save_layout_state(&mut self) {
+        // Catch-all appearance sync: every appearance mutation dirties the
+        // layout, so the debounced save is where fields without explicit
+        // setter hooks (compass set, icon overrides, ...) land in the store.
+        self.sync_appearance_from_ui_settings();
         let Some(layout) = self.build_layout_snapshot(LayoutSaveMode::Autosave) else {
             return;
         };
@@ -335,14 +339,7 @@ impl VellumGuiApp {
         // The loaded layout's look becomes the canonical appearance
         // (preset semantics: a layout/checkpoint carries a look, loading
         // it applies the look by writing the store).
-        let appearance = &mut self.app_core.config.appearance;
-        if appearance.active_skin != self.ui_settings.active_skin
-            || appearance.doll_image != self.ui_settings.doll_image
-        {
-            appearance.active_skin = self.ui_settings.active_skin.clone();
-            appearance.doll_image = self.ui_settings.doll_image.clone();
-            self.save_appearance();
-        }
+        self.sync_appearance_from_ui_settings();
         // Theme: config.active_theme is the live source of truth (the frame
         // loop's apply_theme_if_changed watches it). A recorded theme mirrors
         // in; None (legacy file) keeps the current theme. A custom theme the
