@@ -782,7 +782,7 @@ impl AppCore {
             parts,
             character: self.config.character.as_deref(),
             layout_toml,
-            active_skin: self.config.active_skin.as_deref(),
+            active_skin: self.config.appearance.active_skin.as_deref(),
             active_theme: Some(self.config.active_theme.as_str()),
             quickbars_toml,
             settings_toml,
@@ -940,8 +940,11 @@ impl AppCore {
                     Err(e) => self.add_system_message(&format!("Macros did not reload: {e:#}")),
                 }
                 if let Some(skin) = &outcome.skin {
-                    self.config.active_skin = Some(skin.clone());
-                    let _ = self.save_config();
+                    self.config.appearance.active_skin = Some(skin.clone());
+                    let _ = self
+                        .config
+                        .appearance
+                        .save(self.config.character.as_deref());
                     self.add_system_message(&format!(
                         "Active skin set to '{skin}' (the GUI applies it on next load or via Settings > Appearance)"
                     ));

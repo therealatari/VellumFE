@@ -519,15 +519,6 @@ impl Config {
         // Active theme: character overrides global
         self.active_theme = character_config.active_theme;
 
-        // Active skin: character overrides global. Without this line the
-        // skin picked in-app never survived a restart — Config::save
-        // writes the whole config (skin included) to the profile file,
-        // and the merge silently dropped it on the next load.
-        self.active_skin = character_config.active_skin;
-
-        // Doll image override: same restart-amnesia trap as active_skin.
-        self.doll_image = character_config.doll_image;
-
         // Streams config: character overrides global
         self.streams = character_config.streams;
 
@@ -561,6 +552,10 @@ impl Config {
         // keys a file actually states override the layer below — a profile
         // file that sets one value no longer resets whole sections.
         let mut config = Self::load_layered_config(character)?;
+
+        // Appearance assignments live in their own store (with a one-time
+        // migration from the legacy config.toml mirror keys).
+        config.appearance = super::appearance::AppearanceSettings::load_or_migrate(character);
 
         // Legacy [streams] drop_unsubscribed entries become routes."<id>" =
         // "discard" and the drop list is cleared, so runtime code has one
@@ -836,8 +831,7 @@ impl Default for Config {
             character: None,                // Set at runtime via load_with_options
             menu_keybinds: MenuKeybinds::default(),
             active_theme: default_theme_name(),
-            active_skin: None,
-            doll_image: None,
+            appearance: super::appearance::AppearanceSettings::default(),
         }
     }
 }
@@ -866,81 +860,11 @@ mod tests {
         assert_eq!(shipped.ui.perf_stats_width, code.ui.perf_stats_width);
     }
 
-    /// REPRO: `.setskin none` must survive a restart. Drives the real
-    /// save->load path (save_sparse then load_layered_config), not the
-    /// legacy merge_with.
-    #[test]
-    fn setskin_none_survives_reload() {
-        let _guard = crate::config::VELLUM_FE_DIR_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let dir = tempfile::tempdir().expect("tempdir");
-        std::env::set_var("VELLUM_FE_DIR", dir.path());
-
-        let character = Some("ReproChar");
-        let base = Config::default();
-        let path = Config::config_path(character).expect("config path");
-        std::fs::create_dir_all(path.parent().unwrap()).expect("mkdir profile");
-
-        // 1. A skin is active and saved to the profile.
-        let mut config = Config::default();
-        config.active_skin = Some("stealth".to_string());
-        Config::save_sparse(&path, &config, &base).expect("save skin");
-        let on_disk = std::fs::read_to_string(&path).expect("read");
-        assert!(on_disk.contains("stealth"), "setup failed: {}", on_disk);
-
-        // 2. `.setskin none` clears it and saves.
-        config.active_skin = None;
-        Config::save_sparse(&path, &config, &base).expect("save none");
-        let after_none = std::fs::read_to_string(&path).expect("read");
-
-        // 3. Restart: what does the loader actually see?
-        let reloaded = Config::load_layered_config(character).expect("reload");
-
-        std::env::remove_var("VELLUM_FE_DIR");
-        assert_eq!(
-            reloaded.active_skin, None,
-            "skin resurrected after .setskin none; file still reads:\n{}",
-            after_none
-        );
-    }
-
-    /// `.setskin none` against a skin set in the GLOBAL layer. Pruning the
-    /// profile line alone is not enough here — with nothing stated, the
-    /// profile re-inherits the global skin.
-    #[test]
-    fn setskin_none_survives_reload_over_global_skin() {
-        let _guard = crate::config::VELLUM_FE_DIR_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let dir = tempfile::tempdir().expect("tempdir");
-        std::env::set_var("VELLUM_FE_DIR", dir.path());
-
-        let character = Some("ReproChar");
-        let global_path = Config::common_config_path().expect("global path");
-        std::fs::create_dir_all(global_path.parent().unwrap()).expect("mkdir global");
-        std::fs::write(&global_path, "active_skin = \"stealth\"\n").expect("write global");
-
-        let path = Config::config_path(character).expect("config path");
-        std::fs::create_dir_all(path.parent().unwrap()).expect("mkdir profile");
-
-        // The user clears the skin; base is the global layer, as in save().
-        let base = Config::load_global_layer().expect("global layer");
-        assert_eq!(base.active_skin.as_deref(), Some("stealth"), "setup");
-        let mut config = base.clone();
-        config.active_skin = None;
-        Config::save_sparse(&path, &config, &base).expect("save none");
-        let after_none = std::fs::read_to_string(&path).unwrap_or_default();
-
-        let reloaded = Config::load_layered_config(character).expect("reload");
-
-        std::env::remove_var("VELLUM_FE_DIR");
-        assert_eq!(
-            reloaded.active_skin, None,
-            "global skin re-inherited after .setskin none; profile reads:\n{}",
-            after_none
-        );
-    }
+    // The `.setskin none` restart-amnesia repro tests lived here while
+    // active_skin/doll_image were layered config.toml settings; the whole
+    // bug class is structural to sparse layering and is why appearance
+    // moved to its own whole-file store — see config::appearance's tests
+    // for the surviving semantics (clear persists, no resurrection).
 
     /// Every serialized root field that Config::save writes into the
     /// profile config must survive merge_with — fields missing from the
@@ -950,7 +874,6 @@ mod tests {
     fn merge_with_keeps_profile_root_fields() {
         let mut character = Config::default();
         character.active_theme = "custom".to_string();
-        character.active_skin = Some("parchment".to_string());
         character.web.enabled = true;
         character.go2.saved.insert("bank".to_string(), 1234);
 
@@ -958,19 +881,8 @@ mod tests {
         merged.merge_with(character);
 
         assert_eq!(merged.active_theme, "custom");
-        assert_eq!(merged.active_skin.as_deref(), Some("parchment"));
         assert!(merged.web.enabled);
         assert_eq!(merged.go2.saved.get("bank").copied(), Some(1234));
-    }
-
-    /// `.setskin none` writes a profile config without the key; the merge
-    /// must land on None, not resurrect a stale global value.
-    #[test]
-    fn merge_with_clears_skin_when_profile_has_none() {
-        let mut global = Config::default();
-        global.active_skin = Some("stale".to_string());
-        global.merge_with(Config::default());
-        assert_eq!(global.active_skin, None);
     }
 
     /// The migration splits every `[controller*]` table out of keybinds.toml
@@ -1040,11 +952,11 @@ command = \"look\"
     }
 
     #[test]
-    fn copy_setting_routes_active_skin() {
+    fn copy_setting_routes_registered_keys() {
         let mut src = Config::default();
-        src.active_skin = Some("parchment".to_string());
+        src.active_theme = "parchment".to_string();
         let mut dest = Config::default();
-        Config::copy_setting(&mut dest, &src, "active_skin");
-        assert_eq!(dest.active_skin.as_deref(), Some("parchment"));
+        Config::copy_setting(&mut dest, &src, "active_theme");
+        assert_eq!(dest.active_theme, "parchment");
     }
 }

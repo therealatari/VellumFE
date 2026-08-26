@@ -332,9 +332,16 @@ impl VellumGuiApp {
             self.ui_settings.default_frame = previous_look.default_frame.clone();
             self.ui_settings.default_background = previous_look.default_background.clone();
         }
-        if self.app_core.config.active_skin != self.ui_settings.active_skin {
-            self.app_core.config.active_skin = self.ui_settings.active_skin.clone();
-            self.save_config_after_skin_change();
+        // The loaded layout's look becomes the canonical appearance
+        // (preset semantics: a layout/checkpoint carries a look, loading
+        // it applies the look by writing the store).
+        let appearance = &mut self.app_core.config.appearance;
+        if appearance.active_skin != self.ui_settings.active_skin
+            || appearance.doll_image != self.ui_settings.doll_image
+        {
+            appearance.active_skin = self.ui_settings.active_skin.clone();
+            appearance.doll_image = self.ui_settings.doll_image.clone();
+            self.save_appearance();
         }
         // Theme: config.active_theme is the live source of truth (the frame
         // loop's apply_theme_if_changed watches it). A recorded theme mirrors

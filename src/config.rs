@@ -13,6 +13,7 @@ use std::fs;
 use std::path::PathBuf;
 
 mod alertpacks;
+pub mod appearance;
 mod colors;
 mod conditions;
 mod defaults_refresh;
@@ -342,21 +343,12 @@ pub struct Config {
     pub menu_keybinds: MenuKeybinds, // Keybinds for menu system (browsers, forms, editors)
     #[serde(default = "default_theme_name")] // Default to "dark" theme
     pub active_theme: String, // Currently active theme name
-    // Empty string reads as None: a profile clearing a skin the global layer
-    // sets must be able to STATE "no skin" (TOML has no null), or the sparse
-    // save writes nothing and the next load re-inherits the global value.
-    #[serde(
-        default,
-        deserialize_with = "empty_string_as_none",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub active_skin: Option<String>, // Active GUI skin (dir name under ~/.vellum-fe/global/skins/); None = plain theme colors. In the GUI this mirrors ui_settings.active_skin in the layout file (web doll + non-GUI frontends read it here)
-    #[serde(
-        default,
-        deserialize_with = "empty_string_as_none",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub doll_image: Option<String>, // Injury doll image override (pool-relative, "dolls/x.png"); mirrors ui_settings.doll_image like active_skin (web doll endpoint reads it here)
+    // Appearance assignments (active skin, doll image, ...) live in their
+    // own per-character appearance.toml — see `config::appearance`. The
+    // legacy top-level `active_skin`/`doll_image` keys in config.toml are
+    // read once by its migration and otherwise ignored.
+    #[serde(skip)]
+    pub appearance: appearance::AppearanceSettings,
     #[serde(default)] // Use defaults for stream routing
     pub streams: StreamsConfig, // Stream routing configuration (drop list, fallback)
     #[serde(default)] // `[sorter]` — categorized container looks (.sorter)

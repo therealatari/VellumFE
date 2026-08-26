@@ -1437,14 +1437,9 @@ impl VellumGuiApp {
 
             // Side effects for the keys that just changed. Theme needs no
             // explicit hook: apply_theme_if_changed watches
-            // config.active_theme every frame. The skin's home is the GUI
-            // layout (ui_settings.active_skin); the registry draft wrote
-            // the config mirror, so copy it over — apply_if_changed then
-            // swaps the art next frame.
-            if applied.iter().any(|key| *key == "active_skin") {
-                self.ui_settings.active_skin = self.app_core.config.active_skin.clone();
-                self.layout_dirty = true;
-            }
+            // config.active_theme every frame. (active_skin left the
+            // registry for the appearance store — the Appearance menus
+            // and .setskin write it directly.)
             if applied
                 .iter()
                 .any(|key| key.starts_with("map.") || *key == "connection.game")

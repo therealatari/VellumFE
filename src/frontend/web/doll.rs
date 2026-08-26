@@ -240,12 +240,12 @@ fn resolve_image(root: &Path, image: &str) -> PathBuf {
     skins::resolve_image_path(root, image)
 }
 
-/// The doll the frontends should show: the config.doll_image override
-/// (pool image + sidecar calibration, mirroring the GUI's resolution),
-/// else the active skin's `[injury_doll]` section.
+/// The doll the frontends should show: the appearance store's doll_image
+/// override (pool image + sidecar calibration, mirroring the GUI's
+/// resolution), else the active skin's `[injury_doll]` section.
 fn active_doll() -> Option<(InjuryDollSkin, PathBuf)> {
     let config = crate::config::Config::load().ok()?;
-    if let Some(image) = config.doll_image {
+    if let Some(image) = config.appearance.doll_image {
         let root = crate::config::Config::global_images_dir().ok()?;
         let abs = skins::resolve_image_path(&root, &image);
         let sidecar: crate::config::pool::DollSidecar =
@@ -261,7 +261,7 @@ fn active_doll() -> Option<(InjuryDollSkin, PathBuf)> {
         };
         return Some((doll, root));
     }
-    let name = config.active_skin?;
+    let name = config.appearance.active_skin?;
     let (manifest, root) = skins::load_manifest(&name).ok()?;
     Some((manifest.injury_doll, root))
 }

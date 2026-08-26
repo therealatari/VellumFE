@@ -909,8 +909,8 @@ impl VellumGuiApp {
         // that (or fresh characters) seed it from the config mirror once.
         let mut ui_settings = ui_settings;
         let mut seeded_active_skin = false;
-        if ui_settings.active_skin.is_none() && app_core.config.active_skin.is_some() {
-            ui_settings.active_skin = app_core.config.active_skin.clone();
+        if ui_settings.active_skin.is_none() && app_core.config.appearance.active_skin.is_some() {
+            ui_settings.active_skin = app_core.config.appearance.active_skin.clone();
             seeded_active_skin = true;
         }
 

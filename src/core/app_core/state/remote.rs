@@ -309,8 +309,8 @@ impl AppCore {
         // hold all of &self against &mut self.doll_rules.
         let now_server = chrono::Utc::now().timestamp() + self.message_processor.server_time_offset;
         let (doll_variant, doll_hidden) = self.doll_rules.resolve(
-            self.config.active_skin.as_deref(),
-            self.config.doll_image.as_deref(),
+            self.config.appearance.active_skin.as_deref(),
+            self.config.appearance.doll_image.as_deref(),
             &self.game_state,
             now_server,
             self.gameobj_data.as_deref(),

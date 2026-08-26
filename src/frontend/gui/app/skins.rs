@@ -5,15 +5,33 @@
 use super::*;
 
 impl VellumGuiApp {
-    /// Set the active skin in the layout (its home — checkpoints carry it)
-    /// and mirror it into config for the web doll endpoint and the
-    /// non-GUI frontends.
+    /// Set the active skin: the layout keeps a copy (checkpoints carry a
+    /// look with them), the appearance store is the canonical value core
+    /// and web read.
     pub(super) fn set_active_skin(&mut self, skin: Option<String>) {
         self.ui_settings.active_skin = skin.clone();
         self.layout_dirty = true;
-        if self.app_core.config.active_skin != skin {
-            self.app_core.config.active_skin = skin;
-            self.save_config_after_skin_change();
+        if self.app_core.config.appearance.active_skin != skin {
+            self.app_core.config.appearance.active_skin = skin;
+            self.save_appearance();
+        }
+    }
+
+    /// Persist the appearance store after a change. Core reads the
+    /// in-memory copy live; the file is what survives a restart. The base
+    /// (characterless) copy is written too, so characterless consumers —
+    /// the web doll endpoint loads config with no character — follow the
+    /// most recently set look instead of a stale global mirror.
+    pub(super) fn save_appearance(&mut self) {
+        let character = self.app_core.config.character.clone();
+        let appearance = self.app_core.config.appearance.clone();
+        if let Err(err) = appearance.save(character.as_deref()) {
+            self.app_core
+                .add_system_message(&format!("Appearance not saved: {err:#}"));
+        } else if character.is_some() {
+            if let Err(err) = appearance.save(None) {
+                tracing::warn!("base appearance.toml not updated: {err:#}");
+            }
         }
     }
 
@@ -175,15 +193,15 @@ impl VellumGuiApp {
         Ok(())
     }
 
-    /// Set the injury doll override (pool-relative path), persisted in the
-    /// layout and mirrored to config for the web doll endpoint. The doll
-    /// switches next frame via `SkinState::apply_if_changed`.
+    /// Set the injury doll override (pool-relative path): layout copy for
+    /// checkpoints, appearance store for core/web. The doll switches next
+    /// frame via `SkinState::apply_if_changed`.
     pub(super) fn set_doll_image(&mut self, image: Option<String>) {
         self.ui_settings.doll_image = image.clone();
         self.layout_dirty = true;
-        if self.app_core.config.doll_image != image {
-            self.app_core.config.doll_image = image;
-            self.save_config_after_skin_change();
+        if self.app_core.config.appearance.doll_image != image {
+            self.app_core.config.appearance.doll_image = image;
+            self.save_appearance();
         }
     }
 

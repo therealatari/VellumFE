@@ -1005,7 +1005,10 @@ impl AppCore {
         // skin). Runs before the roster diff so arrivals this frame fit
         // against the current cell width.
         self.creature_field_camera
-            .sync(&mut self.creature_field, self.config.active_skin.as_deref());
+            .sync(
+                &mut self.creature_field,
+                self.config.appearance.active_skin.as_deref(),
+            );
         // Creature-field roster diff (no-op while the generation matches).
         crate::core::creature_cards::sync_field(
             &mut self.creature_field,
