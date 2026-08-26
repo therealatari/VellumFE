@@ -290,7 +290,7 @@ impl VellumGuiApp {
 
         // Skin path: base art + the manifest's resolved card (variant,
         // lift, overlays), all evaluated host-style through resolve_card.
-        let art = art_cache.and_then(|c| c.base(noun, None));
+        let art = art_cache.and_then(|c| c.base(noun));
         let resolved = match (art_cache, flags) {
             (Some(cache), Some(flags)) => Some(crate::core::creature_cards::resolve_card(
                 &cache.card,
@@ -325,7 +325,43 @@ impl VellumGuiApp {
         }
         let card = map.rect(&r);
 
+        // Active art: a matched variant with placeholder-free authored pose
+        // art replaces the cascade's base wholesale — texture AND grounding
+        // metadata (its own anchors, bbox, footprint), so a prone image
+        // grounds by its own contact point instead of inheriting the
+        // standing base's. Template paths keep the ground pose.
+        let active_art = resolved
+            .as_ref()
+            .and_then(|r| r.base_override())
+            .filter(|p| !p.contains('{'))
+            .and_then(|p| art_cache.and_then(|c| c.variant_base(p)))
+            .or(art);
+
+        // Sprite geometry before the shadow (the shadow needs the drawn
+        // footprint). Aspect-fit into the card rect, then hang the image so
+        // its feet anchor lands on the foot point: manifest calibration
+        // wins, then the image's own (sidecar or alpha-derived) feet.
+        let sprite = active_art.map(|a| {
+            let feet = resolved
+                .as_ref()
+                .and_then(|r| r.authored_anchor("feet"))
+                .unwrap_or(a.feet);
+            let ts = a.texture.size_vec2();
+            let scale = (card.width() / ts.x).min(card.height() / ts.y);
+            let (draw_w, draw_h) = (ts.x * scale, ts.y * scale);
+            let dest = egui::Rect::from_min_size(
+                egui::pos2(
+                    card.center().x - feet[0] * draw_w,
+                    card.bottom() - feet[1] * draw_h,
+                ),
+                egui::vec2(draw_w, draw_h),
+            );
+            (a, dest)
+        });
+
         // Contact shadow stays at the floor footprint; softens with lift.
+        // A sidecar footprint sizes it to the pose (a sprawled body casts a
+        // long, wide shadow); the generic standee ellipse otherwise.
         let (shadow_scale, shadow_alpha) = resolved
             .as_ref()
             .and_then(|r| r.lift())
@@ -335,42 +371,44 @@ impl VellumGuiApp {
             } else {
                 (1.0, 60)
             });
-        let shadow_w = card.width() * 0.55 * shadow_scale;
+        let foot_pt = map.pt(foot_x, foot_y);
+        let (shadow_c, shadow_rx, shadow_ry) = match sprite
+            .as_ref()
+            .and_then(|(a, dest)| a.footprint.map(|fp| (fp, dest)))
+        {
+            Some((fp, dest)) => {
+                let cx = fp
+                    .center
+                    .map(|c| dest.left() + c[0] * dest.width())
+                    .unwrap_or(foot_pt.x);
+                (
+                    egui::pos2(cx, foot_pt.y),
+                    dest.width() * fp.rx * shadow_scale,
+                    dest.width() * fp.effective_ry() * shadow_scale,
+                )
+            }
+            None => {
+                let w = card.width() * 0.55 * shadow_scale;
+                (foot_pt, w, w * 0.24)
+            }
+        };
         painter.add(egui::epaint::PathShape::convex_polygon(
-            ellipse_points(map.pt(foot_x, foot_y), shadow_w, shadow_w * 0.24),
+            ellipse_points(shadow_c, shadow_rx, shadow_ry),
             Color32::from_black_alpha(shadow_alpha),
             Stroke::NONE,
         ));
 
         let mut animated = false;
         let mut body = card;
-        if let (Some(cache), Some(art)) = (art_cache, art) {
+        if let (Some(cache), Some((art, dest))) = (art_cache, sprite) {
             // ---- sprite card -------------------------------------------
-            // A matched variant with placeholder-free authored art replaces
-            // the cascade's base; template paths keep the ground pose.
-            let texture = resolved
-                .as_ref()
-                .and_then(|r| r.base_override())
-                .filter(|p| !p.contains('{'))
-                .and_then(|p| cache.overlays.get(p).cloned().flatten())
-                .unwrap_or_else(|| art.texture.clone());
-            // Aspect-fit into the card rect, anchored bottom-centre (the
-            // foot point), like a standee on its base.
-            let tex_size = texture.size_vec2();
-            let scale = (card.width() / tex_size.x).min(card.height() / tex_size.y);
-            let draw_w = tex_size.x * scale;
-            let draw_h = tex_size.y * scale;
-            let dest = egui::Rect::from_min_max(
-                egui::pos2(card.center().x - draw_w / 2.0, card.bottom() - draw_h),
-                egui::pos2(card.center().x + draw_w / 2.0, card.bottom()),
-            );
             let tint = if dead {
                 Color32::from_gray(110)
             } else {
                 Color32::WHITE
             };
             painter.image(
-                texture.id(),
+                art.texture.id(),
                 dest,
                 egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
                 tint,
@@ -600,15 +638,19 @@ impl VellumGuiApp {
             ),
         );
         let anchor_pt = |name: &str| -> egui::Pos2 {
-            // Manifest calibration wins; the art's derived head/feet cover
-            // the common case; centre is the never-crash fallback.
+            // Manifest calibration wins; the image's sidecar anchors next;
+            // the art's derived head/feet cover the common case; then the
+            // built-in resting positions; centre is the never-crash
+            // fallback.
             let frac = resolved
-                .anchor(name)
+                .authored_anchor(name)
+                .or_else(|| art.anchor(name))
                 .or(match name {
                     "head" => Some(art.head),
                     "feet" => Some(art.feet),
                     _ => None,
                 })
+                .or_else(|| crate::config::skins::default_creature_anchor(name))
                 .unwrap_or([0.5, 0.5]);
             egui::pos2(
                 dest.left() + frac[0] * dest.width(),
@@ -732,11 +774,14 @@ impl VellumGuiApp {
     ) {
         let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
         for (part, rank) in injuries {
-            // Anchor precedence: the skin's calibrated point, the art's own
-            // head, then the HUMANOID doll defaults — without that last step
-            // every limb wound collapsed onto the card centre.
+            // Anchor precedence: the skin's calibrated point, the image's
+            // sidecar part anchors, the art's own head, then the HUMANOID
+            // doll defaults — without that last step every limb wound
+            // collapsed onto the card centre.
             let frac = resolved
-                .anchor(part)
+                .authored_anchor(part)
+                .or_else(|| art.anchor(part))
+                .or_else(|| crate::config::skins::default_creature_anchor(part))
                 .or(match part.as_str() {
                     "head" => Some(art.head),
                     _ => None,

@@ -2257,7 +2257,9 @@ impl eframe::App for VellumGuiApp {
         );
         // Creature-card art: resolve + load base sprites for the field's
         // current roster (lazy, negative-cached — a settled room is a few
-        // hash lookups). Family is not sourced yet, so None.
+        // hash lookups). Family comes from the bundled bestiary when the
+        // noun maps to exactly one family, feeding the `{family}` tier of
+        // the resolve cascade.
         {
             let wanted: Vec<(String, Option<String>)> = self
                 .app_core
@@ -2272,7 +2274,12 @@ impl eframe::App for VellumGuiApp {
                         .iter()
                         .find(|c| &c.id == m)
                 })
-                .filter_map(|c| c.noun.clone().map(|noun| (noun, None)))
+                .filter_map(|c| {
+                    c.noun.clone().map(|noun| {
+                        let family = crate::core::creature_cards::family_for_noun(&noun);
+                        (noun, family)
+                    })
+                })
                 .collect();
             if !wanted.is_empty() {
                 self.skin_state.prepare_creature_art(&ctx, &wanted);

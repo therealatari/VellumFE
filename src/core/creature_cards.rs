@@ -55,6 +55,15 @@ impl<'a> ResolvedCard<'a> {
     /// Anchor point by name: active variant's calibration, else the default
     /// set's, else the built-in resting position. Unknown names → None.
     pub fn anchor(&self, name: &str) -> Option<[f32; 2]> {
+        self.authored_anchor(name)
+            .or_else(|| skins::default_creature_anchor(name))
+    }
+
+    /// Human-authored calibration only (variant set, then default set) — no
+    /// built-in fallback. Renderers slot per-image sidecar anchors between
+    /// this and the global defaults, so skin calibration wins over the art's
+    /// own metadata, which in turn wins over guesses.
+    pub fn authored_anchor(&self, name: &str) -> Option<[f32; 2]> {
         let lookup = |anchors: &std::collections::HashMap<String, [f32; 2]>| {
             anchors
                 .iter()
@@ -64,7 +73,6 @@ impl<'a> ResolvedCard<'a> {
         self.variant
             .and_then(|i| lookup(&self.skin.variants[i].skin.anchors))
             .or_else(|| lookup(&self.skin.anchors))
-            .or_else(|| skins::default_creature_anchor(name))
     }
 
     /// Injury overlay image for a part at a wound level (1-3), from the
@@ -176,6 +184,22 @@ pub fn resolve_base_image(
         .into_iter()
         .map(|candidate| skins::resolve_image_path(root, &candidate))
         .find(|path| path.is_file())
+}
+
+/// The `{family}` value for a noun, from the bundled bestiary: filled only
+/// when every bestiary entry sharing the noun agrees on a family (an
+/// ambiguous noun like "troll" resolves art by noun alone rather than
+/// guessing a family). Sanitized for the resolve cascade's file paths:
+/// lowercase, spaces -> underscores.
+pub fn family_for_noun(noun: &str) -> Option<String> {
+    let entries = crate::core::bestiary::format::shared().by_noun(noun);
+    let mut families = entries.iter().filter_map(|e| e.family.as_deref());
+    let first = families.next()?;
+    if families.all(|f| f.eq_ignore_ascii_case(first)) {
+        Some(first.to_ascii_lowercase().replace(' ', "_"))
+    } else {
+        None
+    }
 }
 
 /// Whether a room creature belongs on the creature field. The targets-list
@@ -462,6 +486,19 @@ mod card_tests {
         let lift = r.lift().unwrap();
         assert_eq!(lift.offset_y, -0.22);
         assert_eq!(lift.shadow_scale, 0.55);
+    }
+
+    /// authored_anchor exposes only human calibration — renderers slot
+    /// per-image sidecar anchors between it and the built-in defaults.
+    #[test]
+    fn authored_anchor_has_no_builtin_fallback() {
+        let skin = card();
+        let r = resolve(&skin, &flags(&[]));
+        assert_eq!(r.authored_anchor("head"), Some([0.50, 0.09]));
+        assert_eq!(r.authored_anchor("feet"), None, "builtin must not leak");
+        // Variant calibration still wins inside authored_anchor.
+        let r = resolve(&skin, &flags(&[("prone", "1")]));
+        assert_eq!(r.authored_anchor("head"), Some([0.20, 0.60]));
     }
 
     #[test]

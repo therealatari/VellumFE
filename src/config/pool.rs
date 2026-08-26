@@ -414,6 +414,48 @@ pub struct DollSidecar {
     pub dots: DollDotSpec,
 }
 
+/// Creature-sprite sidecar: pose anchoring metadata that travels with one
+/// creature image (`<image>.toml` next to `<image>.png`). Every pose
+/// variant image carries its own sidecar, so swapping a standing base for
+/// prone art re-hangs the sprite off the correct ground contact with no
+/// code-side offsets. Anchors are fractions of the full image canvas;
+/// names share the creature-card vocabulary (feet/head/mouth/saddle) plus
+/// doll part names for wound placement.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct CreatureSidecar {
+    #[serde(default)]
+    pub anchors: HashMap<String, [f32; 2]>,
+    /// Contact-shadow / floor-footprint ellipse. Absent = the renderer's
+    /// generic standee shadow.
+    #[serde(default)]
+    pub footprint: Option<CreatureFootprint>,
+}
+
+/// Footprint ellipse for a creature sprite: how much floor the pose
+/// occupies. Radii are fractions of the sprite's drawn width so the same
+/// numbers work at any stage zoom; a prone pose authors a wider, longer
+/// ellipse than its standing twin.
+#[derive(Debug, Clone, Copy, Deserialize)]
+pub struct CreatureFootprint {
+    /// Half-width of the ellipse as a fraction of the drawn sprite width.
+    pub rx: f32,
+    /// Half-depth as a fraction of the drawn sprite width. Omitted =
+    /// rx * 0.24, matching the generic shadow's squash.
+    #[serde(default)]
+    pub ry: Option<f32>,
+    /// Ellipse centre in image fractions (x only is honored — the shadow
+    /// always lies on the ground line). Omitted = the feet anchor.
+    #[serde(default)]
+    pub center: Option<[f32; 2]>,
+}
+
+impl CreatureFootprint {
+    /// The half-depth, defaulting to the generic shadow's 0.24 squash.
+    pub fn effective_ry(&self) -> f32 {
+        self.ry.unwrap_or(self.rx * 0.24)
+    }
+}
+
 /// Frame sidecar: the nine-slice geometry for a pool frame image. Mirrors
 /// the manifest `vellum` block: `slice` may be one number (uniform insets)
 /// or four ([top, right, bottom, left]).
@@ -531,6 +573,37 @@ pub fn write_doll_sidecar(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn creature_sidecar_parses_anchors_and_footprint() {
+        let sidecar: CreatureSidecar = toml::from_str(
+            r#"
+            [anchors]
+            feet    = [0.48, 0.63]
+            head    = [0.18, 0.22]
+            leftLeg = [0.40, 0.55]
+
+            [footprint]
+            rx = 0.46
+            center = [0.50, 0.63]
+            "#,
+        )
+        .unwrap();
+        assert_eq!(sidecar.anchors["feet"], [0.48, 0.63]);
+        assert_eq!(sidecar.anchors["leftLeg"], [0.40, 0.55]);
+        let fp = sidecar.footprint.unwrap();
+        assert_eq!(fp.rx, 0.46);
+        assert_eq!(fp.center, Some([0.50, 0.63]));
+        // ry omitted: the generic shadow squash applies.
+        assert!((fp.effective_ry() - 0.46 * 0.24).abs() < 1e-6);
+    }
+
+    #[test]
+    fn creature_sidecar_defaults_are_empty() {
+        let sidecar: CreatureSidecar = toml::from_str("").unwrap();
+        assert!(sidecar.anchors.is_empty());
+        assert!(sidecar.footprint.is_none());
+    }
 
     #[test]
     fn slice_spec_accepts_uniform_and_per_side() {

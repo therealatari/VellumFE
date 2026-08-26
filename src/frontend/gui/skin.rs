@@ -595,14 +595,32 @@ pub struct ResolvedBorder {
 #[derive(Clone)]
 pub struct CreatureArt {
     pub texture: egui::TextureHandle,
-    /// Derived head anchor (top-centre of the alpha bbox) as fractions of
-    /// the image. A manifest-calibrated anchor wins over this.
+    /// Head anchor as fractions of the image: the sidecar's authored point
+    /// when present, else derived (top-centre of the alpha bbox). A
+    /// manifest-calibrated anchor wins over this.
     pub head: [f32; 2],
-    /// Derived foot anchor (bottom-centre of the alpha bbox).
+    /// Foot / ground-contact anchor: sidecar-authored, else derived
+    /// (bottom-centre of the alpha bbox). The sprite hangs off the floor
+    /// position by this point, so per-pose art grounds itself.
     pub feet: [f32; 2],
     /// Alpha bbox as fractions [x0, y0, x1, y1] — body-wrap overlays scale
     /// to this, not the full canvas, so padding in the art costs nothing.
     pub bbox: [f32; 4],
+    /// All sidecar-authored anchors (feet/head/mouth/saddle + doll parts),
+    /// image fractions. Empty when no sidecar.
+    pub anchors: HashMap<String, [f32; 2]>,
+    /// Sidecar-authored floor footprint (contact-shadow ellipse), if any.
+    pub footprint: Option<crate::config::pool::CreatureFootprint>,
+}
+
+impl CreatureArt {
+    /// Sidecar anchor by name, case-insensitive.
+    pub fn anchor(&self, name: &str) -> Option<[f32; 2]> {
+        self.anchors
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case(name))
+            .map(|(_, a)| *a)
+    }
 }
 
 /// Lazily loaded creature-card art, shared with the creaturefield renderer.
@@ -611,8 +629,13 @@ pub struct CreatureArt {
 /// status-overlay textures load once per skin.
 #[derive(Default)]
 pub struct CreatureArtCache {
-    /// "noun|family" -> resolved art (None = nothing on disk).
+    /// noun -> resolved art (None = nothing on disk). A noun maps to one
+    /// family, so the noun alone keys the cascade's result.
     pub bases: HashMap<String, Option<CreatureArt>>,
+    /// Variant base-override path -> full art (texture + anchors + bbox +
+    /// footprint), so pose art carries its own grounding metadata instead
+    /// of inheriting the standing base's.
+    pub variant_bases: HashMap<String, Option<CreatureArt>>,
     /// Overlay manifest path -> texture (None = load failed).
     pub overlays: HashMap<String, Option<egui::TextureHandle>>,
     /// The manifest's `[creature_card]` template.
@@ -648,10 +671,13 @@ impl std::fmt::Debug for CreatureArtCache {
 
 impl CreatureArtCache {
     /// Base art for one creature, if prepared. Key mirrors `prepare`.
-    pub fn base(&self, noun: &str, family: Option<&str>) -> Option<&CreatureArt> {
-        self.bases
-            .get(&format!("{noun}|{}", family.unwrap_or("")))
-            .and_then(|art| art.as_ref())
+    pub fn base(&self, noun: &str) -> Option<&CreatureArt> {
+        self.bases.get(noun).and_then(|art| art.as_ref())
+    }
+
+    /// Variant pose art for a base-override path, if prepared.
+    pub fn variant_base(&self, path: &str) -> Option<&CreatureArt> {
+        self.variant_bases.get(path).and_then(|art| art.as_ref())
     }
 }
 
@@ -823,8 +849,7 @@ impl SkinState {
             return;
         }
         for (noun, family) in wanted {
-            let key = format!("{noun}|{}", family.as_deref().unwrap_or(""));
-            if cache.bases.contains_key(&key) {
+            if cache.bases.contains_key(noun.as_str()) {
                 continue;
             }
             let art = crate::core::creature_cards::resolve_base_image(
@@ -834,21 +859,41 @@ impl SkinState {
                 family.as_deref(),
             )
             .and_then(|path| load_creature_art(ctx, &path, &cache.skin_name));
-            cache.bases.insert(key, art);
+            cache.bases.insert(noun.clone(), art);
         }
-        // Shared overlay textures: small set, loaded once. Placeholder
-        // paths ({severity}) expand 1-3.
-        // Placeholder-free variant bases ride the same map: a variant with
-        // a {family}/{noun} template resolves per creature (not yet
-        // sourced), so those keep the ground pose for now.
-        let variant_bases = cache
+        // Placeholder-free variant bases (pose art) load through the full
+        // creature loader so each pose image carries its own derived +
+        // sidecar anchors and footprint; a variant with a {family}/{noun}
+        // template resolves per creature (not yet sourced), so those keep
+        // the ground pose for now.
+        let variant_paths: Vec<String> = cache
             .card
             .variants
             .iter()
             .filter_map(|v| v.skin.base.clone())
-            .filter(|p| !p.contains('{'));
-        let overlay_paths: Vec<String> = variant_bases
-            .chain(cache.card.overlays.iter().flat_map(|o| {
+            .filter(|p| !p.contains('{'))
+            .collect();
+        for path in variant_paths {
+            if cache.variant_bases.contains_key(&path) {
+                continue;
+            }
+            let abs = skins::resolve_image_path(&cache.root, &path);
+            let art = abs
+                .is_file()
+                .then(|| load_creature_art(ctx, &abs, &cache.skin_name))
+                .flatten();
+            if art.is_none() {
+                tracing::warn!(
+                    "Skin '{}': variant base '{}' missing or unloadable",
+                    cache.skin_name,
+                    path
+                );
+            }
+            cache.variant_bases.insert(path, art);
+        }
+        // Shared overlay textures: small set, loaded once. Placeholder
+        // paths ({severity}) expand 1-3.
+        let overlay_paths: Vec<String> = cache.card.overlays.iter().flat_map(|o| {
                 if o.image.contains("{severity}") {
                     (1..=3)
                         .map(|s| o.image.replace("{severity}", &s.to_string()))
@@ -865,7 +910,7 @@ impl SkinState {
                 } else {
                     vec![o.image.clone()]
                 }
-            }))
+            })
             .collect();
         for path in overlay_paths {
             if cache.overlays.contains_key(&path) {
@@ -1885,8 +1930,9 @@ fn load_texture(
 
 /// Decode one creature-card base image and derive its anchors from the
 /// alpha bbox: head = top-centre, feet = bottom-centre. Calibration for the
-/// common case comes free from the art itself; only mouth/saddle need a
-/// human (manifest anchors win when authored).
+/// common case comes free from the art itself; a `<image>.toml` sidecar
+/// (anchors + footprint) overrides the derivation per image, so pose art
+/// grounds itself (manifest anchors still win when authored).
 fn load_creature_art(ctx: &egui::Context, path: &Path, skin_name: &str) -> Option<CreatureArt> {
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
@@ -1945,11 +1991,24 @@ fn load_creature_art(ctx: &egui::Context, path: &Path, skin_name: &str) -> Optio
         color_image,
         egui::TextureOptions::LINEAR,
     );
+    // Sidecar metadata travels with the image: authored anchors replace
+    // the derived head/feet, and the footprint drives the contact shadow.
+    let sidecar = crate::config::pool::read_sidecar::<crate::config::pool::CreatureSidecar>(path)
+        .unwrap_or_default();
+    let sidecar_pt = |name: &str| {
+        sidecar
+            .anchors
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case(name))
+            .map(|(_, a)| *a)
+    };
     Some(CreatureArt {
         texture,
-        head: [mid_x, bbox[1]],
-        feet: [mid_x, bbox[3]],
+        head: sidecar_pt("head").unwrap_or([mid_x, bbox[1]]),
+        feet: sidecar_pt("feet").unwrap_or([mid_x, bbox[3]]),
         bbox,
+        anchors: sidecar.anchors,
+        footprint: sidecar.footprint,
     })
 }
 
