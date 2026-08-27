@@ -473,7 +473,23 @@ impl XmlParser {
                         attrs.push((name.to_string(), tag[value_start..i].to_string()));
                         i += 1; // past closing quote
                     }
+                } else {
+                    // Unquoted value: runs to whitespace / '/' / '>'. Without
+                    // this branch the value bytes were re-parsed as the NEXT
+                    // attribute name.
+                    let value_start = i;
+                    while i < bytes.len()
+                        && !bytes[i].is_ascii_whitespace()
+                        && bytes[i] != b'>'
+                        && bytes[i] != b'/'
+                    {
+                        i += 1;
+                    }
+                    attrs.push((name.to_string(), tag[value_start..i].to_string()));
                 }
+            } else {
+                // Valueless flag attribute (bare `closed`)
+                attrs.push((name.to_string(), String::new()));
             }
         }
         attrs

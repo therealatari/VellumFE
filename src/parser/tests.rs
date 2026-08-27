@@ -220,6 +220,59 @@ fn test_known_wire_tags_sorted_and_membership() {
     assert_eq!(XmlParser::tag_name("<b>"), "b");
 }
 
+#[test]
+fn test_extract_attribute_unquoted_and_valueless() {
+    // Quoted forms unchanged
+    assert_eq!(
+        XmlParser::extract_attribute("<x id=\"a\" b='c'/>", "id").as_deref(),
+        Some("a")
+    );
+    // Unquoted value
+    assert_eq!(
+        XmlParser::extract_attribute("<x closed=true id=5>", "closed").as_deref(),
+        Some("true")
+    );
+    assert_eq!(
+        XmlParser::extract_attribute("<x closed=true id=5>", "id").as_deref(),
+        Some("5")
+    );
+    // Bare valueless flag, in every position
+    assert_eq!(
+        XmlParser::extract_attribute("<x closed>", "closed").as_deref(),
+        Some("")
+    );
+    assert_eq!(
+        XmlParser::extract_attribute("<x closed/>", "closed").as_deref(),
+        Some("")
+    );
+    assert_eq!(
+        XmlParser::extract_attribute("<x closed id='5'>", "closed").as_deref(),
+        Some("")
+    );
+    // Name-boundary safety: probing a prefix of a longer name misses
+    assert_eq!(XmlParser::extract_attribute("<x exist='9'>", "exp"), None);
+    assert_eq!(
+        XmlParser::extract_attribute("<x field_exp=340>", "exp"),
+        None
+    );
+    // Absent attribute
+    assert_eq!(XmlParser::extract_attribute("<x id='a'>", "closed"), None);
+}
+
+#[test]
+fn test_extract_all_attributes_mixed_forms() {
+    let attrs = XmlParser::extract_all_attributes("<x a=\"1\" b=2 c d='4'/>");
+    assert_eq!(
+        attrs,
+        vec![
+            ("a".to_string(), "1".to_string()),
+            ("b".to_string(), "2".to_string()),
+            ("c".to_string(), String::new()),
+            ("d".to_string(), "4".to_string()),
+        ]
+    );
+}
+
 // ==================== Basic Text Parsing ====================
 
 #[test]

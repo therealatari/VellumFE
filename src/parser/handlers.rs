@@ -682,12 +682,9 @@ impl XmlParser {
                     exist: Self::extract_attribute(tag, "exist").unwrap_or_default(),
                     state: Self::extract_attribute(tag, "state"),
                     // Presence is the signal, value irrelevant (Saga checks
-                    // Object.hasOwn) - and a bare valueless `closed` is
-                    // legal, so match the attribute name with its ending.
-                    closed_attr: Self::extract_attribute(tag, "closed").is_some()
-                        || tag.contains(" closed ")
-                        || tag.contains(" closed>")
-                        || tag.contains(" closed/>"),
+                    // Object.hasOwn); extract_attribute handles the bare
+                    // valueless form directly.
+                    closed_attr: Self::extract_attribute(tag, "closed").is_some(),
                     results: Vec::new(),
                     current: None,
                 });
@@ -844,6 +841,48 @@ impl XmlParser {
             }
         }
 
+        // Unquoted (`closed=true`) and valueless (`closed`) forms are legal
+        // on the wire; both are handled by the bare-name scan.
+        Self::extract_bare_attribute(tag, attr)
+    }
+
+    /// Fallback for `attr=value` (unquoted) and bare `attr` (valueless,
+    /// returns Some("")). Name must sit on whitespace boundaries.
+    fn extract_bare_attribute(tag: &str, attr: &str) -> Option<String> {
+        let bytes = tag.as_bytes();
+        let name = attr.as_bytes();
+        if bytes.len() < name.len() + 1 {
+            return None;
+        }
+        for i in 1..=bytes.len() - name.len() {
+            if bytes[i..i + name.len()] != *name || !bytes[i - 1].is_ascii_whitespace() {
+                continue;
+            }
+            let after = i + name.len();
+            match bytes.get(after) {
+                // Bare flag: `closed>`, `closed/>`, `closed attr2=...`, EOL
+                None | Some(b'>') | Some(b'/') => return Some(String::new()),
+                Some(b) if b.is_ascii_whitespace() => return Some(String::new()),
+                Some(b'=') => {
+                    let value_start = after + 1;
+                    // Quoted forms were already tried by the caller; a quote
+                    // here means an unterminated value — treat as absent.
+                    if matches!(bytes.get(value_start), Some(b'"') | Some(b'\'')) {
+                        return None;
+                    }
+                    let mut end = value_start;
+                    while end < bytes.len()
+                        && !bytes[end].is_ascii_whitespace()
+                        && bytes[end] != b'>'
+                        && bytes[end] != b'/'
+                    {
+                        end += 1;
+                    }
+                    return Some(Self::decode_entities(tag[value_start..end].to_string()));
+                }
+                _ => continue, // longer name, e.g. probing "exp" inside "exist"
+            }
+        }
         None
     }
 
