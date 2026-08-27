@@ -176,6 +176,28 @@ fn test_decode_entities_numeric() {
     );
 }
 
+#[test]
+fn test_strip_control_chars() {
+    assert_eq!(
+        XmlParser::strip_control_chars("clean text".to_string()),
+        "clean text"
+    );
+    assert_eq!(
+        XmlParser::strip_control_chars("a\x07b\x00c\x7fd".to_string()),
+        "abcd"
+    );
+    // Tab and newline survive
+    assert_eq!(
+        XmlParser::strip_control_chars("a\tb\nc".to_string()),
+        "a\tb\nc"
+    );
+    // Non-ASCII passes untouched
+    assert_eq!(
+        XmlParser::strip_control_chars("\u{e9}\u{2014}\x08!".to_string()),
+        "\u{e9}\u{2014}!"
+    );
+}
+
 // ==================== Basic Text Parsing ====================
 
 #[test]

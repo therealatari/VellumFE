@@ -76,8 +76,10 @@ impl XmlParser {
             }
         }
 
-        // Decode HTML entities
-        let content = Self::decode_entities(content);
+        // Decode HTML entities, then drop stray control characters the feed
+        // occasionally leaks (keep \t; \n never reaches us — input is
+        // line-framed). Matches the C0/DEL strip Saga applies at text ingress.
+        let content = Self::strip_control_chars(Self::decode_entities(content));
 
         // If we're inside a link (<a> or <d> tag), append this text to the
         // OUTERMOST open link's text field — the one that wins and is
@@ -131,6 +133,21 @@ impl XmlParser {
             }
             text = decoded;
         }
+    }
+
+    /// Remove C0 control characters (except \t and \n) and DEL. The wire
+    /// occasionally carries stray control bytes; rendering them corrupts
+    /// terminal output. Fast path returns the string untouched.
+    pub(super) fn strip_control_chars(text: String) -> String {
+        if !text
+            .bytes()
+            .any(|b| (b < 0x20 && b != b'\t' && b != b'\n') || b == 0x7f)
+        {
+            return text;
+        }
+        text.chars()
+            .filter(|&c| c == '\t' || c == '\n' || (c != '\u{7f}' && c >= '\u{20}'))
+            .collect()
     }
 
     /// If `after` begins with a `<pushStream>` tag whose id matches the
