@@ -610,6 +610,9 @@ pub struct VellumGuiApp {
     /// No settle-wait is needed: the per-frame anchor rescale tracks every
     /// intermediate size the OS passes through and lands 1:1 at the target.
     pending_viewport_restore: Option<MainViewportState>,
+    /// A legacy `active_skin` found at startup: migrated to a preset on
+    /// the first frame (the live-manifest runtime is gone). One-shot.
+    startup_skin_migration: Option<String>,
     command_input_id: Option<egui::Id>,
     repaint_ctx: std::sync::Arc<std::sync::Mutex<Option<egui::Context>>>,
     layout_save_tx: Option<std::sync::mpsc::Sender<GuiLayoutFileV1>>,
@@ -905,14 +908,16 @@ impl VellumGuiApp {
             main_viewport: main_viewport_state,
         } = Self::restore_layout_state(persisted_layout.as_ref(), &available_tabs);
 
-        // The active skin lives in the layout now; GUI files from before
-        // that (or fresh characters) seed it from the config mirror once.
+        // The live-manifest skin runtime is gone: any active_skin still on
+        // record (layout copy or appearance store) is a legacy skin to
+        // migrate into a preset on the first frame. Taking it here clears
+        // both stores once the layout/appearance persist.
         let mut ui_settings = ui_settings;
-        let mut seeded_active_skin = false;
-        if ui_settings.active_skin.is_none() && app_core.config.appearance.active_skin.is_some() {
-            ui_settings.active_skin = app_core.config.appearance.active_skin.clone();
-            seeded_active_skin = true;
-        }
+        let startup_skin_migration = ui_settings
+            .active_skin
+            .take()
+            .or_else(|| app_core.config.appearance.active_skin.clone());
+        let seeded_active_skin = startup_skin_migration.is_some();
 
         // Set art moved into per-set folders at startup; per-indicator icon
         // overrides name a pool path directly, so rewrite the ones whose art
@@ -1103,6 +1108,7 @@ impl VellumGuiApp {
             // Startup already restores the OS window natively; this only
             // serves runtime `.loadlayout`.
             pending_viewport_restore: None,
+            startup_skin_migration,
             // Fixed id: the TextEdit uses it wherever it renders, so focus
             // routing and cursor placement survive docking moves.
             command_input_id: Some(egui::Id::new(COMMAND_INPUT_EDIT_ID)),
@@ -2194,6 +2200,14 @@ impl eframe::App for VellumGuiApp {
             }
         }
         self.apply_theme_if_changed(&ctx);
+        // First frame with a legacy active_skin on record: one-shot
+        // conversion to a preset (applies it, so the look carries over).
+        if let Some(name) = self.startup_skin_migration.take() {
+            self.app_core.add_system_message(&format!(
+                "Migrating legacy skin '{name}' — skins are presets now."
+            ));
+            self.apply_skin_by_name(&name);
+        }
         // Core wrote the appearance store outside our funnel (skin-pack
         // install/import): adopt it before the skin declarations below, or
         // this frame's layout save would stomp the new look.

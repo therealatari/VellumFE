@@ -260,22 +260,23 @@ impl VellumGuiApp {
             self.apply_skin_preset(name, &preset.assignments);
             return;
         }
-        match crate::config::skins::load_manifest(name) {
-            Ok(_) => {
-                self.set_active_skin(Some(name.to_string()));
-                self.app_core
-                    .add_system_message(&format!("Skin switched to: {}", name));
+        // A legacy live-manifest skin: there is no live runtime anymore.
+        // One-shot conversion — migrate the manifest + its art into the
+        // pool, persist the preset over the legacy dir's name, apply it.
+        match self.migrate_legacy_skin_to_preset(name) {
+            Ok(assignments) => {
+                self.apply_skin_preset(name, &assignments);
             }
             Err(err) => {
                 let available = crate::config::skins::list_skins();
                 if available.is_empty() {
                     self.app_core.add_system_message(&format!(
-                        "Cannot load skin '{}': {}. No skins installed; create one under ~/.vellum-fe/global/skins/<name>/skin.toml",
+                        "Cannot load skin '{}': {:#}. No skins installed; install one with .jinx or .importskin",
                         name, err
                     ));
                 } else {
                     self.app_core.add_system_message(&format!(
-                        "Cannot load skin '{}': {}. Available: {}",
+                        "Cannot load skin '{}': {:#}. Available: {}",
                         name,
                         err,
                         available.join(", ")
@@ -283,6 +284,41 @@ impl VellumGuiApp {
                 }
             }
         }
+    }
+
+    /// Convert a legacy skin into a preset in place: art to the pool
+    /// (collision-safe), the rename-adjusted manifest written over the
+    /// legacy skin.toml (the art files in the skin dir stay — they're the
+    /// user's, and now inert). Reports what could not be expressed.
+    fn migrate_legacy_skin_to_preset(
+        &mut self,
+        name: &str,
+    ) -> anyhow::Result<crate::config::skin_pack::Assignments> {
+        let (pack, warnings) = crate::config::skin_pack::migrate_legacy(name)?;
+        let report = crate::config::skin_pack::install_files(&pack)?;
+        let mut manifest = pack.manifest.clone();
+        manifest.assignments = report.assignments.clone();
+        // The preset overwrites the legacy skin.toml (same path, so the
+        // name keeps working everywhere); the authored original is kept
+        // beside it in case the user wants to salvage unmapped sections.
+        if let Ok(dir) = crate::config::Config::skins_dir() {
+            let original = dir.join(name).join("skin.toml");
+            let backup = dir.join(name).join("skin-legacy.toml.bak");
+            if original.is_file() && !backup.exists() {
+                let _ = std::fs::copy(&original, &backup);
+            }
+        }
+        crate::config::skin_pack::write_preset(name, &manifest)?;
+        self.app_core.add_system_message(&format!(
+            "Legacy skin '{}' converted to a preset ({} file(s) moved to the image pool).",
+            name,
+            report.installed.len() + report.renamed.len()
+        ));
+        for warning in warnings.iter().chain(&report.warnings) {
+            self.app_core
+                .add_system_message(&format!("  note: {warning}"));
+        }
+        Ok(report.assignments)
     }
 
     /// Apply a preset's assignments to the live look: ui_settings first
