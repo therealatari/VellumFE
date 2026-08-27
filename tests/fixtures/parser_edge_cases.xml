@@ -1,0 +1,32 @@
+<prompt time="1756300000">&gt;</prompt>
+You swing a broadsword at a kobold!
+<pushBold/>A kobold<popBold/> tries to bite you!
+Recent Evasion: $<a href=$Qhelp evasion$>Recent Evasion$</a$> is broken markup from HELP.
+<pushStream id="thoughts"/>[Merchant] Someone thinks: interesting<popStream/><pushStream id="thoughts"/>[Merchant] continued thought<popStream/>
+You say, "Testing <pushStream id="speech"/>mid-line speech redirect."<popStream/>
+<pushStream id="familiar"/>Your familiar sees a <pushBold/>troll<popBold/> arrive.
+<prompt time="1756300001">&gt;</prompt>
+<style id="roomName"/>[Town Square, Small Park]<style id=""/>
+<style id="roomDesc"/>Beneath the shade of some trees sits a small bench.<style id=""/>
+Obvious paths: <d>north</d>, <d cmd="go gate">gate</d>
+<component id='room objs'>You also see a <pushBold/>giant rat<popBold/> and some stuff.</component>
+<component id='room players'>Also here: <a exist="-10891" noun="Niffy">Niffy</a></component>
+<compass><dir value="n"/><dir value="e"/><dir value="out"/></compass>
+<roundTime value='1756300010'/>
+<castTime value='1756300008'/>
+<indicator id="IconKNEELING" visible="y"/><indicator id="IconHIDDEN" visible="n"/>
+<left exist="12345" noun="shield">a wooden shield</left><right exist="0" noun="">Empty</right>
+<spell exist="spell">Minor Shock</spell>
+Entities: &lt;tag&gt; &amp; &quot;quoted&quot; &apos;text&apos; and unknown &unknown; ref &#65; &#x42; stay literal today.
+<dialogData id='minivitals'><progressBar id='health' value='84' text='health 92/109' left='0%' top='0%' width='25%' height='100%'/><progressBar id='mana' value='100' text='mana 42/42' left='25%' top='0%' width='25%' height='100%'/></dialogData>
+<dialogData id='combat'><progressBar id='pbarStance' value='100' text='defensive' left='0%' top='0%' width='35%' height='100%'/></dialogData>
+<streamWindow id='main' title='Story' subtitle=" - [Town Square, Small Park]" location='center' target='drop'/>
+<clearStream id="percWindow"/>
+<pushStream id="percWindow"/>Minor Shock (3 roisan)<popStream/>
+An <a exist="98765" noun="kobold">angry kobold</a> claws at you!
+<output class="mono"/>
+  a pre-formatted table row
+<output class=""/>
+<unknownFutureTag attr="value"/>between unknowns<anotherNewTag>inner text</anotherNewTag>
+A line with trailing partial tag <pushStr
+<prompt time="1756300020">&gt;</prompt>
