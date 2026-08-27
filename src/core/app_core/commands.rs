@@ -1035,6 +1035,20 @@ impl AppCore {
                     let _ = self.config.appearance.save(None);
                 }
                 self.appearance_changed_externally = true;
+                // Keep the pack re-appliable: persist its (rename-adjusted)
+                // manifest as a preset so .setskin <name> works later.
+                let mut manifest = pack.manifest.clone();
+                manifest.assignments = report.assignments.clone();
+                let preset_name = if manifest.meta.name.trim().is_empty() {
+                    path.file_stem()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "imported".to_string())
+                } else {
+                    manifest.meta.name.clone()
+                };
+                if let Err(e) = crate::config::skin_pack::write_preset(&preset_name, &manifest) {
+                    self.add_system_message(&format!("Preset not saved: {e:#}"));
+                }
                 self.add_system_message(&format!(
                     "Skin pack '{}' installed: {} file(s) added, {} identical, {} renamed, {} kept.",
                     pack.manifest.meta.name,

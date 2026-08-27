@@ -187,6 +187,27 @@ fn install_bundle(kind: &str, name: &str, zip_bytes: &[u8]) -> Result<PathBuf, S
     let stem = name.rsplit_once('.').map_or(name, |(s, _)| s);
     match kind {
         "skin" => {
+            // New-format packs (top-level `format` key in skin.toml): art
+            // goes into the shared pool, the manifest becomes an inert
+            // preset under skins/<name>/ — applied later by .setskin,
+            // never automatically (accessibility-first: no auto-restyle).
+            if crate::config::skin_pack::is_pack_format(zip_bytes) {
+                let pack = crate::config::skin_pack::read_pack_bytes(zip_bytes)?;
+                let report =
+                    crate::config::skin_pack::install_files(&pack).map_err(|e| format!("{e:#}"))?;
+                for warning in &report.warnings {
+                    tracing::warn!("skin pack '{stem}': {warning}");
+                }
+                let mut manifest = pack.manifest.clone();
+                // Collision renames re-pointed the assignments; the preset
+                // must apply what actually landed in the pool.
+                manifest.assignments = report.assignments;
+                crate::config::skin_pack::write_preset(stem, &manifest)
+                    .map_err(|e| format!("{e:#}"))?;
+                return Config::skins_dir()
+                    .map(|d| d.join(stem))
+                    .map_err(|e| format!("cannot resolve skins dir: {e}"));
+            }
             let skin_name = super::bundle::install_skin(stem, zip_bytes)?;
             Config::skins_dir()
                 .map(|d| d.join(skin_name))
@@ -830,6 +851,63 @@ mod tests {
             .join("parchment/skin.toml")
             .is_file());
         assert_eq!(db.get("parchment.vellumpack").unwrap().kind, "skin");
+
+        std::env::remove_var("VELLUM_FE_DIR");
+    }
+
+    #[test]
+    fn pack_format_skin_installs_to_pool_as_preset() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let cfg = tempfile::tempdir().unwrap();
+        std::env::set_var("VELLUM_FE_DIR", cfg.path());
+        let ag = agent().unwrap();
+        let mut db = InstalledDb::default();
+
+        // A new-format pack: format key + an assigned background.
+        let zip = {
+            use std::io::Write as _;
+            let mut buf = Vec::new();
+            {
+                let mut w = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+                let opts = zip::write::SimpleFileOptions::default();
+                w.start_file("skin.toml", opts).unwrap();
+                w.write_all(
+                    b"format = 1\n[meta]\nname = \"paper\"\n\
+                      [assignments]\ndefault_background = \"backgrounds/paper.png\"\n",
+                )
+                .unwrap();
+                w.start_file("backgrounds/paper.png", opts).unwrap();
+                w.write_all(b"PNGBYTES").unwrap();
+                w.finish().unwrap();
+            }
+            buf
+        };
+        let base = spawn_stub(zip.clone());
+        let mut skin = asset("/skins/paper.vellumpack", &digest_b64(&zip));
+        skin.kind = Some("skin".into());
+        let out = install_asset(&ag, &repo(&base), &skin, &mut db, false).unwrap();
+        assert!(matches!(out, InstallOutcome::Installed { .. }));
+
+        // Art landed in the POOL, not under skins/.
+        let images = crate::config::Config::global_images_dir().unwrap();
+        assert_eq!(
+            std::fs::read(images.join("backgrounds/paper.png")).unwrap(),
+            b"PNGBYTES"
+        );
+        // The manifest became an inert preset — no art copied beside it.
+        let preset_dir = crate::config::Config::skins_dir().unwrap().join("paper");
+        assert!(preset_dir.join("skin.toml").is_file());
+        assert!(!preset_dir.join("backgrounds").exists());
+        let preset = crate::config::skin_pack::load_preset("paper").unwrap();
+        assert_eq!(
+            preset.assignments.default_background.as_deref(),
+            Some("backgrounds/paper.png")
+        );
+        // Install never touched the appearance store (no auto-restyle).
+        assert_eq!(
+            crate::config::appearance::AppearanceSettings::load_or_migrate(None),
+            crate::config::appearance::AppearanceSettings::default()
+        );
 
         std::env::remove_var("VELLUM_FE_DIR");
     }

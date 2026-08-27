@@ -253,6 +253,13 @@ impl VellumGuiApp {
             self.app_core.add_system_message("Skin disabled.");
             return;
         }
+        // New-format presets (jinx skin packs, .importskin): the manifest
+        // holds appearance assignments, not live art references — apply
+        // them to the store and stay skinless.
+        if let Some(preset) = crate::config::skin_pack::load_preset(name) {
+            self.apply_skin_preset(name, &preset.assignments);
+            return;
+        }
         match crate::config::skins::load_manifest(name) {
             Ok(_) => {
                 self.set_active_skin(Some(name.to_string()));
@@ -278,6 +285,28 @@ impl VellumGuiApp {
         }
     }
 
+    /// Apply a preset's assignments to the live look: ui_settings first
+    /// (the layout copy), then the one-way funnel persists the store.
+    fn apply_skin_preset(&mut self, name: &str, a: &crate::config::skin_pack::Assignments) {
+        self.ui_settings.active_skin = None;
+        self.ui_settings.doll_image = a.doll_image.clone();
+        self.ui_settings.compass_set = a.compass_set.clone();
+        self.ui_settings.default_frame = a.default_frame.clone();
+        self.ui_settings.default_background = a.default_background.clone();
+        self.ui_settings.edge_set = a.edge_set.clone();
+        self.ui_settings.doll_grayscale = a.doll_grayscale;
+        if let Some(size) = a.hand_icon_size {
+            self.ui_settings.hand_icon_size = size;
+        }
+        self.ui_settings.status_icons.set = a.status_icon_set.clone();
+        self.ui_settings.status_icons.gray_inactive = a.status_gray_inactive;
+        self.ui_settings.control_frames = a.control_frames.clone();
+        self.layout_dirty = true;
+        self.sync_appearance_from_ui_settings();
+        self.app_core
+            .add_system_message(&format!("Skin preset '{name}' applied."));
+    }
+
     /// Handle `action:skins`: list installed skins in the main window.
     pub(super) fn list_skins_to_window(&mut self) {
         let available = crate::config::skins::list_skins();
@@ -292,6 +321,8 @@ impl VellumGuiApp {
         for name in available {
             let marker = if active.as_deref() == Some(name.as_str()) {
                 " (active)"
+            } else if crate::config::skin_pack::load_preset(&name).is_some() {
+                " (preset)"
             } else {
                 ""
             };

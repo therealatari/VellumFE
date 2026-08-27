@@ -749,6 +749,43 @@ fn rewrite_set_assignment(a: &mut Assignments, category: &str, set: &str, fresh:
 }
 
 // ---------------------------------------------------------------------------
+// Presets
+// ---------------------------------------------------------------------------
+
+/// Persist an installed pack's manifest (assignments already rewritten for
+/// any collision renames) as an inert preset: `global/skins/<name>/skin.toml`
+/// with no art beside it — the art lives in the pool. `.setskin <name>`
+/// re-applies the assignments any time; `.skins` lists it alongside legacy
+/// skins (same dir convention, distinguished by the `format` key).
+pub fn write_preset(name: &str, manifest: &SkinPackManifest) -> anyhow::Result<()> {
+    let name = sanitize_pack_name(name)
+        .ok_or_else(|| anyhow::anyhow!("invalid preset name '{name}'"))?;
+    let dir = Config::skins_dir()?.join(&name);
+    std::fs::create_dir_all(&dir)?;
+    let text = toml::to_string_pretty(manifest)
+        .map_err(|e| anyhow::anyhow!("cannot serialize preset: {e}"))?;
+    super::write_atomic(&dir.join("skin.toml"), text)
+        .map_err(|e| anyhow::anyhow!("cannot write preset '{name}': {e}"))?;
+    Ok(())
+}
+
+/// Load `global/skins/<name>/skin.toml` as a preset. `None` when the skin
+/// doesn't exist or is a LEGACY live-manifest skin (no `format` key) — the
+/// caller falls through to the legacy path.
+pub fn load_preset(name: &str) -> Option<SkinPackManifest> {
+    let path = Config::skins_dir().ok()?.join(name).join("skin.toml");
+    let text = std::fs::read_to_string(path).ok()?;
+    if toml::from_str::<toml::Value>(&text)
+        .ok()?
+        .get("format")
+        .is_none()
+    {
+        return None;
+    }
+    parse_manifest(&text).ok()
+}
+
+// ---------------------------------------------------------------------------
 // Export
 // ---------------------------------------------------------------------------
 
