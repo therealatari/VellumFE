@@ -273,6 +273,30 @@ fn test_extract_all_attributes_mixed_forms() {
     );
 }
 
+#[test]
+fn test_find_tag_start_skips_mangled_markup() {
+    assert_eq!(XmlParser::find_tag_start("abc<b>"), Some(3));
+    assert_eq!(XmlParser::find_tag_start("<b>"), Some(0));
+    // '$<' is broken escaping, not markup
+    assert_eq!(XmlParser::find_tag_start("a$<b>"), None);
+    assert_eq!(XmlParser::find_tag_start("a$<b> then <real>"), Some(11));
+    assert_eq!(XmlParser::find_tag_start("no tags"), None);
+    // Whole mangled blob renders as literal text, no link state opened
+    let mut parser = test_parser();
+    let elements =
+        parser.parse_line("See $<a href=$Qhelp$>Recent Evasion$</a$> for details.");
+    assert_eq!(elements.len(), 1);
+    match &elements[0] {
+        ParsedElement::Text {
+            content, span_type, ..
+        } => {
+            assert_eq!(content, "See $<a href=$Qhelp$>Recent Evasion$</a$> for details.");
+            assert_eq!(*span_type, SpanType::Normal);
+        }
+        other => panic!("expected Text, got {other:?}"),
+    }
+}
+
 // ==================== Basic Text Parsing ====================
 
 #[test]
@@ -745,10 +769,12 @@ fn test_a_tag_link_with_exist_noun() {
 }
 
 #[test]
-fn mangled_close_tag_does_not_bleed_link_color() {
+fn mangled_markup_renders_literal_without_state_bleed() {
     // Real game data (weapon HELP radialsweep, 2026-08): broken $-escaping
-    // ships `$<a href=$Q...$>Recent Evasion$</a$>`. The `</a$>` close must
-    // still pop the link style, or everything after renders link-colored.
+    // ships `$<a href=$Q...$>Recent Evasion$</a$>`. Policy (matches Saga):
+    // a '$'-preceded '<' is not markup — the whole mangled blob renders as
+    // literal text, no link ever opens, and nothing after it can stay
+    // link-styled.
     let mut parser = test_parser();
     let elements = parser.parse_line(
             "Reaction: Requires attacker to have a $<a href=$Qhttps://gswiki.play.net/Recent_Evasion$Q$>Recent Evasion$</a$>.  Reaction triggers are removed.",
@@ -762,21 +788,17 @@ fn mangled_close_tag_does_not_bleed_link_color() {
             _ => None,
         })
         .collect();
-    let trailing = texts
-        .iter()
-        .find(|(content, _)| content.contains("Reaction triggers"))
-        .expect("trailing text present");
-    assert_eq!(
-        trailing.1,
-        SpanType::Normal,
-        "text after the mangled </a$> must not stay link-styled"
+    assert!(
+        texts
+            .iter()
+            .all(|(_, span_type)| *span_type == SpanType::Normal),
+        "mangled markup must not open any styled span: {texts:?}"
     );
-    // And the anchor content itself still styles as a link.
-    let inner = texts
-        .iter()
-        .find(|(content, _)| content.contains("Recent Evasion"))
-        .expect("anchor text present");
-    assert_eq!(inner.1, SpanType::Link);
+    let joined: String = texts.iter().map(|(content, _)| *content).collect();
+    assert!(
+        joined.contains("$<a href=") && joined.contains("Reaction triggers are removed."),
+        "mangled markup and surrounding text render verbatim: {joined:?}"
+    );
 }
 
 #[test]

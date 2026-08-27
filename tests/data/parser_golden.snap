@@ -367,9 +367,7 @@ Text { content: "You swing a broadsword at a kobold!", stream: "main", fg_color:
 Text { content: "A kobold", stream: "main", fg_color: None, bg_color: None, bold: false, mono: false, span_type: Monsterbold, link_data: None }
 Text { content: " tries to bite you!", stream: "main", fg_color: None, bg_color: None, bold: false, mono: false, span_type: Normal, link_data: None }
 -- line 4: "Recent Evasion: $<a href=$Qhelp evasion$>Recent Evasion$</a$> is broken markup from HELP."
-Text { content: "Recent Evasion: $", stream: "main", fg_color: None, bg_color: None, bold: false, mono: false, span_type: Normal, link_data: None }
-Text { content: "Recent Evasion$", stream: "main", fg_color: None, bg_color: None, bold: false, mono: false, span_type: Link, link_data: None }
-Text { content: " is broken markup from HELP.", stream: "main", fg_color: None, bg_color: None, bold: false, mono: false, span_type: Normal, link_data: None }
+Text { content: "Recent Evasion: $<a href=$Qhelp evasion$>Recent Evasion$</a$> is broken markup from HELP.", stream: "main", fg_color: None, bg_color: None, bold: false, mono: false, span_type: Normal, link_data: None }
 -- line 5: "<pushStream id=\"thoughts\"/>[Merchant] Someone thinks: interesting<popStream/><pushStream id=\"thoughts\"/>[Merchant] continued thought<popStream/>"
 StreamPush { id: "thoughts" }
 Text { content: "[Merchant] Someone thinks: interesting[Merchant] continued thought", stream: "thoughts", fg_color: None, bg_color: None, bold: false, mono: false, span_type: Normal, link_data: None }

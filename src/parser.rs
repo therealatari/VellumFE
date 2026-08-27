@@ -696,7 +696,7 @@ impl XmlParser {
             // A paired tag is only handled when the first '<' in the tail
             // starts one, so find that '<' once and prefix-check the ten
             // patterns there instead of scanning the whole tail per pattern.
-            if let Some(tag_start) = remaining.find('<') {
+            if let Some(tag_start) = Self::find_tag_start(remaining) {
                 for (start_pattern, end_pattern) in PAIRED_TAGS {
                     if !remaining[tag_start..].starts_with(start_pattern) {
                         continue;
@@ -727,7 +727,7 @@ impl XmlParser {
             }
 
             // Find next single XML tag
-            if let Some(tag_start) = remaining.find('<') {
+            if let Some(tag_start) = Self::find_tag_start(remaining) {
                 // Add text before tag to buffer
                 if tag_start > 0 {
                     text_buffer.push_str(&remaining[..tag_start]);

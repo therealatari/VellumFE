@@ -135,6 +135,24 @@ impl XmlParser {
         }
     }
 
+    /// First '<' in `s` that plausibly starts real markup. A '<' preceded by
+    /// '$' is the game's broken escaping (ability HELP text ships
+    /// `$<a href=$Q...$>...$</a$>`); interpreting such a tag can corrupt
+    /// parser state (imagine a mangled `$<pushStream>`), so mangled markup
+    /// renders as literal text instead — the same policy Saga applies.
+    pub(super) fn find_tag_start(s: &str) -> Option<usize> {
+        let bytes = s.as_bytes();
+        let mut from = 0;
+        while let Some(p) = s[from..].find('<').map(|p| p + from) {
+            if p > 0 && bytes[p - 1] == b'$' {
+                from = p + 1;
+                continue;
+            }
+            return Some(p);
+        }
+        None
+    }
+
     /// Extract the element name from a raw tag string like "<pushStream id=..>"
     /// or "</compDef>". Empty if the input is not tag-shaped.
     pub(super) fn tag_name(tag: &str) -> &str {
