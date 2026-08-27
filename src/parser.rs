@@ -205,6 +205,13 @@ pub enum ParsedElement {
         rpa: Option<f32>,
     },
     StreamPop,
+    /// A pop uncovered an enclosing stream redirect: subsequent text belongs
+    /// to `id`, but WITHOUT the arrival side effects of a fresh StreamPush
+    /// (buffer clears for room/inv/reserve). Emitted by the parser's stream
+    /// stack so scalar consumers stay correct under nested redirects.
+    StreamResume {
+        id: String,
+    },
     ClearStream {
         id: String,
     },
@@ -518,6 +525,9 @@ pub(crate) struct ColorStyle {
 #[derive(Clone)]
 pub struct XmlParser {
     current_stream: String,
+    /// Open stream redirects, innermost last; `current_stream` mirrors the
+    /// top (or "main"), so a pop restores the enclosing redirect.
+    stream_stack: Vec<String>,
     presets: HashMap<String, (Option<String>, Option<String>)>, // id -> (fg, bg)
 
     // State tracking for nested tags
@@ -601,6 +611,7 @@ impl XmlParser {
 
         Self {
             current_stream: "main".to_string(),
+            stream_stack: Vec::new(),
             presets,
             color_stack: vec![],
             preset_stack: vec![],
@@ -871,8 +882,7 @@ impl XmlParser {
             if !text_buffer.is_empty() {
                 self.flush_text_with_events(std::mem::take(text_buffer), elements);
             }
-            elements.push(ParsedElement::StreamPop);
-            self.current_stream = "main".to_string();
+            self.pop_stream(elements);
         } else if tag.starts_with("<pushStream ") {
             // If we encounter a mid-line stream switch into the speech stream, carry the
             // buffered text forward so the speech window gets the full line (including
@@ -894,8 +904,7 @@ impl XmlParser {
             if !text_buffer.is_empty() {
                 self.flush_text_with_events(std::mem::take(text_buffer), elements);
             }
-            elements.push(ParsedElement::StreamPop);
-            self.current_stream = "main".to_string();
+            self.pop_stream(elements);
         } else if tag.starts_with("<clearStream ") {
             self.handle_clear_stream(tag, elements);
         } else if tag.starts_with("<prompt ") {

@@ -335,8 +335,7 @@ impl XmlParser {
                         "Detected inventory terminator: '{}' - switching to main stream",
                         terminator
                     );
-                    self.current_stream = "main".to_string();
-                    elements.push(ParsedElement::StreamPop);
+                    self.pop_stream(elements);
                     break;
                 }
             }

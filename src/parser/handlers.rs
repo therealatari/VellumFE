@@ -128,7 +128,24 @@ impl XmlParser {
         // <pushStream id='speech'/> or <component id='room objs'/>
         if let Some(id) = Self::extract_attribute(tag, "id") {
             self.current_stream = id.clone();
+            self.stream_stack.push(id.clone());
             elements.push(ParsedElement::StreamPush { id });
+        }
+    }
+
+    /// Pop the innermost stream redirect. Restores the enclosing stream when
+    /// one is open (emitting StreamResume so scalar consumers re-route),
+    /// otherwise falls back to main. A pop with nothing open is not an
+    /// error — the wire does this — and still re-asserts main.
+    pub(super) fn pop_stream(&mut self, elements: &mut Vec<ParsedElement>) {
+        self.stream_stack.pop();
+        elements.push(ParsedElement::StreamPop);
+        match self.stream_stack.last() {
+            Some(outer) => {
+                self.current_stream = outer.clone();
+                elements.push(ParsedElement::StreamResume { id: outer.clone() });
+            }
+            None => self.current_stream = "main".to_string(),
         }
     }
 
@@ -148,8 +165,7 @@ impl XmlParser {
         // stream, which emits a `<pushBold/>` whose matching `<popBold/>` is
         // dropped, leaking monsterbold onto every subsequent line. Reset the
         // transient style stacks at the prompt so a missing close can never
-        // bleed past the current round. (This does NOT touch stream state,
-        // which spans prompts legitimately.)
+        // bleed past the current round.
         if !self.bold_stack.is_empty()
             || !self.preset_stack.is_empty()
             || !self.color_stack.is_empty()
@@ -184,6 +200,23 @@ impl XmlParser {
                 "[parser] clearing mono output region left open at prompt (missing <output class=\"\"/>)"
             );
             self.mono_output = false;
+        }
+
+        // Streams don't legitimately span a prompt either: the game closes
+        // every redirect before prompting, so a stream still open here means
+        // its popStream was eaten upstream. Without this, one lost pop
+        // misroutes every subsequent main-stream line into the stale stream
+        // until the next push. Emit real pops so core flushes its per-stream
+        // buffers on the way down. (Owner decision 2026-08-27: prompts are
+        // trustworthy in both Lich and direct modes.)
+        if !self.stream_stack.is_empty() {
+            tracing::warn!(
+                "[parser] prompt arrived with open stream redirect(s) [{}] - force-closing",
+                self.stream_stack.join(", ")
+            );
+            while !self.stream_stack.is_empty() {
+                self.pop_stream(elements);
+            }
         }
 
         // Extract time and text content

@@ -297,6 +297,69 @@ fn test_find_tag_start_skips_mangled_markup() {
     }
 }
 
+#[test]
+fn nested_stream_pop_restores_enclosing_stream() {
+    let mut parser = test_parser();
+    parser.parse_line("<pushStream id=\"outer\"/>outer text");
+    let elements = parser.parse_line("<pushStream id=\"inner\"/>inner<popStream/>back outside");
+    // Pop of inner must resume outer, not reset to main
+    assert!(
+        elements
+            .iter()
+            .any(|e| matches!(e, ParsedElement::StreamResume { id } if id == "outer")),
+        "expected StreamResume {{ outer }}: {elements:?}"
+    );
+    let back = elements
+        .iter()
+        .find_map(|e| match e {
+            ParsedElement::Text { content, stream, .. } if content.contains("back") => {
+                Some(stream.as_str())
+            }
+            _ => None,
+        })
+        .expect("trailing text present");
+    assert_eq!(back, "outer");
+}
+
+#[test]
+fn unbalanced_pop_still_lands_on_main() {
+    let mut parser = test_parser();
+    let elements = parser.parse_line("<popStream/>after stray pop");
+    let text = elements
+        .iter()
+        .find_map(|e| match e {
+            ParsedElement::Text { stream, .. } => Some(stream.as_str()),
+            _ => None,
+        })
+        .expect("text present");
+    assert_eq!(text, "main");
+}
+
+#[test]
+fn prompt_force_closes_open_streams() {
+    // A stream whose popStream was eaten upstream must not survive the
+    // prompt — one lost pop used to misroute all later text until the
+    // next push (owner decision 2026-08-27: prompt is a trusted sync point).
+    let mut parser = test_parser();
+    parser.parse_line("<pushStream id=\"thoughts\"/>a stray thought");
+    let prompt_elems = parser.parse_line("<prompt time=\"1\">&gt;</prompt>");
+    assert!(
+        prompt_elems
+            .iter()
+            .any(|e| matches!(e, ParsedElement::StreamPop)),
+        "prompt must emit the missing pop: {prompt_elems:?}"
+    );
+    let after = parser.parse_line("normal game text");
+    let stream = after
+        .iter()
+        .find_map(|e| match e {
+            ParsedElement::Text { stream, .. } => Some(stream.as_str()),
+            _ => None,
+        })
+        .expect("text present");
+    assert_eq!(stream, "main", "text after prompt must not stay misrouted");
+}
+
 // ==================== Basic Text Parsing ====================
 
 #[test]

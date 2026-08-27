@@ -382,16 +382,17 @@ Text { content: "Your familiar sees a ", stream: "familiar", fg_color: None, bg_
 Text { content: "troll", stream: "familiar", fg_color: None, bg_color: None, bold: false, mono: false, span_type: Monsterbold, link_data: None }
 Text { content: " arrive.", stream: "familiar", fg_color: None, bg_color: None, bold: false, mono: false, span_type: Normal, link_data: None }
 -- line 8: "<prompt time=\"1756300001\">&gt;</prompt>"
+StreamPop
 Prompt { time: "1756300001", text: ">" }
 -- line 9: "<style id=\"roomName\"/>[Town Square, Small Park]<style id=\"\"/>"
-Text { content: "[Town Square, Small Park]", stream: "familiar", fg_color: None, bg_color: None, bold: false, mono: false, span_type: Normal, link_data: None }
+Text { content: "[Town Square, Small Park]", stream: "main", fg_color: None, bg_color: None, bold: false, mono: false, span_type: Normal, link_data: None }
 -- line 10: "<style id=\"roomDesc\"/>Beneath the shade of some trees sits a small bench.<style id=\"\"/>"
-Text { content: "Beneath the shade of some trees sits a small bench.", stream: "familiar", fg_color: None, bg_color: None, bold: false, mono: false, span_type: Normal, link_data: None }
+Text { content: "Beneath the shade of some trees sits a small bench.", stream: "main", fg_color: None, bg_color: None, bold: false, mono: false, span_type: Normal, link_data: None }
 -- line 11: "Obvious paths: <d>north</d>, <d cmd=\"go gate\">gate</d>"
-Text { content: "Obvious paths: ", stream: "familiar", fg_color: None, bg_color: None, bold: false, mono: false, span_type: Normal, link_data: None }
-Text { content: "north", stream: "familiar", fg_color: None, bg_color: None, bold: false, mono: false, span_type: Link, link_data: Some(LinkData { exist_id: "_direct_", noun: "", text: "north", coord: None }) }
-Text { content: ", ", stream: "familiar", fg_color: None, bg_color: None, bold: false, mono: false, span_type: Normal, link_data: None }
-Text { content: "gate", stream: "familiar", fg_color: None, bg_color: None, bold: false, mono: false, span_type: Link, link_data: Some(LinkData { exist_id: "_direct_", noun: "go gate", text: "gate", coord: None }) }
+Text { content: "Obvious paths: ", stream: "main", fg_color: None, bg_color: None, bold: false, mono: false, span_type: Normal, link_data: None }
+Text { content: "north", stream: "main", fg_color: None, bg_color: None, bold: false, mono: false, span_type: Link, link_data: Some(LinkData { exist_id: "_direct_", noun: "", text: "north", coord: None }) }
+Text { content: ", ", stream: "main", fg_color: None, bg_color: None, bold: false, mono: false, span_type: Normal, link_data: None }
+Text { content: "gate", stream: "main", fg_color: None, bg_color: None, bold: false, mono: false, span_type: Link, link_data: Some(LinkData { exist_id: "_direct_", noun: "go gate", text: "gate", coord: None }) }
 -- line 12: "<component id='room objs'>You also see a <pushBold/>giant rat<popBold/> and some stuff.</component>"
 Component { id: "room objs", value: "You also see a <pushBold/>giant rat<popBold/> and some stuff." }
 -- line 13: "<component id='room players'>Also here: <a exist=\"-10891\" noun=\"Niffy\">Niffy</a></component>"
@@ -412,7 +413,7 @@ RightHand { item: "Empty", link: Some(LinkData { exist_id: "0", noun: "", text: 
 Spell { text: "Minor Shock" }
 SpellHand { spell: "Minor Shock" }
 -- line 20: "Entities: &lt;tag&gt; &amp; &quot;quoted&quot; &apos;text&apos; and unknown &unknown; ref &#65; &#x42; stay literal today."
-Text { content: "Entities: <tag> & \"quoted\" 'text' and unknown &unknown; ref A B stay literal today.", stream: "familiar", fg_color: None, bg_color: None, bold: false, mono: false, span_type: Normal, link_data: None }
+Text { content: "Entities: <tag> & \"quoted\" 'text' and unknown &unknown; ref A B stay literal today.", stream: "main", fg_color: None, bg_color: None, bold: false, mono: false, span_type: Normal, link_data: None }
 -- line 21: "<dialogData id='minivitals'><progressBar id='health' value='84' text='health 92/109' left='0%' top='0%' width='25%' height='100%'/><progressBar id='mana' value='100' text='mana 42/42' left='25%' top='0%' width='25%' height='100%'/></dialogData>"
 ProgressBar { id: "health", value: 92, max: 109, text: "health 92/109" }
 ProgressBar { id: "mana", value: 42, max: 42, text: "mana 42/42" }

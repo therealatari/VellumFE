@@ -272,6 +272,23 @@ impl MessageProcessor {
                 self.discard_current_stream = false;
                 self.current_stream = String::from("main");
             }
+            ParsedElement::StreamResume { id } => {
+                // A pop uncovered an enclosing redirect (parser stream
+                // stack): re-route to it like a push, but WITHOUT the
+                // arrival side effects — the enclosing stream's content is
+                // mid-accumulation, so clearing room/inv/reserve buffers
+                // here would destroy it.
+                self.note_seen_stream(id, None);
+                self.current_stream = id.clone();
+                if self.stream_has_target_window(ui_state, id) {
+                    self.discard_current_stream = false;
+                } else {
+                    self.discard_current_stream = matches!(
+                        self.resolve_orphaned_stream(id),
+                        RouteDecision::Discard
+                    );
+                }
+            }
             ParsedElement::ClearStream { id } => {
                 // ClearStream clears the window content for a fresh update
                 if id == "percWindow" {
