@@ -1326,6 +1326,7 @@ TextWindow: main, thoughts, speech, bestiary, announcements, loot, death, logons
   tts_speak = false
   show_grid = true
   show_order = false
+  cycle_wrap = true
 
 [template.players]
   widget_type = "players"
