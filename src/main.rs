@@ -243,6 +243,20 @@ enum Commands {
         path: PathBuf,
     },
 
+    /// Convert a legacy live-manifest skin (global/skins/<NAME>/) into a
+    /// shareable skin pack zip. Maps doll + calibration, compass, frames,
+    /// default background/border, status icons, edges and control faces;
+    /// prints what has no pack equivalent. The legacy skin is not touched.
+    MigrateSkin {
+        /// Installed skin name (a directory under global/skins/)
+        #[arg(value_name = "NAME")]
+        skin: String,
+
+        /// Output zip (default: <config>/exports/<NAME>-skin.zip)
+        #[arg(long, value_name = "FILE")]
+        out: Option<PathBuf>,
+    },
+
     /// Import highlights from a Wrayth/StormFront settings XML file
     ImportHighlights {
         /// Wrayth settings XML file (e.g. 70682.xml)
@@ -436,6 +450,48 @@ fn main() -> Result<()> {
                     );
                     std::process::exit(1);
                 }
+                return Ok(());
+            }
+
+            Commands::MigrateSkin { skin, out } => {
+                println!("Migrating legacy skin '{skin}' to a skin pack");
+                let (pack, warnings) = match config::skin_pack::migrate_legacy(&skin) {
+                    Ok(result) => result,
+                    Err(e) => {
+                        eprintln!("✗ {e:#}");
+                        std::process::exit(1);
+                    }
+                };
+                for warning in &warnings {
+                    println!("! {warning}");
+                }
+                let findings = config::skin_pack::validate(&pack);
+                for warning in &findings.warnings {
+                    println!("! {warning}");
+                }
+                if !findings.ok() {
+                    for error in &findings.errors {
+                        eprintln!("✗ {error}");
+                    }
+                    std::process::exit(1);
+                }
+                let dest = match out {
+                    Some(path) => path,
+                    None => {
+                        let dir = config::Config::base_dir()?.join("exports");
+                        std::fs::create_dir_all(&dir)?;
+                        dir.join(format!("{skin}-skin.zip"))
+                    }
+                };
+                if let Err(e) = config::skin_pack::write_pack_zip(&pack, &dest) {
+                    eprintln!("✗ {e:#}");
+                    std::process::exit(1);
+                }
+                println!(
+                    "✓ wrote {} ({} file(s)) — install with .importskin, or share it",
+                    dest.display(),
+                    pack.files.len()
+                );
                 return Ok(());
             }
 

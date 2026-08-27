@@ -947,6 +947,286 @@ pub fn write_pack_zip(pack: &SkinPack, dest: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Legacy migration
+// ---------------------------------------------------------------------------
+
+/// Convert a legacy live-manifest skin (`global/skins/<name>/`) into a
+/// pack. Maps what the appearance model can express — doll base +
+/// calibration, compass, named frames, default background/border, status
+/// icons, edges, control faces — and reports everything it cannot
+/// (per-window entries, doll variants/part overlays, sheets, ui palette,
+/// creature card/field) as warnings. Art is resolved the way the live
+/// skin resolved it (skin dir first, then the pool) and synthesized
+/// sidecars carry the manifest's calibration, so the pack installs
+/// pre-calibrated.
+pub fn migrate_legacy(skin_name: &str) -> anyhow::Result<(SkinPack, Vec<String>)> {
+    let (manifest, root) = super::skins::load_manifest(skin_name)
+        .map_err(|e| anyhow::anyhow!("cannot load skin '{skin_name}': {e}"))?;
+    let set_name = sanitize_pack_name(skin_name)
+        .ok_or_else(|| anyhow::anyhow!("skin name '{skin_name}' is not pack-safe"))?;
+    let mut files: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+    let mut assignments = Assignments::default();
+    let mut warnings: Vec<String> = Vec::new();
+
+    let ext_of = |image: &str| -> String {
+        image
+            .rsplit_once('.')
+            .map(|(_, ext)| ext.to_ascii_lowercase())
+            .filter(|ext| IMAGE_EXTS.contains(&ext.as_str()))
+            .unwrap_or_else(|| "png".to_string())
+    };
+    // Resolve an image the way the live skin did, read it, optionally bake
+    // sidecar metadata, and add both entries.
+    let add = |files: &mut BTreeMap<String, Vec<u8>>,
+               dest: String,
+               image: &str,
+               sidecar: Option<String>|
+     -> anyhow::Result<()> {
+        let abs = super::skins::resolve_image_path(&root, image);
+        let bytes = std::fs::read(&abs)
+            .map_err(|e| anyhow::anyhow!("'{image}' ({}): {e}", abs.display()))?;
+        let bytes = match &sidecar {
+            Some(meta) if dest.to_ascii_lowercase().ends_with(".png") => {
+                super::png_meta::write_embedded_bytes(&bytes, meta).unwrap_or(bytes)
+            }
+            _ => bytes,
+        };
+        if let Some(meta) = sidecar {
+            let stem = dest.rsplit_once('.').map_or(dest.as_str(), |(s, _)| s);
+            files.insert(format!("{stem}.toml"), meta.into_bytes());
+        }
+        files.insert(dest, bytes);
+        Ok(())
+    };
+
+    // Injury doll base + calibration.
+    if let Some(base) = &manifest.injury_doll.base {
+        let stem = Path::new(base)
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| set_name.clone());
+        let dest = format!("dolls/{stem}.{}", ext_of(base));
+        let mut doc = toml_edit::DocumentMut::new();
+        doc.insert("kind", toml_edit::value(DollSidecar::KIND));
+        doc.insert(
+            "anchors",
+            toml_edit::Item::Table(super::pool::anchors_toml_table(&manifest.injury_doll.anchors)),
+        );
+        doc.insert(
+            "dots",
+            toml_edit::Item::Table(super::pool::dots_toml_table(&manifest.injury_doll.dots)),
+        );
+        add(&mut files, dest.clone(), base, Some(doc.to_string()))?;
+        assignments.doll_image = Some(dest);
+    }
+
+    // Compass sprites -> a foldered set named for the skin.
+    if let Some(rose) = &manifest.compass.rose {
+        add(
+            &mut files,
+            format!("compass/{set_name}/rose.{}", ext_of(rose)),
+            rose,
+            None,
+        )?;
+        for (direction, image) in &manifest.compass.directions {
+            add(
+                &mut files,
+                format!(
+                    "compass/{set_name}/{}.{}",
+                    direction.to_ascii_lowercase(),
+                    ext_of(image)
+                ),
+                image,
+                None,
+            )?;
+        }
+        assignments.compass_set = Some(set_name.clone());
+    }
+
+    // Named frames -> pool frames with nine-slice sidecars.
+    let frame_sidecar = |spec: &super::skins::BorderSpec| -> String {
+        let mut doc = toml_edit::DocumentMut::new();
+        doc.insert("kind", toml_edit::value(FrameSidecar::KIND));
+        let mut arr = toml_edit::Array::new();
+        for inset in spec.slice {
+            arr.push(super::pool::toml_rounded(inset, 10.0));
+        }
+        doc.insert("slice", toml_edit::value(arr));
+        doc.insert(
+            "scale",
+            toml_edit::value(super::pool::toml_rounded(spec.scale, 10_000.0)),
+        );
+        doc.to_string()
+    };
+    let mut frame_stem_for_image: HashMap<String, String> = HashMap::new();
+    for (frame_name, spec) in &manifest.frames {
+        let stem = frame_name.to_ascii_lowercase();
+        add(
+            &mut files,
+            format!("frames/{stem}.{}", ext_of(&spec.image)),
+            &spec.image,
+            Some(frame_sidecar(spec)),
+        )?;
+        frame_stem_for_image.insert(spec.image.clone(), stem);
+    }
+
+    // The "default" window entry maps to the global defaults; every other
+    // per-window entry has no appearance slot.
+    for (window_name, window) in &manifest.windows {
+        if window_name != "default" {
+            warnings.push(format!(
+                "[window.{window_name}] is per-window art — not representable in a pack \
+                 (assign it via the window's Appearance menu after install)"
+            ));
+            continue;
+        }
+        if let Some(background) = &window.background {
+            let stem = Path::new(&background.image)
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| set_name.clone());
+            let dest = format!("backgrounds/{stem}.{}", ext_of(&background.image));
+            add(&mut files, dest.clone(), &background.image, None)?;
+            assignments.default_background = Some(dest);
+        }
+        if let Some(border) = &window.border {
+            let stem = match frame_stem_for_image.get(&border.image) {
+                Some(stem) => stem.clone(),
+                None => {
+                    let stem = format!("{set_name}-default");
+                    add(
+                        &mut files,
+                        format!("frames/{stem}.{}", ext_of(&border.image)),
+                        &border.image,
+                        Some(frame_sidecar(border)),
+                    )?;
+                    stem
+                }
+            };
+            assignments.default_frame = Some(stem);
+        }
+    }
+
+    // Status icons -> a statusicons set (roles are indicator ids).
+    if !manifest.icons.is_empty() {
+        for (id, image) in &manifest.icons {
+            add(
+                &mut files,
+                format!(
+                    "statusicons/{set_name}/{}.{}",
+                    id.to_ascii_lowercase(),
+                    ext_of(image)
+                ),
+                image,
+                None,
+            )?;
+        }
+        assignments.status_icon_set = Some(set_name.clone());
+    }
+
+    // Edge overlays -> an edges set ({side}.png + {side}-ornament.png).
+    if !manifest.edges.is_empty() {
+        for (side, spec) in &manifest.edges {
+            let side = side.to_ascii_lowercase();
+            if let Some(strip) = &spec.strip {
+                let mut doc = toml_edit::DocumentMut::new();
+                doc.insert("kind", toml_edit::value(EdgeSidecar::KIND));
+                doc.insert("tile", toml_edit::value(spec.tile));
+                if let Some(anchor) = &spec.anchor {
+                    doc.insert("anchor", toml_edit::value(anchor.as_str()));
+                }
+                if let Some(thickness) = spec.thickness {
+                    doc.insert(
+                        "thickness",
+                        toml_edit::value(super::pool::toml_rounded(thickness, 10.0)),
+                    );
+                }
+                doc.insert(
+                    "scale",
+                    toml_edit::value(super::pool::toml_rounded(spec.scale, 10_000.0)),
+                );
+                add(
+                    &mut files,
+                    format!("edges/{set_name}/{side}.{}", ext_of(strip)),
+                    strip,
+                    Some(doc.to_string()),
+                )?;
+            }
+            if let Some(ornament) = &spec.ornament {
+                add(
+                    &mut files,
+                    format!("edges/{set_name}/{side}-ornament.{}", ext_of(ornament)),
+                    ornament,
+                    None,
+                )?;
+            }
+        }
+        assignments.edge_set = Some(set_name.clone());
+    }
+
+    // Control faces -> frames assigned per control key ("button",
+    // "button.hover", ...); the dot is not filename-safe, so the stem
+    // swaps it for a dash.
+    for (control, spec) in &manifest.controls {
+        let stem = format!("{set_name}-{}", control.to_ascii_lowercase().replace('.', "-"));
+        add(
+            &mut files,
+            format!("frames/{stem}.{}", ext_of(&spec.image)),
+            &spec.image,
+            Some(frame_sidecar(spec)),
+        )?;
+        assignments
+            .control_frames
+            .insert(control.to_ascii_lowercase(), stem);
+    }
+
+    // Everything with no appearance slot: detect from the raw TOML so the
+    // report is complete even for sections the typed manifest defaults.
+    let raw_path = root.join("skin.toml");
+    if let Ok(raw) = std::fs::read_to_string(&raw_path) {
+        if let Ok(value) = toml::from_str::<toml::Value>(&raw) {
+            for (key, label) in [
+                ("ui", "the [ui] palette"),
+                ("sheets", "icon sprite sheets"),
+                ("creature_card", "the creature card template"),
+                ("creature_field", "creature field camera tuning"),
+            ] {
+                if value.get(key).is_some() {
+                    warnings.push(format!(
+                        "{label} has no pack equivalent — that section stays with the legacy skin"
+                    ));
+                }
+            }
+            if let Some(doll) = value.get("injury_doll").and_then(|d| d.as_table()) {
+                if doll.keys().any(|k| {
+                    !matches!(k.as_str(), "base" | "anchors" | "dots")
+                }) {
+                    warnings.push(
+                        "doll part overlays / variants / sets are authored art with no pack \
+                         equivalent — only the base + calibration migrated"
+                            .to_string(),
+                    );
+                }
+            }
+        }
+    }
+
+    let pack = SkinPack {
+        manifest: SkinPackManifest {
+            format: FORMAT_VERSION,
+            meta: PackMeta {
+                name: set_name,
+                description: Some(format!("Migrated from legacy skin '{skin_name}'")),
+                author: None,
+            },
+            assignments,
+        },
+        files,
+    };
+    Ok((pack, warnings))
+}
+
 /// Pack name from user input: letters, digits, `-`, `_` only (matching
 /// the jinx skin-name rule), so it's a safe path component everywhere.
 pub fn sanitize_pack_name(raw: &str) -> Option<String> {
@@ -1211,6 +1491,102 @@ mod tests {
         // Frame had no collision: installed under its own name.
         assert!(pool.join("frames/ornate.png").is_file());
         assert_eq!(report.assignments.default_frame.as_deref(), Some("ornate"));
+
+        std::env::remove_var("VELLUM_FE_DIR");
+    }
+
+    #[test]
+    fn migrate_legacy_skin_maps_slots_and_reports_the_rest() {
+        let dir = tempfile::tempdir().unwrap();
+        let _guard = env_guard(dir.path());
+
+        let root = Config::skins_dir().unwrap().join("oldskin");
+        std::fs::create_dir_all(root.join("art")).unwrap();
+        for name in [
+            "art/doll.png",
+            "art/rose.png",
+            "art/n.png",
+            "art/frame.png",
+            "art/paper.png",
+            "art/strip.png",
+            "art/button.png",
+        ] {
+            std::fs::write(root.join(name), tiny_png(1)).unwrap();
+        }
+        std::fs::write(
+            root.join("skin.toml"),
+            r##"
+[meta]
+name = "Old"
+
+[injury_doll]
+base = "art/doll.png"
+[injury_doll.anchors]
+head = [0.5, 0.1]
+[injury_doll.chest]
+healthy = "art/doll.png"
+
+[compass]
+rose = "art/rose.png"
+n = "art/n.png"
+
+[frames.ornate]
+image = "art/frame.png"
+slice = [8.0, 8.0, 8.0, 8.0]
+scale = 0.5
+
+[window.default.background]
+image = "art/paper.png"
+[window.default.border]
+image = "art/frame.png"
+slice = [8.0, 8.0, 8.0, 8.0]
+
+[window.thoughts.background]
+image = "art/paper.png"
+
+[icons]
+kneeling = "art/n.png"
+
+[edges.right]
+strip = "art/strip.png"
+tile = true
+
+[controls."button.hover"]
+image = "art/button.png"
+slice = [4.0, 4.0, 4.0, 4.0]
+
+[ui]
+accent = "#ff0000"
+"##,
+        )
+        .unwrap();
+
+        let (pack, warnings) = migrate_legacy("oldskin").unwrap();
+        let a = &pack.manifest.assignments;
+        assert_eq!(a.doll_image.as_deref(), Some("dolls/doll.png"));
+        assert_eq!(a.compass_set.as_deref(), Some("oldskin"));
+        // The default border reuses the named frame it shares art with.
+        assert_eq!(a.default_frame.as_deref(), Some("ornate"));
+        assert_eq!(a.default_background.as_deref(), Some("backgrounds/paper.png"));
+        assert_eq!(a.status_icon_set.as_deref(), Some("oldskin"));
+        assert_eq!(a.edge_set.as_deref(), Some("oldskin"));
+        assert_eq!(
+            a.control_frames.get("button.hover").map(String::as_str),
+            Some("oldskin-button-hover")
+        );
+        // Sidecars synthesized from the manifest.
+        assert!(pack.files.contains_key("dolls/doll.toml"));
+        assert!(String::from_utf8_lossy(&pack.files["frames/ornate.toml"]).contains("slice"));
+        assert!(String::from_utf8_lossy(&pack.files["edges/oldskin/right.toml"]).contains("tile"));
+        assert!(pack.files.contains_key("compass/oldskin/rose.png"));
+        assert!(pack.files.contains_key("statusicons/oldskin/kneeling.png"));
+        // The migrated pack validates clean.
+        let findings = validate(&pack);
+        assert!(findings.ok(), "{:?}", findings.errors);
+        // Non-mappable content is reported.
+        assert!(warnings.iter().any(|w| w.contains("window.thoughts")));
+        assert!(warnings.iter().any(|w| w.contains("[ui] palette")));
+        assert!(warnings.iter().any(|w| w.contains("part overlays")));
 
         std::env::remove_var("VELLUM_FE_DIR");
     }
