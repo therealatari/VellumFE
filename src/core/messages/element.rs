@@ -742,6 +742,11 @@ impl MessageProcessor {
                 // Update countdowns that listen for "casttime"
                 self.update_countdown_by_id(ui_state, "casttime", end_time_server);
             }
+            ParsedElement::AimTime { value } => {
+                // Aimed-shot timer (AimTimerDialog): absolute server end
+                // time like casttime; 0 (dialog closed) clears.
+                self.update_countdown_by_id(ui_state, "aimtime", *value as i64);
+            }
             ParsedElement::Event {
                 event_type,
                 action,

@@ -120,6 +120,11 @@ pub enum ParsedElement {
     CastTime {
         value: u32,
     },
+    /// AimTimerDialog timer (aimed-shot countdown): absolute server end
+    /// time, 0 = cleared (dialog closed).
+    AimTime {
+        value: u32,
+    },
     /// `<vellumTimer id='...' value='...'/>` - VellumFE extension for
     /// script-driven countdowns. `id` names the countdown feed id, `value`
     /// is the absolute epoch end time in seconds (0 or past clears).
@@ -629,12 +634,8 @@ impl XmlParser {
     }
 
     pub fn parse_line(&mut self, line: &str) -> Vec<ParsedElement> {
-        // Filter out GSL (GemStone Language) protocol tags from Lich proxy
-        // GSL tags start with \x1C (File Separator, ASCII 28) followed by "GS" + letter + data
-        // Examples: \x1CGSB (char info), \x1CGSj (compass), \x1CGSg (stance), \x1CGSP (prompt)
-        // These are internal protocol messages not meant for display
-
-        // Check if line is purely a GSL tag - if so, skip it entirely (no blank line)
+        // GSL protocol tags (\x1C + "GS" + letter, from Lich proxy) are
+        // internal messages, never display text: skip pure-GSL lines.
         if Self::is_gsl_tag_line(line) {
             tracing::debug!("[GSL] Skipping GSL tag line: '{}'", line);
             return vec![];

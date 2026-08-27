@@ -438,6 +438,43 @@ fn multi_line_component_close_with_remainder() {
     );
 }
 
+#[test]
+fn aimtimer_dialog_emits_aimtime() {
+    let mut parser = test_parser();
+    let elements = parser.parse_line(
+        "<openDialog type='dynamic' id='AimTimerDialog' title='Aim Timer'><dialogData id='AimTimerDialog'><timer id='aimTimer' value='1756300045'/></dialogData></openDialog>",
+    );
+    assert!(
+        elements
+            .iter()
+            .any(|e| matches!(e, ParsedElement::AimTime { value: 1756300045 })),
+        "timer value extracted: {elements:?}"
+    );
+    let closed = parser.parse_line("<closeDialog id='AimTimerDialog'/>");
+    assert!(
+        closed
+            .iter()
+            .any(|e| matches!(e, ParsedElement::AimTime { value: 0 })),
+        "close clears the countdown: {closed:?}"
+    );
+}
+
+#[test]
+fn mindstate_tutelage_attr_aliases_fashlonae() {
+    let mut parser = test_parser();
+    let elements = parser.parse_line(
+        "<dialogData id='expr'><progressBar id='mindState' value='34' text='clear as a bell' tutelage='2'/></dialogData>",
+    );
+    let fash = elements
+        .iter()
+        .find_map(|e| match e {
+            ParsedElement::MindStateExp { fashlonae, .. } => Some(*fashlonae),
+            _ => None,
+        })
+        .expect("MindStateExp emitted");
+    assert_eq!(fash, Some(2));
+}
+
 // ==================== Basic Text Parsing ====================
 
 #[test]

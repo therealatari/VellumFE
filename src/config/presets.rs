@@ -173,6 +173,7 @@ pub const CATALOG: &[(&str, Option<GameType>)] = &[
     ("roundtime", None),
     ("casttime", None),
     ("stuntime", None),
+    ("aimtime", Some(GameType::GS4)),
     ("pulse", Some(GameType::GS4)),
     ("countdown_custom", None),
     ("left", None),
@@ -1073,6 +1074,30 @@ impl Config {
                 },
                 data: CountdownWidgetData {
                     id: Some("stuntime".to_string()),
+                    label: None,
+                    icon: Some(default_countdown_icon().chars().next().unwrap_or('█')),
+                    color: None,
+                    countdown_background_color: None,
+                    show_when_zero: None,
+                    count_past_zero: None,
+                },
+            }),
+
+            // Aimed-shot timer (AimTimerDialog on the wire); GS4-only.
+            "aimtime" => Some(WindowDef::Countdown {
+                base: WindowBase {
+                    name: "aimtime".to_string(),
+                    title: Some("Aim".to_string()),
+                    row: Row::new(0),
+                    col: Col::new(0),
+                    rows: Height::new(3),
+                    cols: Width::new(20),
+                    show_border: true,
+                    text_color: Some("#FFA500".to_string()), // Orange
+                    ..base_defaults.clone()
+                },
+                data: CountdownWidgetData {
+                    id: Some("aimtime".to_string()),
                     label: None,
                     icon: Some(default_countdown_icon().chars().next().unwrap_or('█')),
                     color: None,

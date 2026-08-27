@@ -159,6 +159,16 @@ impl XmlParser {
         tag_head: &str,
         elements: &mut Vec<ParsedElement>,
     ) -> bool {
+        // AimTimerDialog (aimed-shot countdown, Saga-documented): the timer
+        // child carries an absolute server end time like castTime. Fully
+        // specialized — its controls never render as a generic dialog.
+        if Self::extract_dialog_data_id(tag_head).as_deref() == Some("AimTimerDialog") {
+            if let Some(value) = Self::extract_aim_timer(tag) {
+                elements.push(ParsedElement::AimTime { value });
+            }
+            return true;
+        }
+
         // dropDownBoxes can share a chunk with buttons or arrive alone.
         // Emit them ADDITIVELY (no early return, and without marking the
         // chunk specialized) so button parsing below and the legacy
@@ -468,8 +478,25 @@ impl XmlParser {
         false
     }
 
+    /// Pull the `<timer value=...>` out of an AimTimerDialog chunk.
+    pub(super) fn extract_aim_timer(tag: &str) -> Option<u32> {
+        let timer_start = tag.find("<timer ")?;
+        let timer_tag = &tag[timer_start..];
+        let timer_tag = &timer_tag[..timer_tag.find('>').map_or(timer_tag.len(), |p| p + 1)];
+        Self::extract_attribute(timer_tag, "value").and_then(|v| v.parse::<u32>().ok())
+    }
+
     pub(super) fn handle_open_dialog(&mut self, tag: &str, elements: &mut Vec<ParsedElement>) {
         let tag_head = tag.split('>').next().unwrap_or(tag);
+
+        // AimTimerDialog is fully specialized (Saga semantics): it feeds the
+        // aimtime countdown and never renders as a popup.
+        if Self::extract_attribute(tag_head, "id").as_deref() == Some("AimTimerDialog") {
+            if let Some(value) = Self::extract_aim_timer(tag) {
+                elements.push(ParsedElement::AimTime { value });
+            }
+            return;
+        }
 
         // Check if this is a resident dialog (persistent panel, not a popup)
         let is_resident = Self::extract_attribute(tag_head, "resident")
@@ -912,6 +939,10 @@ impl XmlParser {
 
     pub(super) fn handle_close_dialog(&mut self, tag: &str, elements: &mut Vec<ParsedElement>) {
         if let Some(id) = Self::extract_attribute(tag, "id") {
+            // Closing the aim dialog clears the countdown (Saga semantics)
+            if id == "AimTimerDialog" {
+                elements.push(ParsedElement::AimTime { value: 0 });
+            }
             elements.push(ParsedElement::CloseDialog { id });
         }
     }

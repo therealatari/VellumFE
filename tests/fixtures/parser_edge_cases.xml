@@ -40,4 +40,6 @@ after multi-line component
 <dialogData id='torn'><progressBar id='x' value='1' text='x'/>
 <prompt time="1756300030">&gt;</prompt>
 <dialogData id='selfclosing'/>still parses normally
+<openDialog type='dynamic' id='AimTimerDialog' title='Aim Timer' location='statusBar'><dialogData id='AimTimerDialog'><timer id='aimTimer' value='1756300045'/><label id='lblAim' value='Aiming...'/></dialogData></openDialog>
+<closeDialog id='AimTimerDialog'/>
 <prompt time="1756300031">&gt;</prompt>

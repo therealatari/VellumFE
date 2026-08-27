@@ -110,6 +110,7 @@ entity_custom
 roundtime
 casttime
 stuntime
+aimtime
 pulse
 countdown_custom
 left
@@ -254,6 +255,7 @@ entity_custom = None
 roundtime = None
 casttime = None
 stuntime = None
+aimtime = Some(GS4)
 pulse = Some(GS4)
 countdown_custom = None
 left = None
@@ -329,7 +331,7 @@ multiaccount = None
 [templates_by_category]
 ActiveEffects: buffs, debuffs, cooldowns, active_spells, alert_timers, active_effects_custom
 Character: inventory, reserve, spells, missingspells, containers, injuries, perception, experience, gs4_experience, encum, multiaccount
-Countdown: roundtime, casttime, stuntime, pulse, countdown_custom
+Countdown: roundtime, casttime, stuntime, aimtime, pulse, countdown_custom
 Dialog: betrayer
 Entity: targets, creaturefield, players, items, entity_custom
 Hand: left, right, spell
@@ -356,7 +358,7 @@ TextWindow: main, thoughts, speech, bestiary, announcements, loot, death, logons
 [addable_on_empty_layout.gs4]
 ActiveEffects: buffs, debuffs, cooldowns, active_spells, alert_timers, active_effects_custom
 Character: inventory, reserve, spells, missingspells, containers, injuries, gs4_experience, encum, multiaccount
-Countdown: roundtime, casttime, stuntime, pulse, countdown_custom
+Countdown: roundtime, casttime, stuntime, aimtime, pulse, countdown_custom
 Dialog: betrayer
 Entity: targets, creaturefield, players, items, entity_custom
 Hand: left, right, spell
@@ -1453,6 +1455,27 @@ TextWindow: main, thoughts, speech, bestiary, announcements, loot, death, logons
   visibility = "shown"
   tts_speak = false
   id = "stuntime"
+  icon = ""
+
+[template.aimtime]
+  widget_type = "countdown"
+  name = "aimtime"
+  row = 0
+  col = 0
+  rows = 3
+  cols = 20
+  show_border = true
+  border_style = "single"
+  border_sides = ["top", "bottom", "left", "right"]
+  show_title = true
+  title = "Aim"
+  title_position = "top-left"
+  text_color = "#FFA500"
+  transparent_background = false
+  locked = false
+  visibility = "shown"
+  tts_speak = false
+  id = "aimtime"
   icon = ""
 
 [template.pulse]

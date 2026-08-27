@@ -463,7 +463,11 @@ impl XmlParser {
                     exp: num("exp"),
                     ascension_exp: num("ascension_exp"),
                     until_next: num("until_next"),
-                    fashlonae: get("fashlonae").and_then(|v| v.parse::<u8>().ok()),
+                    // Saga reads `fashlonae ?? tutelage` — the wire has used
+                    // both names for the same orb state.
+                    fashlonae: get("fashlonae")
+                        .or_else(|| get("tutelage"))
+                        .and_then(|v| v.parse::<u8>().ok()),
                     lumnis: get("lumnis").and_then(|v| v.parse::<u8>().ok()),
                     rpa: get("rpa").and_then(|v| v.parse::<f32>().ok()),
                 });
