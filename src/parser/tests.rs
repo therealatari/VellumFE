@@ -360,6 +360,84 @@ fn prompt_force_closes_open_streams() {
     assert_eq!(stream, "main", "text after prompt must not stay misrouted");
 }
 
+#[test]
+fn multi_line_dialogdata_assembles() {
+    let mut parser = test_parser();
+    assert!(
+        parser
+            .parse_line("<dialogData id='minivitals'><progressBar id='health' value='84' text='health 92/109'/>")
+            .is_empty(),
+        "open line is fully captured, nothing leaks"
+    );
+    assert!(parser
+        .parse_line("<progressBar id='mana' value='100' text='mana 42/42'/>")
+        .is_empty());
+    let elements = parser.parse_line("</dialogData>");
+    assert!(
+        elements
+            .iter()
+            .any(|e| matches!(e, ParsedElement::DialogProgressBars { id, progress_bars, .. }
+                if id == "minivitals" && progress_bars.len() == 2)),
+        "assembled dialog emits both bars: {elements:?}"
+    );
+}
+
+#[test]
+fn multi_line_capture_torn_by_prompt_discards() {
+    let mut parser = test_parser();
+    parser.parse_line("<dialogData id='torn'><progressBar id='x' value='1' text='x'/>");
+    let elements = parser.parse_line("<prompt time=\"9\">&gt;</prompt>");
+    assert!(
+        elements
+            .iter()
+            .any(|e| matches!(e, ParsedElement::Prompt { .. })),
+        "prompt parses normally after discard: {elements:?}"
+    );
+    assert!(
+        !elements
+            .iter()
+            .any(|e| matches!(e, ParsedElement::DialogProgressBars { .. })),
+        "torn capture must not emit: {elements:?}"
+    );
+    // And the parser is fully recovered
+    let after = parser.parse_line("plain text");
+    assert!(matches!(&after[0], ParsedElement::Text { stream, .. } if stream == "main"));
+}
+
+#[test]
+fn self_closing_dialogdata_does_not_capture() {
+    let mut parser = test_parser();
+    let elements = parser.parse_line("<dialogData id='x'/>trailing text");
+    assert!(
+        elements
+            .iter()
+            .any(|e| matches!(e, ParsedElement::Text { content, .. } if content == "trailing text")),
+        "text after self-closing tag parses immediately: {elements:?}"
+    );
+}
+
+#[test]
+fn multi_line_component_close_with_remainder() {
+    let mut parser = test_parser();
+    parser.parse_line("<component id='room objs'>You also see a bench,");
+    let elements = parser.parse_line("and a guard.</component>after");
+    let comp = elements
+        .iter()
+        .find_map(|e| match e {
+            ParsedElement::Component { id, value } => Some((id.as_str(), value.as_str())),
+            _ => None,
+        })
+        .expect("component emitted");
+    assert_eq!(comp.0, "room objs");
+    assert_eq!(comp.1, "You also see a bench,\nand a guard.");
+    assert!(
+        elements
+            .iter()
+            .any(|e| matches!(e, ParsedElement::Text { content, .. } if content == "after")),
+        "post-close remainder parses: {elements:?}"
+    );
+}
+
 // ==================== Basic Text Parsing ====================
 
 #[test]

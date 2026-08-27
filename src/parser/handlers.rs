@@ -124,6 +124,86 @@ impl XmlParser {
         }
     }
 
+    /// Paired tags whose content the wire actually splits across lines.
+    /// prompt/left/right/spell/inv stay same-line-only: they never split in
+    /// practice, and capturing them on a torn line would swallow the stream.
+    pub(super) fn multi_line_paired(start_pattern: &str) -> bool {
+        matches!(
+            start_pattern,
+            "<dialogData" | "<openDialog" | "<component" | "<compDef" | "<worldEvent" | "<compass"
+        )
+    }
+
+    /// Enter a multi-line paired capture if `rest` (starting at the open
+    /// tag) is eligible: the opening tag must be complete on this line and
+    /// not self-closing. Returns false to fall back to single-tag handling.
+    pub(super) fn try_begin_paired_capture(
+        &mut self,
+        end_pattern: &'static str,
+        rest: &str,
+    ) -> bool {
+        let Some(open_end) = rest.find('>') else {
+            return false; // torn open tag: legacy treat-as-text path
+        };
+        if rest[..open_end].ends_with('/') {
+            return false; // self-closing: no content, nothing to capture
+        }
+        self.paired_capture = Some(super::PairedCapture {
+            end_pattern,
+            buf: rest.to_string(),
+        });
+        true
+    }
+
+    /// Feed one whole line into an active multi-line paired capture.
+    pub(super) fn continue_paired_capture(&mut self, line: &str) -> Vec<ParsedElement> {
+        let Some(cap) = self.paired_capture.as_mut() else {
+            return Vec::new();
+        };
+        if let Some(end_pos) = line.find(cap.end_pattern) {
+            let split = end_pos + cap.end_pattern.len();
+            let mut cap = self.paired_capture.take().expect("checked above");
+            cap.buf.push('\n');
+            cap.buf.push_str(&line[..split]);
+            let mut elements = Vec::new();
+            let mut text_buffer = String::new();
+            // Same entry point the same-line paired path uses, so an
+            // assembled multi-line tag behaves identically.
+            self.process_tag(&cap.buf, &mut text_buffer, &mut elements);
+            if !text_buffer.is_empty() {
+                self.flush_text_with_events(text_buffer, &mut elements);
+            }
+            let remainder = &line[split..];
+            if !remainder.trim().is_empty() {
+                elements.extend(self.parse_line(remainder));
+            }
+            return elements;
+        }
+        // A prompt can't legitimately arrive inside a paired structure —
+        // the capture is torn. Discard and parse the line normally.
+        if line.contains("<prompt") {
+            let cap = self.paired_capture.take().expect("checked above");
+            tracing::warn!(
+                "[parser] prompt arrived mid-{} capture - discarding {} buffered bytes",
+                Self::tag_name(&cap.buf),
+                cap.buf.len()
+            );
+            return self.parse_line(line);
+        }
+        // Runaway guard: a close that never comes must not buffer forever.
+        if cap.buf.len() + line.len() > 256 * 1024 {
+            let cap = self.paired_capture.take().expect("checked above");
+            tracing::warn!(
+                "[parser] paired {} capture exceeded 256KiB without a close - discarding",
+                Self::tag_name(&cap.buf)
+            );
+            return self.parse_line(line);
+        }
+        cap.buf.push('\n');
+        cap.buf.push_str(line);
+        Vec::new()
+    }
+
     pub(super) fn handle_push_stream(&mut self, tag: &str, elements: &mut Vec<ParsedElement>) {
         // <pushStream id='speech'/> or <component id='room objs'/>
         if let Some(id) = Self::extract_attribute(tag, "id") {

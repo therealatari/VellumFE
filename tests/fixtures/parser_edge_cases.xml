@@ -30,3 +30,14 @@ An <a exist="98765" noun="kobold">angry kobold</a> claws at you!
 <unknownFutureTag attr="value"/>between unknowns<anotherNewTag>inner text</anotherNewTag>
 A line with trailing partial tag <pushStr
 <prompt time="1756300020">&gt;</prompt>
+<dialogData id='minivitals'><progressBar id='health' value='84' text='health 92/109' left='0%' top='0%' width='25%' height='100%'/>
+<progressBar id='mana' value='100' text='mana 42/42' left='25%' top='0%' width='25%' height='100%'/>
+<progressBar id='stamina' value='96' text='stamina 96/100' left='50%' top='0%' width='25%' height='100%'/></dialogData>
+<component id='room objs'>You also see a wooden bench,
+a fountain spraying mist, and
+a <pushBold/>city guard<popBold/>.</component>
+after multi-line component
+<dialogData id='torn'><progressBar id='x' value='1' text='x'/>
+<prompt time="1756300030">&gt;</prompt>
+<dialogData id='selfclosing'/>still parses normally
+<prompt time="1756300031">&gt;</prompt>

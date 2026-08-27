@@ -114,21 +114,21 @@ SpellHand { spell: "Camouflage (608)" }
 Prompt { time: "1759294804", text: "C>" }
 -- line 4: "<indicator id=\"IconHIDDEN\" visible=\"y\"/>"
 StatusIndicator { id: "HIDDEN", active: true }
--- line 6: "  <progressBar id='mana' value='28' text='mana 136/481' left='25%' customText='t' top='0%' width='25%' height='100%'/>"
+-- line 7: "</dialogData>"
 ProgressBar { id: "mana", value: 136, max: 481, text: "mana 136/481" }
-Text { content: "  ", stream: "main", fg_color: None, bg_color: None, bold: false, mono: false, span_type: Normal, link_data: None }
+DialogProgressBars { id: "minivitals", clear: false, progress_bars: [DialogProgressBarSpec { id: "mana", value: 28, text: "mana 136/481", layout: None }] }
 -- line 8: "You swing your sword at the orc!"
 Text { content: "You swing your sword at the orc!", stream: "main", fg_color: None, bg_color: None, bold: false, mono: false, span_type: Normal, link_data: None }
 -- line 9: "<roundTime value='5'/>"
 RoundTime { value: 5 }
 -- line 10: "<prompt time=\"1759294810\">R&gt;</prompt>"
 Prompt { time: "1759294810", text: "R>" }
--- line 12: "  <progressBar id='health' value='85' text='health 280/326' left='0%' customText='t' top='0%' width='25%' height='100%'/>"
+-- line 13: "</dialogData>"
 ProgressBar { id: "health", value: 280, max: 326, text: "health 280/326" }
-Text { content: "  ", stream: "main", fg_color: None, bg_color: None, bold: false, mono: false, span_type: Normal, link_data: None }
--- line 15: "  <progressBar id='stamina' value='95' text='stamina 223/235' left='50%' customText='t' top='0%' width='25%' height='100%'/>"
+DialogProgressBars { id: "minivitals", clear: false, progress_bars: [DialogProgressBarSpec { id: "health", value: 85, text: "health 280/326", layout: None }] }
+-- line 16: "</dialogData>"
 ProgressBar { id: "stamina", value: 223, max: 235, text: "stamina 223/235" }
-Text { content: "  ", stream: "main", fg_color: None, bg_color: None, bold: false, mono: false, span_type: Normal, link_data: None }
+DialogProgressBars { id: "minivitals", clear: false, progress_bars: [DialogProgressBarSpec { id: "stamina", value: 95, text: "stamina 223/235", layout: None }] }
 
 ==== fixture: combat_targets ====
 -- line 1: "<clearStream id=\"combat\"/><pushStream id=\"combat\"/>"
@@ -182,18 +182,18 @@ SpellHand { spell: "None" }
 LeftHand { item: "slim short sword", link: Some(LinkData { exist_id: "535703555", noun: "sword", text: "slim short sword", coord: None }) }
 -- line 13: "<right exist=\"535703554\" noun=\"baselard\">gleaming steel baselard</right>"
 RightHand { item: "gleaming steel baselard", link: Some(LinkData { exist_id: "535703554", noun: "baselard", text: "gleaming steel baselard", coord: None }) }
--- line 15: "  <progressBar id='health' value='99' text='health 325/326' left='0%' customText='t' top='0%' width='25%' height='100%'/>"
+-- line 16: "</dialogData>"
 ProgressBar { id: "health", value: 325, max: 326, text: "health 325/326" }
-Text { content: "  ", stream: "main", fg_color: None, bg_color: None, bold: false, mono: false, span_type: Normal, link_data: None }
--- line 18: "  <progressBar id='mana' value='100' text='mana 481/481' left='25%' customText='t' top='0%' width='25%' height='100%'/>"
+DialogProgressBars { id: "minivitals", clear: false, progress_bars: [DialogProgressBarSpec { id: "health", value: 99, text: "health 325/326", layout: None }] }
+-- line 19: "</dialogData>"
 ProgressBar { id: "mana", value: 481, max: 481, text: "mana 481/481" }
-Text { content: "  ", stream: "main", fg_color: None, bg_color: None, bold: false, mono: false, span_type: Normal, link_data: None }
--- line 21: "  <progressBar id='stamina' value='100' text='stamina 235/235' left='50%' customText='t' top='0%' width='25%' height='100%'/>"
+DialogProgressBars { id: "minivitals", clear: false, progress_bars: [DialogProgressBarSpec { id: "mana", value: 100, text: "mana 481/481", layout: None }] }
+-- line 22: "</dialogData>"
 ProgressBar { id: "stamina", value: 235, max: 235, text: "stamina 235/235" }
-Text { content: "  ", stream: "main", fg_color: None, bg_color: None, bold: false, mono: false, span_type: Normal, link_data: None }
--- line 24: "  <progressBar id='spirit' value='100' text='spirit 10/10' left='75%' customText='t' top='0%' width='25%' height='100%'/>"
+DialogProgressBars { id: "minivitals", clear: false, progress_bars: [DialogProgressBarSpec { id: "stamina", value: 100, text: "stamina 235/235", layout: None }] }
+-- line 25: "</dialogData>"
 ProgressBar { id: "spirit", value: 10, max: 10, text: "spirit 10/10" }
-Text { content: "  ", stream: "main", fg_color: None, bg_color: None, bold: false, mono: false, span_type: Normal, link_data: None }
+DialogProgressBars { id: "minivitals", clear: false, progress_bars: [DialogProgressBarSpec { id: "spirit", value: 100, text: "spirit 10/10", layout: None }] }
 
 ==== fixture: indicators_multi ====
 -- line 1: "<indicator id=\"IconHIDDEN\" visible=\"y\"/>"
@@ -442,4 +442,19 @@ Text { content: "<unknownFutureTag attr=\"value\"/>between unknowns<anotherNewTa
 Text { content: "A line with trailing partial tag A line with trailing partial tag <pushStr", stream: "main", fg_color: None, bg_color: None, bold: false, mono: false, span_type: Normal, link_data: None }
 -- line 32: "<prompt time=\"1756300020\">&gt;</prompt>"
 Prompt { time: "1756300020", text: ">" }
+-- line 35: "<progressBar id='stamina' value='96' text='stamina 96/100' left='50%' top='0%' width='25%' height='100%'/></dialogData>"
+ProgressBar { id: "health", value: 92, max: 109, text: "health 92/109" }
+ProgressBar { id: "mana", value: 42, max: 42, text: "mana 42/42" }
+ProgressBar { id: "stamina", value: 96, max: 100, text: "stamina 96/100" }
+DialogProgressBars { id: "minivitals", clear: false, progress_bars: [DialogProgressBarSpec { id: "health", value: 84, text: "health 92/109", layout: None }, DialogProgressBarSpec { id: "mana", value: 100, text: "mana 42/42", layout: None }, DialogProgressBarSpec { id: "stamina", value: 96, text: "stamina 96/100", layout: None }] }
+-- line 38: "a <pushBold/>city guard<popBold/>.</component>"
+Component { id: "room objs", value: "You also see a wooden bench,\na fountain spraying mist, and\na <pushBold/>city guard<popBold/>." }
+-- line 39: "after multi-line component"
+Text { content: "after multi-line component", stream: "main", fg_color: None, bg_color: None, bold: false, mono: false, span_type: Normal, link_data: None }
+-- line 41: "<prompt time=\"1756300030\">&gt;</prompt>"
+Prompt { time: "1756300030", text: ">" }
+-- line 42: "<dialogData id='selfclosing'/>still parses normally"
+Text { content: "still parses normally", stream: "main", fg_color: None, bg_color: None, bold: false, mono: false, span_type: Normal, link_data: None }
+-- line 43: "<prompt time=\"1756300031\">&gt;</prompt>"
+Prompt { time: "1756300031", text: ">" }
 

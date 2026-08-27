@@ -4,8 +4,11 @@
 //! ad-hoc pattern detectors (e.g., event timers) so the rest of the client can
 //! operate on higher-level `ParsedElement` values instead of raw XML.
 
+mod builders;
 mod dialogs;
 mod handlers;
+
+pub(crate) use builders::{InvManagerBuilder, InvViewItemBuilder, PairedCapture};
 mod links;
 mod text;
 
@@ -457,32 +460,6 @@ pub struct InventoryViewItemResponse {
     pub results: Vec<(String, String)>,
 }
 
-/// In-flight `<inventoryViewItem>` capture.
-#[derive(Debug, Clone, Default)]
-pub(crate) struct InvViewItemBuilder {
-    pub(crate) token: String,
-    pub(crate) exist: String,
-    pub(crate) state: Option<String>,
-    pub(crate) closed_attr: bool,
-    pub(crate) results: Vec<(String, String)>,
-    /// Some while inside a `<result>` section: (command, text so far)
-    pub(crate) current: Option<(String, String)>,
-}
-
-/// In-flight `<inventoryManager>` block: children accumulate here between
-/// the open and close tags (the whole response arrives on one line, but the
-/// builder keeps the parser correct if a server ever splits it).
-#[derive(Debug, Clone, Default)]
-pub(crate) struct InvManagerBuilder {
-    pub(crate) token: String,
-    pub(crate) room: String,
-    pub(crate) root: Option<String>,
-    pub(crate) after: Option<String>,
-    pub(crate) state: Option<String>,
-    pub(crate) items: Vec<Vec<(String, String)>>,
-    pub(crate) continuations: Vec<Vec<(String, String)>>,
-}
-
 #[derive(Debug, Clone)]
 pub struct DialogFieldSpec {
     pub id: String,
@@ -562,6 +539,7 @@ pub struct XmlParser {
     /// In-flight `<inventoryManager>` block (None outside one)
     pub(crate) inv_manager: Option<InvManagerBuilder>,
     pub(crate) inv_viewitem: Option<InvViewItemBuilder>,
+    pub(crate) paired_capture: Option<PairedCapture>,
 
     // Event pattern matching
     event_matchers: Vec<(Regex, crate::config::EventPattern)>, // Compiled regexes + patterns
@@ -628,6 +606,7 @@ impl XmlParser {
             current_menu_coords: Vec::new(),
             inv_manager: None,
             inv_viewitem: None,
+            paired_capture: None,
             event_matchers,
         }
     }
@@ -673,6 +652,12 @@ impl XmlParser {
             return self.parse_viewitem_line(&line);
         }
 
+        // An active multi-line paired capture owns the whole line (checked
+        // before the blank-line return so blank lines stay in the capture).
+        if self.paired_capture.is_some() {
+            return self.continue_paired_capture(&line);
+        }
+
         // Preserve intentional blank lines from the server output.
         // Without this, empty lines would be dropped and formatting that relies on vertical spacing
         // would collapse.
@@ -711,6 +696,20 @@ impl XmlParser {
                 for (start_pattern, end_pattern) in PAIRED_TAGS {
                     if !remaining[tag_start..].starts_with(start_pattern) {
                         continue;
+                    }
+
+                    // Closing tag on a LATER line: enter multi-line capture
+                    // (eligible tags only; self-closing opens fall through).
+                    if !remaining[tag_start..].contains(end_pattern)
+                        && Self::multi_line_paired(start_pattern)
+                        && self.try_begin_paired_capture(end_pattern, &remaining[tag_start..])
+                    {
+                        if tag_start > 0 {
+                            text_buffer.push_str(&remaining[..tag_start]);
+                        }
+                        remaining = "";
+                        found_paired = true;
+                        break;
                     }
 
                     // Find the closing tag
