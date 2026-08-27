@@ -414,7 +414,7 @@ RightHand { item: "Empty", link: Some(LinkData { exist_id: "0", noun: "", text: 
 Spell { text: "Minor Shock" }
 SpellHand { spell: "Minor Shock" }
 -- line 20: "Entities: &lt;tag&gt; &amp; &quot;quoted&quot; &apos;text&apos; and unknown &unknown; ref &#65; &#x42; stay literal today."
-Text { content: "Entities: <tag> & \"quoted\" 'text' and unknown &unknown; ref &#65; &#x42; stay literal today.", stream: "familiar", fg_color: None, bg_color: None, bold: false, mono: false, span_type: Normal, link_data: None }
+Text { content: "Entities: <tag> & \"quoted\" 'text' and unknown &unknown; ref A B stay literal today.", stream: "familiar", fg_color: None, bg_color: None, bold: false, mono: false, span_type: Normal, link_data: None }
 -- line 21: "<dialogData id='minivitals'><progressBar id='health' value='84' text='health 92/109' left='0%' top='0%' width='25%' height='100%'/><progressBar id='mana' value='100' text='mana 42/42' left='25%' top='0%' width='25%' height='100%'/></dialogData>"
 ProgressBar { id: "health", value: 92, max: 109, text: "health 92/109" }
 ProgressBar { id: "mana", value: 42, max: 42, text: "mana 42/42" }

@@ -133,6 +133,62 @@ impl XmlParser {
         }
     }
 
+    /// If `after` begins with a `<pushStream>` tag whose id matches the
+    /// stream that is currently open, return that tag's length so the
+    /// caller can skip the whole <popStream/><pushStream/> pair. Adjacency
+    /// is required: any text between the tags belongs to the outer stream
+    /// and means this is a real stream switch, not fragment glue.
+    pub(super) fn same_stream_repush_len(after: &str, current_stream: &str) -> Option<usize> {
+        if current_stream.is_empty() || current_stream == "main" {
+            return None;
+        }
+        if !after.starts_with("<pushStream") {
+            return None;
+        }
+        let tag_end = after.find('>')?;
+        let tag = &after[..tag_end + 1];
+        if Self::extract_attribute(tag, "id").as_deref() == Some(current_stream) {
+            Some(tag_end + 1)
+        } else {
+            None
+        }
+    }
+
+    /// Close-tag match that tolerates mangled trailing junk before the '>'.
+    /// Game data occasionally ships broken escaping — e.g. ability HELP text
+    /// with `$<a href=$Q...$>Recent Evasion$</a$>` — and a strict `"</a>"`
+    /// comparison leaves the link style open, bleeding link color over
+    /// everything after it. The name must end at a non-alphanumeric char so
+    /// `</a$>` closes a link but `</app>` never does.
+    pub(super) fn is_close_tag(tag: &str, name: &str) -> bool {
+        tag.strip_prefix("</")
+            .and_then(|rest| rest.strip_prefix(name))
+            .is_some_and(|rest| {
+                !rest
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_ascii_alphanumeric())
+            })
+    }
+
+    /// Decode a numeric character reference at the start of `rest`
+    /// ("&#123;" or "&#x1F;"). Returns the character and the byte length
+    /// consumed, or None if `rest` is not a well-formed numeric reference
+    /// (in which case the caller passes the '&' through verbatim).
+    fn decode_numeric_entity(rest: &str) -> Option<(char, usize)> {
+        let body = rest.strip_prefix("&#")?;
+        let semi = body.find(';').filter(|&p| p > 0 && p <= 8)?;
+        let digits = &body[..semi];
+        let value = if let Some(hex) = digits.strip_prefix(['x', 'X']) {
+            u32::from_str_radix(hex, 16).ok()?
+        } else {
+            digits.parse::<u32>().ok()?
+        };
+        // from_u32 rejects surrogates and out-of-range values
+        let ch = char::from_u32(value)?;
+        Some((ch, 2 + semi + 1))
+    }
+
     pub(super) fn decode_entities(text: String) -> String {
         // Fast path: most game text has no entities at all
         if !text.contains('&') {
@@ -153,6 +209,8 @@ impl XmlParser {
                     ('"', 6)
                 } else if rest.starts_with("&apos;") {
                     ('\'', 6)
+                } else if let Some((ch, len)) = Self::decode_numeric_entity(rest) {
+                    (ch, len)
                 } else {
                     // Unknown entity - copy the '&' through verbatim
                     out.push('&');

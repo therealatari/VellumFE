@@ -775,44 +775,6 @@ impl XmlParser {
         elements
     }
 
-    /// Close-tag match that tolerates mangled trailing junk before the '>'.
-    /// Game data occasionally ships broken escaping — e.g. ability HELP text
-    /// with `$<a href=$Q...$>Recent Evasion$</a$>` — and a strict `"</a>"`
-    /// comparison leaves the link style open, bleeding link color over
-    /// everything after it. The name must end at a non-alphanumeric char so
-    /// `</a$>` closes a link but `</app>` never does.
-    /// If `after` begins with a `<pushStream>` tag whose id matches the
-    /// stream that is currently open, return that tag's length so the
-    /// caller can skip the whole <popStream/><pushStream/> pair. Adjacency
-    /// is required: any text between the tags belongs to the outer stream
-    /// and means this is a real stream switch, not fragment glue.
-    fn same_stream_repush_len(after: &str, current_stream: &str) -> Option<usize> {
-        if current_stream.is_empty() || current_stream == "main" {
-            return None;
-        }
-        if !after.starts_with("<pushStream") {
-            return None;
-        }
-        let tag_end = after.find('>')?;
-        let tag = &after[..tag_end + 1];
-        if Self::extract_attribute(tag, "id").as_deref() == Some(current_stream) {
-            Some(tag_end + 1)
-        } else {
-            None
-        }
-    }
-
-    fn is_close_tag(tag: &str, name: &str) -> bool {
-        tag.strip_prefix("</")
-            .and_then(|rest| rest.strip_prefix(name))
-            .is_some_and(|rest| {
-                !rest
-                    .chars()
-                    .next()
-                    .is_some_and(|c| c.is_ascii_alphanumeric())
-            })
-    }
-
     fn process_tag(
         &mut self,
         tag: &str,

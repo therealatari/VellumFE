@@ -147,6 +147,35 @@ fn test_decode_entities_unknown_and_trailing() {
     assert_eq!(XmlParser::decode_entities("&&lt;".to_string()), "&<");
 }
 
+#[test]
+fn test_decode_entities_numeric() {
+    assert_eq!(
+        XmlParser::decode_entities("&#65;&#x42;&#x6a;".to_string()),
+        "ABj"
+    );
+    // Multi-byte results
+    assert_eq!(
+        XmlParser::decode_entities("&#233;tude &#x2014; dash".to_string()),
+        "\u{e9}tude \u{2014} dash"
+    );
+    // Malformed forms pass through verbatim
+    assert_eq!(XmlParser::decode_entities("&#;".to_string()), "&#;");
+    assert_eq!(XmlParser::decode_entities("&#x;".to_string()), "&#x;");
+    assert_eq!(XmlParser::decode_entities("&#65".to_string()), "&#65");
+    assert_eq!(XmlParser::decode_entities("&#zz;".to_string()), "&#zz;");
+    // Surrogates and out-of-range are rejected, not decoded
+    assert_eq!(XmlParser::decode_entities("&#xD800;".to_string()), "&#xD800;");
+    assert_eq!(
+        XmlParser::decode_entities("&#x110000;".to_string()),
+        "&#x110000;"
+    );
+    // Over-long digit runs are not scanned (bounded lookahead)
+    assert_eq!(
+        XmlParser::decode_entities("&#123456789;".to_string()),
+        "&#123456789;"
+    );
+}
+
 // ==================== Basic Text Parsing ====================
 
 #[test]
