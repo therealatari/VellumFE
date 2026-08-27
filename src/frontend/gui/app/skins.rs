@@ -39,6 +39,26 @@ impl VellumGuiApp {
         }
     }
 
+    /// The reverse funnel: adopt the canonical appearance store into the
+    /// layout's live look. Used when CORE wrote the store (skin-pack
+    /// install/import via `appearance_changed_externally`) — without this
+    /// the next layout save would write the stale ui_settings back over
+    /// the store's new values.
+    pub(super) fn sync_ui_settings_from_appearance(&mut self) {
+        let a = self.app_core.config.appearance.clone();
+        self.ui_settings.active_skin = a.active_skin;
+        self.ui_settings.doll_image = a.doll_image;
+        self.ui_settings.compass_set = a.compass_set;
+        self.ui_settings.default_frame = a.default_frame;
+        self.ui_settings.default_background = a.default_background;
+        self.ui_settings.doll_grayscale = a.doll_grayscale;
+        self.ui_settings.hand_icon_size = a.hand_icon_size;
+        self.ui_settings.status_icons = a.status_icons;
+        self.ui_settings.control_frames = a.control_frames;
+        self.ui_settings.edge_set = a.edge_set;
+        self.layout_dirty = true;
+    }
+
     /// Persist the appearance store after a change. Core reads the
     /// in-memory copy live; the file is what survives a restart. The base
     /// (characterless) copy is written too, so characterless consumers —

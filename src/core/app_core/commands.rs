@@ -973,6 +973,108 @@ impl AppCore {
         }
     }
 
+    /// `.exportskin <name>`: zip the current appearance's assignments plus
+    /// the pool art they reference into `exports/<name>-skin.zip` — the
+    /// same format `.jinx` installs, so the file is directly shareable
+    /// (Discord, vellum-assets submission).
+    fn export_skin_pack(&mut self, name: &str) {
+        match crate::config::skin_pack::export(&self.config.appearance, name) {
+            Ok((path, findings)) => {
+                self.add_system_message(&format!("Skin pack written: {}", path.display()));
+                for warning in &findings.warnings {
+                    self.add_system_message(&format!("  warning: {warning}"));
+                }
+                self.add_system_message(
+                    "Share the zip directly, or submit it to vellum-assets for .jinx install.",
+                );
+            }
+            Err(e) => self.add_system_message(&format!("Export failed: {e:#}")),
+        }
+    }
+
+    /// `.importskin <file>`: install a skin-pack zip — art into the pool
+    /// (collisions renamed, convention art kept), assignments into the
+    /// appearance store. The GUI syncs its live look via
+    /// `appearance_changed_externally`.
+    fn import_skin_pack(&mut self, arg: &str) {
+        let Some(path) = Self::resolve_skin_pack_arg(arg) else {
+            self.add_system_message(&format!(
+                "No skin pack found for '{arg}' (tried the path itself, imports/ and exports/)"
+            ));
+            return;
+        };
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                self.add_system_message(&format!("Cannot read {}: {e}", path.display()));
+                return;
+            }
+        };
+        if !crate::config::skin_pack::is_pack_format(&bytes) {
+            self.add_system_message(&format!(
+                "{} is not a skin pack (legacy skin zips install via .jinx, or convert \
+                 with `vellum-fe migrate-skin`)",
+                path.display()
+            ));
+            return;
+        }
+        let pack = match crate::config::skin_pack::read_pack_bytes(&bytes) {
+            Ok(pack) => pack,
+            Err(e) => {
+                self.add_system_message(&format!("Cannot read skin pack: {e}"));
+                return;
+            }
+        };
+        match crate::config::skin_pack::install_files(&pack) {
+            Ok(report) => {
+                report.assignments.apply_to(&mut self.config.appearance);
+                let character = self.config.character.clone();
+                if let Err(e) = self.config.appearance.save(character.as_deref()) {
+                    self.add_system_message(&format!("Appearance not saved: {e:#}"));
+                } else if character.is_some() {
+                    let _ = self.config.appearance.save(None);
+                }
+                self.appearance_changed_externally = true;
+                self.add_system_message(&format!(
+                    "Skin pack '{}' installed: {} file(s) added, {} identical, {} renamed, {} kept.",
+                    pack.manifest.meta.name,
+                    report.installed.len(),
+                    report.identical.len(),
+                    report.renamed.len(),
+                    report.kept_existing.len()
+                ));
+                for (from, to) in &report.renamed {
+                    self.add_system_message(&format!("  renamed: {from} -> {to}"));
+                }
+                for warning in &report.warnings {
+                    self.add_system_message(&format!("  warning: {warning}"));
+                }
+                self.needs_render = true;
+            }
+            Err(e) => self.add_system_message(&format!("Install failed: {e:#}")),
+        }
+    }
+
+    /// Resolve a `.importskin` argument: the path as given, else
+    /// `<config>/imports/` then `<config>/exports/`, each tried verbatim
+    /// and with the `-skin.zip` suffix `.exportskin` writes.
+    fn resolve_skin_pack_arg(arg: &str) -> Option<std::path::PathBuf> {
+        let direct = std::path::PathBuf::from(arg);
+        if direct.is_file() {
+            return Some(direct);
+        }
+        let base = crate::config::Config::base_dir().ok()?;
+        for dir in ["imports", "exports"] {
+            for name in [arg.to_string(), format!("{arg}-skin.zip"), format!("{arg}.zip")] {
+                let candidate = base.join(dir).join(&name);
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
+            }
+        }
+        None
+    }
+
     /// `.tts` — text-to-speech control from any frontend. Subcommands:
     /// `status` (default), `on`, `off`, `mute`, `rate <0.5-3.0>`,
     /// `volume <0.0-1.0>`, `voice <name|default>`, `voices`, `test`, `clear`.
@@ -3001,6 +3103,26 @@ impl AppCore {
             }
             "reloadskin" => {
                 return Ok(CommandOutcome::Ui(UiAction::ReloadSkin));
+            }
+            "exportskin" => {
+                if let Some(name) = parts.get(1) {
+                    self.export_skin_pack(name);
+                } else {
+                    self.add_system_message(
+                        "Usage: .exportskin <name> - zip the current appearance + its art \
+                         into a shareable skin pack",
+                    );
+                }
+            }
+            "importskin" => {
+                if let Some(arg) = parts.get(1) {
+                    self.import_skin_pack(arg);
+                } else {
+                    self.add_system_message(
+                        "Usage: .importskin <file> - install a skin pack zip \
+                         (looks in imports/ and exports/, or give a full path)",
+                    );
+                }
             }
 
             // Tab navigation

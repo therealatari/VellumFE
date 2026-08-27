@@ -70,6 +70,12 @@ pub struct AppCore {
     /// Buffer for accumulating multi-line stream content
     pub stream_buffer: String,
 
+    /// Set when core wrote `config.appearance` outside the GUI's own
+    /// funnel (skin-pack install/import) — the GUI must copy the store
+    /// into its `ui_settings` next frame or its layout save would stomp
+    /// the new look. The GUI clears it after syncing.
+    pub appearance_changed_externally: bool,
+
     // === Timing ===
     /// Server time offset (server_time - local_time) for countdown calculations
     pub server_time_offset: i64,
@@ -485,6 +491,7 @@ impl AppCore {
             current_stream: String::from("main"),
             discard_current_stream: false,
             stream_buffer: String::new(),
+            appearance_changed_externally: false,
             server_time_offset: 0,
             cmdlist: None,
             menu_request_counter: 0,
@@ -688,6 +695,7 @@ impl AppCore {
             current_stream: String::from("main"),
             discard_current_stream: false,
             stream_buffer: String::new(),
+            appearance_changed_externally: false,
             server_time_offset: 0,
             cmdlist,
             menu_request_counter: 0,
@@ -1702,6 +1710,8 @@ impl AppCore {
             ".skin".to_string(),
             ".makeskin".to_string(),
             ".reloadskin".to_string(),
+            ".exportskin".to_string(),
+            ".importskin".to_string(),
             // Tab navigation
             ".nexttab".to_string(),
             ".prevtab".to_string(),

@@ -233,6 +233,16 @@ enum Commands {
         dry_run: bool,
     },
 
+    /// Validate a skin pack (a zip or an unzipped pack directory): every
+    /// assignment must resolve to art inside the pack, embedded/sidecar
+    /// metadata must parse per its category's schema. Exit 1 on errors.
+    /// Used by vellum-assets CI on submissions.
+    ValidateSkin {
+        /// Skin pack zip file, or a directory laid out like one
+        #[arg(value_name = "PATH")]
+        path: PathBuf,
+    },
+
     /// Import highlights from a Wrayth/StormFront settings XML file
     ImportHighlights {
         /// Wrayth settings XML file (e.g. 70682.xml)
@@ -384,6 +394,48 @@ fn main() -> Result<()> {
                     }
                 }
 
+                return Ok(());
+            }
+
+            Commands::ValidateSkin { path } => {
+                println!("Validating skin pack: {}", path.display());
+                let pack = if path.is_dir() {
+                    config::skin_pack::read_pack_dir(&path)
+                } else {
+                    match std::fs::read(&path) {
+                        Ok(bytes) => config::skin_pack::read_pack_bytes(&bytes),
+                        Err(e) => Err(format!("cannot read {}: {e}", path.display())),
+                    }
+                };
+                let pack = match pack {
+                    Ok(pack) => pack,
+                    Err(e) => {
+                        eprintln!("✗ {e}");
+                        std::process::exit(1);
+                    }
+                };
+                let findings = config::skin_pack::validate(&pack);
+                for warning in &findings.warnings {
+                    println!("! {warning}");
+                }
+                for error in &findings.errors {
+                    eprintln!("✗ {error}");
+                }
+                if findings.ok() {
+                    println!(
+                        "✓ '{}' is valid: {} file(s), format {}",
+                        pack.manifest.meta.name,
+                        pack.files.len(),
+                        pack.manifest.format
+                    );
+                } else {
+                    eprintln!(
+                        "✗ {} error(s), {} warning(s)",
+                        findings.errors.len(),
+                        findings.warnings.len()
+                    );
+                    std::process::exit(1);
+                }
                 return Ok(());
             }
 

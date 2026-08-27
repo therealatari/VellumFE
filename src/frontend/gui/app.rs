@@ -2194,6 +2194,13 @@ impl eframe::App for VellumGuiApp {
             }
         }
         self.apply_theme_if_changed(&ctx);
+        // Core wrote the appearance store outside our funnel (skin-pack
+        // install/import): adopt it before the skin declarations below, or
+        // this frame's layout save would stomp the new look.
+        if self.app_core.appearance_changed_externally {
+            self.app_core.appearance_changed_externally = false;
+            self.sync_ui_settings_from_appearance();
+        }
         // Pool frames referenced by per-window overrides load lazily; tell
         // the skin state which ones are in use before it applies.
         self.skin_state.set_needed_pool_frames(

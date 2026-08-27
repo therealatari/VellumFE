@@ -419,6 +419,16 @@ pub(crate) const COMMAND_HELP: &[CommandHelpSection] = &[
                 "Bake the current GUI appearance into a skin (GUI)"
             ),
             entry!(&["reloadskin"], "", "Reload the active skin's images"),
+            entry!(
+                &["exportskin"],
+                "<name>",
+                "Zip the current appearance + its art into a shareable skin pack"
+            ),
+            entry!(
+                &["importskin"],
+                "<file>",
+                "Install a skin pack zip (art to the pool, look applied)"
+            ),
         ],
     },
     CommandHelpSection {
