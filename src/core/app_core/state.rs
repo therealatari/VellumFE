@@ -102,8 +102,6 @@ pub struct AppCore {
     pub creature_field: crate::core::creature_cards::solver::CreatureField,
     /// Roster generation the field was last synced against.
     pub creature_field_synced_gen: u64,
-    /// Skin-supplied ground-plane camera for the field, mtime-throttled.
-    pub creature_field_camera: crate::core::creature_cards::FieldCameraCache,
     /// Game commands core logic queued outside the typed-command path (e.g.
     /// target cycling): the keybind-action dispatch returns no outcomes, so
     /// core-initiated sends ride the same per-frame `take_outbound` drain as
@@ -231,11 +229,6 @@ pub struct AppCore {
 
     /// Lich room ID extracted from room display
     pub lich_room_id: Option<String>,
-
-    /// Throttled doll variant/hidden rules from the active skin, resolved
-    /// per remote flush so phone clients get the active variant name and
-    /// suppressed parts pushed instead of evaluating conditions in JS.
-    pub doll_rules: crate::core::doll_rules::DollRulesCache,
 
     /// Room subtitle (e.g., " - Emberthorn Refuge, Bowery")
     pub room_subtitle: Option<String>,
@@ -500,7 +493,6 @@ impl AppCore {
             last_link_click_pos: None,
             creature_field: Default::default(),
             creature_field_synced_gen: 0,
-            creature_field_camera: Default::default(),
             queued_game_commands: Vec::new(),
             perf_stats: PerformanceStats::new(),
             show_perf_stats: false,
@@ -512,7 +504,6 @@ impl AppCore {
             evidence: crate::core::evidence::EvidenceStore::default(),
             nav_room_id: None,
             lich_room_id: None,
-            doll_rules: Default::default(),
             room_subtitle: None,
             room_images: None,
             room_components: HashMap::new(),
@@ -704,7 +695,6 @@ impl AppCore {
             last_link_click_pos: None,
             creature_field: Default::default(),
             creature_field_synced_gen: 0,
-            creature_field_camera: Default::default(),
             queued_game_commands: Vec::new(),
             perf_stats: PerformanceStats::new(),
             show_perf_stats: false,
@@ -716,7 +706,6 @@ impl AppCore {
             evidence: crate::core::evidence::EvidenceStore::default(),
             nav_room_id: None,
             lich_room_id: None,
-            doll_rules: Default::default(),
             room_subtitle: None,
             room_images: None,
             room_components: HashMap::new(),
@@ -1009,14 +998,6 @@ impl AppCore {
                 chrono::Utc::now().timestamp() + self.message_processor.server_time_offset;
             self.game_state.tick_creature_effects(now_server);
         }
-        // Skin camera for the field (throttled stat; hot-reloads with the
-        // skin). Runs before the roster diff so arrivals this frame fit
-        // against the current cell width.
-        self.creature_field_camera
-            .sync(
-                &mut self.creature_field,
-                self.config.appearance.active_skin.as_deref(),
-            );
         // Creature-field roster diff (no-op while the generation matches).
         crate::core::creature_cards::sync_field(
             &mut self.creature_field,

@@ -16,7 +16,6 @@ pub mod curated_maps;
 pub mod custom_emoji;
 pub mod data_pack;
 pub mod day_pass;
-pub mod doll_rules;
 pub mod elanthian_time;
 pub mod emoji;
 pub mod evidence;

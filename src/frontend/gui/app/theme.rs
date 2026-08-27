@@ -64,62 +64,6 @@ pub(super) fn visuals_from_theme(theme: &AppTheme) -> egui::Visuals {
     visuals
 }
 
-/// Overlay a skin's resolved UI palette onto egui `Visuals`. Because every
-/// native egui widget (editor windows, menus, dropdowns, checkboxes, radios,
-/// combos) reads its colors from this one struct, a single overlay themes the
-/// entire config/menu layer at once.
-pub(super) fn apply_ui_palette(
-    visuals: &mut egui::Visuals,
-    palette: &crate::frontend::gui::skin::ResolvedUiPalette,
-) {
-    let stroke = |c: egui::Color32| egui::Stroke::new(1.0, c);
-
-    visuals.window_fill = palette.window_bg;
-    visuals.panel_fill = palette.window_bg;
-    visuals.extreme_bg_color = palette.panel_bg;
-    visuals.faint_bg_color = palette.panel_bg;
-    visuals.window_stroke = stroke(palette.border);
-    visuals.override_text_color = Some(palette.text);
-    // Selected rows (menus, combos, lists) paint this fill UNDER the
-    // override_text_color text, so the raw accent can't be used directly: a
-    // skin whose text and accent share a hue (stealth: orange on orange)
-    // makes the highlighted row unreadable, and bright accents are glaring
-    // as a full row fill. Blend the accent into the menu background and
-    // then force luminance contrast against the text color.
-    visuals.selection.bg_fill =
-        readable_selection_fill(palette.accent, palette.menu_bg, palette.text);
-    // NOTE: do NOT override selection.stroke.color — the snap alignment
-    // guides (snap.rs) draw their lines with it, so hijacking it for the
-    // palette washes those guides out. Leave it at the theme's accent.
-
-    // Buttons / interactive controls: fill + hover + border, all from the skin.
-    let w = &mut visuals.widgets;
-    w.noninteractive.bg_fill = palette.window_bg;
-    w.noninteractive.weak_bg_fill = palette.window_bg;
-    w.noninteractive.bg_stroke = stroke(palette.border);
-    w.noninteractive.fg_stroke.color = palette.text;
-
-    w.inactive.bg_fill = palette.button_bg;
-    w.inactive.weak_bg_fill = palette.button_bg;
-    w.inactive.bg_stroke = stroke(palette.border);
-    w.inactive.fg_stroke.color = palette.text;
-
-    w.hovered.bg_fill = palette.button_hover;
-    w.hovered.weak_bg_fill = palette.button_hover;
-    w.hovered.bg_stroke = stroke(palette.accent);
-    w.hovered.fg_stroke.color = palette.text;
-
-    w.active.bg_fill = palette.accent;
-    w.active.weak_bg_fill = palette.accent;
-    w.active.bg_stroke = stroke(palette.accent);
-    w.active.fg_stroke.color = palette.text;
-
-    // Open combos / menus.
-    w.open.bg_fill = palette.menu_bg;
-    w.open.weak_bg_fill = palette.menu_bg;
-    w.open.bg_stroke = stroke(palette.border);
-}
-
 /// Linear-ish relative luminance of a color (0 = black, 1 = white).
 /// THE WCAG pair for the whole GUI app module — widget label contrast
 /// (widgets/text.rs readable_text_color) and menu-row readability both
@@ -141,102 +85,6 @@ pub(super) fn contrast_ratio(a: Color32, b: Color32) -> f32 {
     let (la, lb) = (relative_luminance(a), relative_luminance(b));
     let (hi, lo) = if la > lb { (la, lb) } else { (lb, la) };
     (hi + 0.05) / (lo + 0.05)
-}
-
-/// `amount` of `top` blended over `base` (0.0 = base, 1.0 = top).
-fn blend(base: Color32, top: Color32, amount: f32) -> Color32 {
-    let mix = |b: u8, t: u8| (b as f32 + (t as f32 - b as f32) * amount).round() as u8;
-    Color32::from_rgb(
-        mix(base.r(), top.r()),
-        mix(base.g(), top.g()),
-        mix(base.b(), top.b()),
-    )
-}
-
-/// Highlight fill for selected rows: the skin accent toned down into the
-/// menu background, then nudged away from the text's luminance until the
-/// (override) text color stays readable on it. Skins are free to pick
-/// text ≈ accent (stealth's orange-on-orange), so this is the only place
-/// that guarantees the pairing works.
-fn readable_selection_fill(accent: Color32, menu_bg: Color32, text: Color32) -> Color32 {
-    // Keep the accent's hue but at row-fill intensity.
-    let mut fill = blend(menu_bg, accent, 0.35);
-    // Push the fill toward whichever pole can actually clear the bar.
-    // 3.0 is the WCAG large-text bar — enough for a one-line menu row.
-    // The pole must be chosen by ACHIEVABLE contrast, not text lightness:
-    // against white the ceiling is 1.05/(L+0.05), against black it is
-    // (L+0.05)/0.05 — for mid-gray text (L in ~0.18..0.50) only the black
-    // pole can reach 3.0, even though the text reads as "dark".
-    let text_luminance = relative_luminance(text);
-    let white_ceiling = 1.05 / (text_luminance + 0.05);
-    let black_ceiling = (text_luminance + 0.05) / 0.05;
-    let pole = if black_ceiling >= white_ceiling {
-        Color32::BLACK
-    } else {
-        Color32::WHITE
-    };
-    for _ in 0..8 {
-        if contrast_ratio(fill, text) >= 3.0 {
-            break;
-        }
-        fill = blend(fill, pole, 0.25);
-    }
-    fill
-}
-
-#[cfg(test)]
-mod selection_fill_tests {
-    use super::*;
-
-    #[test]
-    fn same_hue_text_and_accent_stays_readable() {
-        // Stealth-like: orange text on an orange accent.
-        let orange = Color32::from_rgb(0xff, 0x8c, 0x1a);
-        let menu_bg = Color32::from_rgb(0x14, 0x12, 0x10);
-        let fill = readable_selection_fill(orange, menu_bg, orange);
-        assert!(
-            contrast_ratio(fill, orange) >= 3.0,
-            "fill {:?} unreadable under orange text",
-            fill
-        );
-    }
-
-    #[test]
-    fn bright_accent_is_toned_down() {
-        // Storm-like: bright blue accent, near-white text.
-        let accent = Color32::from_rgb(0x4d, 0xc3, 0xff);
-        let menu_bg = Color32::from_rgb(0x10, 0x16, 0x1c);
-        let text = Color32::from_rgb(0xe6, 0xee, 0xf4);
-        let fill = readable_selection_fill(accent, menu_bg, text);
-        assert!(contrast_ratio(fill, text) >= 3.0);
-        // Dimmer than the raw accent as a row fill.
-        assert!(relative_luminance(fill) < relative_luminance(accent));
-    }
-
-    #[test]
-    fn mid_gray_text_pushes_fill_dark() {
-        // Mid-gray text (relative luminance ~0.32) on a light menu: only
-        // the BLACK pole can reach 3.0 (white ceiling is ~2.7). Choosing
-        // by text lightness alone strands the fill near-white.
-        let accent = Color32::from_rgb(0xd0, 0xd0, 0xd0);
-        let menu_bg = Color32::from_rgb(0xec, 0xec, 0xec);
-        let text = Color32::from_rgb(0x99, 0x99, 0x99);
-        let fill = readable_selection_fill(accent, menu_bg, text);
-        assert!(
-            contrast_ratio(fill, text) >= 3.0,
-            "fill {:?} unreadable under mid-gray text",
-            fill
-        );
-    }
-
-    #[test]
-    fn dark_text_pushes_fill_light() {
-        let accent = Color32::from_rgb(0x22, 0x22, 0x2a);
-        let menu_bg = Color32::from_rgb(0x1a, 0x1a, 0x20);
-        let text = Color32::from_rgb(0x11, 0x11, 0x11);
-        let fill = readable_selection_fill(accent, menu_bg, text);
-        assert!(contrast_ratio(fill, text) >= 3.0);
-    }
 }
 
 /// Lazily-loaded system font database, shared by name resolution and the
@@ -433,26 +281,9 @@ impl VellumGuiApp {
     /// Re-apply visuals when `config.active_theme` changes (startup, .settheme,
     /// layout-driven theme switches).
     pub(super) fn apply_theme_if_changed(&mut self, ctx: &egui::Context) {
-        // Re-apply when the theme OR the active skin changes: the skin's UI
-        // palette is overlaid on top of the theme visuals, so a skin switch
-        // (same theme) must rebuild the visuals too.
-        let active_skin = self.ui_settings.active_skin.clone();
         let theme_unchanged =
             self.applied_theme_id.as_deref() == Some(self.app_core.config.active_theme.as_str());
-        let skin_unchanged = self.applied_skin_ui_id == active_skin;
-        // Skin (un)load is async — `skin_state.apply_if_changed` runs LATER in
-        // the frame than this, so on the switch frame `widget_art()` still holds
-        // the OLD skin's art. The target `active_skin` changes immediately, so a
-        // guard keyed on it stamps "done" while the applied palette is still the
-        // previous skin's — freezing the wrong colors in (stealth's orange menus
-        // persisting after switching to storm; plain menus after skin-on; stale
-        // titles after skin-off). The authority on WHAT palette is loaded is
-        // `skin_state.loaded_skin()`: re-apply until the loaded skin actually
-        // matches the target AND we've recorded applying from it. This covers
-        // every case — none→skin, skin→none, and skin→skin — in one condition.
-        let loaded_matches_target = self.skin_state.loaded_skin() == active_skin.as_deref();
-        let art_settled = loaded_matches_target && self.applied_skin_art_settled;
-        if theme_unchanged && skin_unchanged && art_settled {
+        if theme_unchanged {
             return;
         }
         let active = self.app_core.config.active_theme.clone();
@@ -460,24 +291,10 @@ impl VellumGuiApp {
         let presets =
             crate::theme::ThemePresets::all_with_custom(self.app_core.config.character.as_deref());
         if let Some(theme) = presets.get(&active) {
-            let mut visuals = visuals_from_theme(theme);
+            let visuals = visuals_from_theme(theme);
             // The raw accent widgets paint with (map, dialog progress fills,
-            // wheel highlight, focus rings). selection.bg_fill can't serve
-            // both masters: menus need the readability-adjusted fill, widgets
-            // need the accent itself — so the accent is published separately.
-            let mut widget_accent = visuals.selection.bg_fill;
-            // Overlay the active skin's UI palette (derived from art + [ui]
-            // overrides) so config editors, menus, and native controls take
-            // on the skin. No skin / no palette -> plain theme visuals.
-            if let Some(palette) = self.skin_state.widget_art().and_then(|art| art.ui_palette) {
-                apply_ui_palette(&mut visuals, &palette);
-                widget_accent = palette.accent;
-            }
-            super::widgets::set_widget_accent(ctx, widget_accent);
-            // "Settled" = the art we just read belongs to the target skin. When
-            // the loaded skin still lags the target (async switch frame), this
-            // stays false so the next frame re-applies from the correct art.
-            self.applied_skin_art_settled = self.skin_state.loaded_skin() == active_skin.as_deref();
+            // wheel highlight, focus rings).
+            super::widgets::set_widget_accent(ctx, visuals.selection.bg_fill);
             ctx.set_visuals(visuals);
             // set_visuals rebuilds Visuals wholesale; force the ui_settings
             // window radius to re-apply over it next frame.
@@ -487,7 +304,6 @@ impl VellumGuiApp {
             tracing::warn!("Unknown theme '{}', keeping current visuals", active);
         }
         self.applied_theme_id = Some(active);
-        self.applied_skin_ui_id = active_skin;
     }
 
     /// Handle `action:settheme:<name>` from dot-commands or menus.

@@ -383,20 +383,8 @@ pub struct VellumGuiApp {
     layout_dirty: bool,
     layout_dirty_since: Option<Instant>,
     applied_theme_id: Option<String>,
-    /// Active skin id whose UI palette was last overlaid onto the visuals.
-    /// Paired with `applied_theme_id` so a skin switch re-applies the palette
-    /// even when the theme name is unchanged.
-    applied_skin_ui_id: Option<String>,
-    /// Whether the last theme apply read art belonging to the TARGET skin
-    /// (`skin_state.loaded_skin() == active_skin`). Skin art loads
-    /// asynchronously — a switch frame reads the previous skin's art — so a
-    /// guard keyed only on the target skin id would freeze the wrong palette in
-    /// (e.g. stealth's orange menus persisting after switching to storm). This
-    /// stays false until the loaded art matches the target, forcing a re-apply
-    /// next frame. Covers none→skin, skin→none, and skin→skin.
-    applied_skin_art_settled: bool,
     current_theme: crate::theme::AppTheme,
-    /// Active skin graphics (ui_settings.active_skin); reloaded when it changes.
+    /// Pool art graphics (appearance assignments); reloaded when they change.
     skin_state: skin::SkinState,
     ui_font: FontRef,
     fonts_applied: bool,
@@ -1012,8 +1000,6 @@ impl VellumGuiApp {
             layout_dirty: migrated_gui || seeded_active_skin || rewrote_icon_paths,
             layout_dirty_since: None,
             applied_theme_id: None,
-            applied_skin_ui_id: None,
-            applied_skin_art_settled: false,
             current_theme: crate::theme::AppTheme::default(),
             skin_state: skin::SkinState::default(),
             ui_font,
@@ -1509,17 +1495,10 @@ impl VellumGuiApp {
             A::Skins => self.list_skins_to_window(),
             A::MakeSkin(name) => self.make_skin_scaffold(&name),
             A::HarmonySkin(name) => self.write_harmony_skin_default(&name),
-            A::ReloadSkin => match self.ui_settings.active_skin.clone() {
-                Some(name) => {
-                    self.skin_state.force_reload();
-                    self.app_core
-                        .add_system_message(&format!("Reloading skin '{}'.", name));
-                }
-                None => {
-                    self.app_core
-                        .add_system_message("No skin active. Use .setskin <name> first.");
-                }
-            },
+            A::ReloadSkin => {
+                self.skin_state.force_reload();
+                self.app_core.add_system_message("Reloading pool art.");
+            }
             A::RoomImagesEdit => self.open_room_images_editor(),
             A::AlertPacks => self.open_alertpacks_editor(),
             A::SorterEdit => self.open_sorter_editor(),
@@ -2294,11 +2273,8 @@ impl eframe::App for VellumGuiApp {
             self.ui_settings.status_icons.any_gray(),
             self.ui_settings.doll_grayscale,
         );
-        self.skin_state.apply_if_changed(
-            &ctx,
-            self.ui_settings.active_skin.as_deref(),
-            self.ui_settings.doll_image.as_deref(),
-        );
+        self.skin_state
+            .apply_if_changed(&ctx, self.ui_settings.doll_image.as_deref());
         // Creature-card art: resolve + load base sprites for the field's
         // current roster (lazy, negative-cached — a settled room is a few
         // hash lookups). Family comes from the bundled bestiary when the

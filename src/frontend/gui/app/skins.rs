@@ -5,15 +5,6 @@
 use super::*;
 
 impl VellumGuiApp {
-    /// Set the active skin: the layout keeps a copy (checkpoints carry a
-    /// look with them), the appearance store is the canonical value core
-    /// and web read.
-    pub(super) fn set_active_skin(&mut self, skin: Option<String>) {
-        self.ui_settings.active_skin = skin;
-        self.layout_dirty = true;
-        self.sync_appearance_from_ui_settings();
-    }
-
     /// Sync the canonical appearance store from the layout's live look and
     /// persist when anything changed. The explicit setters call this for
     /// immediacy (core reads the in-memory store live) and the layout
@@ -22,7 +13,9 @@ impl VellumGuiApp {
     pub(super) fn sync_appearance_from_ui_settings(&mut self) {
         let ui = &self.ui_settings;
         let next = crate::config::appearance::AppearanceSettings {
-            active_skin: ui.active_skin.clone(),
+            // Legacy migration input only — presets are the look now, so
+            // the store never carries a live skin.
+            active_skin: None,
             doll_image: ui.doll_image.clone(),
             compass_set: ui.compass_set.clone(),
             default_frame: ui.default_frame.clone(),
@@ -46,7 +39,8 @@ impl VellumGuiApp {
     /// the store's new values.
     pub(super) fn sync_ui_settings_from_appearance(&mut self) {
         let a = self.app_core.config.appearance.clone();
-        self.ui_settings.active_skin = a.active_skin;
+        // a.active_skin is a legacy migration input; never mirrored back.
+        self.ui_settings.active_skin = None;
         self.ui_settings.doll_image = a.doll_image;
         self.ui_settings.compass_set = a.compass_set;
         self.ui_settings.default_frame = a.default_frame;
@@ -249,8 +243,20 @@ impl VellumGuiApp {
     /// frame via `SkinState::apply_if_changed`.
     pub(super) fn apply_skin_by_name(&mut self, name: &str) {
         if name.eq_ignore_ascii_case("none") || name.eq_ignore_ascii_case("off") {
-            self.set_active_skin(None);
-            self.app_core.add_system_message("Skin disabled.");
+            // Clear every appearance assignment slot back to defaults.
+            self.ui_settings.active_skin = None;
+            self.ui_settings.doll_image = None;
+            self.ui_settings.compass_set = None;
+            self.ui_settings.default_frame = None;
+            self.ui_settings.default_background = None;
+            self.ui_settings.edge_set = None;
+            self.ui_settings.doll_grayscale = false;
+            self.ui_settings.status_icons.set = None;
+            self.ui_settings.control_frames.clear();
+            self.layout_dirty = true;
+            self.sync_appearance_from_ui_settings();
+            self.app_core
+                .add_system_message("Appearance reset to plain theme.");
             return;
         }
         // New-format presets (jinx skin packs, .importskin): the manifest
@@ -352,15 +358,12 @@ impl VellumGuiApp {
             );
             return;
         }
-        let active = self.ui_settings.active_skin.clone();
         self.app_core.add_system_message("Installed skins:");
         for name in available {
-            let marker = if active.as_deref() == Some(name.as_str()) {
-                " (active)"
-            } else if crate::config::skin_pack::load_preset(&name).is_some() {
+            let marker = if crate::config::skin_pack::load_preset(&name).is_some() {
                 " (preset)"
             } else {
-                ""
+                " (legacy - migrates on .setskin)"
             };
             self.app_core
                 .add_system_message(&format!("  {}{}", name, marker));
@@ -381,7 +384,8 @@ impl VellumGuiApp {
                     path.display()
                 ));
                 self.app_core.add_system_message(
-                    "Edit skin.toml (sections are commented out), add images, then .setskin to activate.",
+                    "Edit skin.toml (sections are commented out), add images, then .setskin to \
+                     apply it — the skin is converted to a preset (art moves to the image pool).",
                 );
             }
             Err(err) => {
@@ -434,8 +438,8 @@ impl VellumGuiApp {
                     path.display()
                 ));
                 self.app_core.add_system_message(&format!(
-                    "Activate with .setskin {} (frames 'harmony' and 'harmony-accent' \
-                     are also assignable per window).",
+                    "Apply with .setskin {} — it converts to a preset (frames 'harmony' and \
+                     'harmony-accent' are also assignable per window).",
                     name.trim()
                 ));
             }
@@ -624,15 +628,8 @@ impl VellumGuiApp {
             None => window_name.to_string(),
         };
         let visuals = ctx.global_style().visuals.clone();
-        // Caption color = the skin's titlebar_text (defaults to accent). A skin
-        // whose title-bar art needs a specific text color (StormFront's silver
-        // bar wants dark text, not the steel-blue accent) pins it via
-        // [ui].titlebar_text; falls back to the theme text color when no palette.
-        let caption_color = self
-            .skin_state
-            .widget_art()
-            .and_then(|art| art.ui_palette.as_ref().map(|pal| pal.titlebar_text))
-            .unwrap_or_else(|| visuals.text_color());
+        // Caption color follows the theme text color.
+        let caption_color = visuals.text_color();
         if !caption.is_empty() {
             // Sit the caption in the SOLID top band of the title-bar art, not
             // the full-bar center — these sprites carry a mesh-notch / stretch

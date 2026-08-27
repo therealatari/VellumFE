@@ -87,35 +87,13 @@ impl VellumGuiApp {
         // A skin skins tabs with `[controls.tab]` (+ optional `tab.active`);
         // without it, tabs fall back to egui selectable_labels.
         let tab_art = skin_art.and_then(|art| art.control_border("tab", "normal"));
-        // Active-tab text must contrast with whatever fills behind it, and that
-        // differs by render path:
-        //   - Skinned path (tab_art present): the active tab is backed by dark
-        //     `[controls.tab.active]` ART, so the label needs a LIGHT color
-        //     (the accent) — dark-on-dark art was invisible (the "Story" tab).
-        //   - Fallback path (selectable_label): the active tab fills with the
-        //     ACCENT (selection bg), so the label needs a DARK color (window_bg)
-        //     to read on it.
-        // Inactive tabs use the chrome text color in both paths.
-        let (tab_text, tab_active_text, tab_unread_text) = skin_art
-            .and_then(|art| art.ui_palette.as_ref())
-            .map(|pal| {
-                // Active tab contrasts with its fill (see path note above).
-                let active = if tab_art.is_some() {
-                    pal.accent // light-on-dark-art
-                } else {
-                    pal.window_bg // dark-on-accent-fill
-                };
-                // Inactive tabs read as MUTED, so only the active tab stands out
-                // — not the full chrome text color (which is the accent on some
-                // skins, making every tab glow). Dim the palette text toward the
-                // window background.
-                let idle = Self::lerp_color(pal.text, pal.window_bg, 0.45);
-                // Unread (non-quiet) inactive tab: the accent, so new activity
-                // pops in the skin's highlight color (GUI's answer to the TUI *).
-                let unread = pal.accent;
-                (Some(idle), Some(active), Some(unread))
-            })
-            .unwrap_or((None, None, None));
+        // Tab label colors follow the theme (None = default text colors);
+        // the legacy skin [ui] palette that once overrode them is gone.
+        let (tab_text, tab_active_text, tab_unread_text): (
+            Option<egui::Color32>,
+            Option<egui::Color32>,
+            Option<egui::Color32>,
+        ) = (None, None, None);
         let mut clicked = None;
         ui.horizontal_wrapped(|ui| {
             for (index, tab_state) in tabbed.tabs.iter().enumerate() {

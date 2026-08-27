@@ -327,8 +327,14 @@ impl VellumGuiApp {
         // survives and only the arrangement is taken from the file.
         let previous_look = self.ui_settings.clone();
         self.ui_settings = restored.ui_settings;
+        // The live-manifest skin runtime is gone: a checkpoint carrying a
+        // legacy active_skin drops it with a pointer to the migration path.
+        if let Some(name) = self.ui_settings.active_skin.take() {
+            self.app_core.add_system_message(&format!(
+                "Checkpoint carried legacy skin '{name}' — apply it with .setskin {name}."
+            ));
+        }
         if keep_skin {
-            self.ui_settings.active_skin = previous_look.active_skin.clone();
             self.ui_settings.active_theme = previous_look.active_theme.clone();
             self.ui_settings.doll_image = previous_look.doll_image.clone();
             self.ui_settings.status_icons = previous_look.status_icons.clone();

@@ -302,21 +302,9 @@ impl AppCore {
         }
         // Portal resolution needs the map service, which lives here.
         snap.portals = self.portal_commands();
-        // The character's active doll variant + suppressed parts: resolved
-        // host-side (one condition evaluator, in Rust) so phone clients
-        // just switch sets by name instead of re-implementing eval in JS.
-        // Disjoint field borrows on purpose — gameobj_data_cached() would
-        // hold all of &self against &mut self.doll_rules.
-        let now_server = chrono::Utc::now().timestamp() + self.message_processor.server_time_offset;
-        let (doll_variant, doll_hidden) = self.doll_rules.resolve(
-            self.config.appearance.active_skin.as_deref(),
-            self.config.appearance.doll_image.as_deref(),
-            &self.game_state,
-            now_server,
-            self.gameobj_data.as_deref(),
-        );
-        snap.doll_variant = doll_variant;
-        snap.doll_hidden = doll_hidden;
+        // Doll variants came from the legacy live-manifest skin runtime;
+        // pool dolls carry none, so the snapshot keeps its default
+        // (no variant, nothing hidden) and phone clients draw the base set.
         // Creature field: host-placed cards on the solver's virtual stage,
         // in draw order, so browsers paint the list as-is with no solver
         // and no condition logic of their own (the doll rule, again).

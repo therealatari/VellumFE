@@ -378,11 +378,13 @@ pub struct GuiUiSettings {
     #[serde(default)]
     pub vitals: VitalsConfig,
 
-    /// Active skin (directory name under ~/.vellum-fe/global/skins/);
-    /// None = plain theme colors. Lives in the layout so checkpoints
-    /// carry their skin; config.active_skin is kept as a mirror for the
-    /// web doll endpoint and the headless/TUI frontends.
-    #[serde(default)]
+    /// LEGACY MIGRATION INPUT ONLY. The live-manifest skin runtime is
+    /// gone — skins are inert presets now. This field is kept so old
+    /// layout files still deserialize; startup takes it
+    /// (`startup_skin_migration`) and converts the named skin to a preset.
+    /// Never written anymore (skip_serializing_if) and never set at
+    /// runtime.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_skin: Option<String>,
 
     /// Theme (preset or custom name) at save time, so a checkpoint loaded on
@@ -393,11 +395,10 @@ pub struct GuiUiSettings {
     #[serde(default)]
     pub active_theme: Option<String>,
 
-    /// Injury doll image override as a pool-relative path
-    /// ("dolls/dwarf_ranger.png"); None follows the active skin's
-    /// `[injury_doll]` (or the vector doll with no skin). Calibration for a
-    /// pool doll lives in its sidecar toml. Mirrored to config.doll_image
-    /// for the web doll endpoint, like active_skin.
+    /// Injury doll image as a pool-relative path
+    /// ("dolls/dwarf_ranger.png"); None = the built-in vector doll.
+    /// Calibration for a pool doll lives in its sidecar toml. Mirrored to
+    /// the appearance store for the web doll endpoint.
     #[serde(default)]
     pub doll_image: Option<String>,
 
@@ -406,7 +407,7 @@ pub struct GuiUiSettings {
     pub status_icons: StatusIconSettings,
 
     /// Compass art set from the pool (`compass/<set>/<role>.png`, roles
-    /// rose/n/ne/.../out); None follows the active skin's `[compass]`.
+    /// rose/n/ne/.../out); None = no compass art set (vector rose).
     #[serde(default)]
     pub compass_set: Option<String>,
 

@@ -1,20 +1,20 @@
-//! GUI skin rendering: user-supplied graphics layered on top of themes.
+//! GUI pool-art rendering: user-supplied graphics layered on top of themes.
 //!
-//! The manifest format, loading, and the canonical injury doll part table
-//! live in `crate::config::skins` (shared with the web frontend, which
-//! compiles without egui). This module owns everything egui: texture
-//! loading, the per-skin runtime state, widget sprite lookups, the paint
-//! helpers, and the calibrator's comment-preserving skin.toml save.
+//! The image-pool conventions and the canonical injury doll part table
+//! live in `crate::config::skins`/`crate::config::pool` (shared with the
+//! web frontend, which compiles without egui). This module owns everything
+//! egui: texture loading, the appearance-driven runtime state, widget
+//! sprite lookups, and the paint helpers. The legacy live-manifest skin
+//! runtime is gone — skins are inert presets applied to the appearance
+//! store (`config::skin_pack`); everything here resolves from the pool.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::config::skins::{
-    self, BackgroundFit, DollDotSpec, InjuryDollSkin, SheetSpec, SkinManifest,
-};
+use crate::config::skins::{self, BackgroundFit, DollDotSpec, SheetSpec};
 
 /// Everything a renderer needs to paint one window background. Resolved
-/// once per frame from the loaded skin, then handed to render paths (some
+/// once per frame from the appearance assignments, then handed to render paths (some
 /// of which run in detached viewports without access to the app).
 #[derive(Debug, Clone)]
 pub struct ResolvedBackground {
@@ -100,11 +100,6 @@ pub struct SkinWidgetArt {
     /// lowercase `"<control>"` or `"<control>.<state>"` (e.g. "button",
     /// "button.hover", "dropdown").
     controls: HashMap<String, ResolvedBorder>,
-    /// Editor/menu color palette: derived from the skin's art at load, with
-    /// any `[ui]` manifest entry overriding its derived default. `None` when
-    /// the skin has no art to derive from and no `[ui]` — the editors keep
-    /// the plain theme visuals.
-    pub ui_palette: Option<ResolvedUiPalette>,
     /// Decorative edge overlays keyed by edge ("top"/"right"/"bottom"/"left"),
     /// painted over the nine-slice border along that window edge.
     edges: HashMap<String, ResolvedEdge>,
@@ -123,25 +118,6 @@ pub struct ResolvedEdge {
     /// None to use the strip's cross-axis size.
     pub thickness: Option<f32>,
     pub scale: f32,
-}
-
-/// Resolved editor/menu colors, ready to overlay onto egui `Visuals`. Every
-/// field is a concrete color (derived-from-art default or `[ui]` override).
-#[derive(Debug, Clone, Copy)]
-pub struct ResolvedUiPalette {
-    pub window_bg: egui::Color32,
-    pub panel_bg: egui::Color32,
-    pub button_bg: egui::Color32,
-    pub button_hover: egui::Color32,
-    pub text: egui::Color32,
-    pub accent: egui::Color32,
-    pub border: egui::Color32,
-    pub menu_bg: egui::Color32,
-    /// Title-bar caption color (defaults to `accent` when the skin doesn't set
-    /// `titlebar_text`).
-    pub titlebar_text: egui::Color32,
-    /// Label color for skinned buttons (defaults to `text`).
-    pub button_text: egui::Color32,
 }
 
 /// One loaded conditional doll variant: the activation condition plus a
@@ -593,7 +569,6 @@ pub struct ResolvedBorder {
     pub scale: f32,
 }
 
-/// Runtime skin state owned by the GUI app: the active manifest plus its
 /// Loaded art for one creature-card base image.
 #[derive(Clone)]
 pub struct CreatureArt {
@@ -665,11 +640,11 @@ pub struct CreatureArtCache {
     pub variant_bases: HashMap<String, Option<CreatureArt>>,
     /// Overlay manifest path -> texture (None = load failed).
     pub overlays: HashMap<String, Option<egui::TextureHandle>>,
-    /// The `[creature_card]` template: the active skin's, or the default
-    /// template (pool resolve cascade + convention status overlays) when
-    /// no skin is loaded — creature art never requires a skin.
+    /// The `[creature_card]` template: the built-in default (pool resolve
+    /// cascade + convention status overlays) — creature art never requires
+    /// a skin.
     pub card: skins::CreatureCardSkin,
-    /// Resolve root: the skin dir, or the image pool when skinless.
+    /// Resolve root: the image pool.
     root: PathBuf,
     skin_name: String,
 }
@@ -727,25 +702,24 @@ pub struct WantedCreature {
 /// The mutex is uncontended — everything runs on the UI thread.
 pub type SharedCreatureArt = std::sync::Arc<std::sync::Mutex<CreatureArtCache>>;
 
-/// loaded textures. Textures live for as long as the skin stays active.
+/// Runtime pool-art state owned by the GUI app: the appearance-driven
+/// declarations plus their loaded textures.
 #[derive(Default)]
 pub struct SkinState {
-    /// Directory name of the loaded skin; None = no skin active.
-    loaded_id: Option<String>,
-    manifest: SkinManifest,
+    /// Resolve root for pool-relative paths (the shared image pool).
     root: PathBuf,
-    /// Loaded textures keyed by manifest image path (+ "#gray" twins),
-    /// synced incrementally — unchanged files keep their textures across
-    /// appearance changes and skin switches.
+    /// Loaded textures keyed by pool-relative image path (+ "#gray"
+    /// twins), synced incrementally — unchanged files keep their textures
+    /// across appearance changes.
     store: super::image_store::ImageStore,
-    /// Widget sprite lookups built once per skin load.
+    /// Widget sprite lookups built once per reload.
     widget_art: Option<std::sync::Arc<SkinWidgetArt>>,
     applied: bool,
-    /// skin.toml mtime at load, for hot-reload detection.
-    manifest_mtime: Option<std::time::SystemTime>,
+    /// Shared hotbar icon sheets (global/images/icons), keyed by name.
+    sheets: HashMap<String, SheetSpec>,
     /// Injury doll override as a pool-relative path (from
-    /// ui_settings.doll_image); replaces the skin's `[injury_doll]` when
-    /// set — its calibration comes from the image's sidecar toml.
+    /// ui_settings.doll_image); base from the pool image, calibration from
+    /// the image's sidecar toml.
     doll_override: Option<String>,
     /// Pool frames referenced by window overrides (lowercase stems). Only
     /// these load textures — pool frame art can be megabytes, so the
@@ -764,14 +738,12 @@ pub struct SkinState {
     needed_pool_dolls: Vec<String>,
     /// Active statusicons pool set (lowercase `<set>_` prefix).
     statusicon_set: Option<String>,
-    /// Compass pool set override (lowercase prefix); replaces the skin's
-    /// `[compass]` when its rose is present.
+    /// Compass pool set (lowercase prefix); None = no compass art set.
     compass_set: Option<String>,
     /// Control-face assignments (lowercase control key -> pool frame
-    /// stem); each wins over the skin's `[controls.<key>]`.
+    /// stem).
     control_frames: HashMap<String, String>,
-    /// Edge-overlay pool set; replaces the skin's `[edges]` when it has
-    /// any strips. "none" strips edge art entirely.
+    /// Edge-overlay pool set. "none" strips edge art entirely.
     edge_set: Option<String>,
     /// Resolved edge set: lowercase role ("top", "top-ornament", ...) ->
     /// pool path.
@@ -810,78 +782,46 @@ pub struct SkinState {
 }
 
 impl SkinState {
-    /// Load or unload to match `active` (from config) and the doll override
-    /// (from the layout's appearance settings). Call once per frame; does
-    /// nothing when neither changed and skin.toml is untouched (edits to
-    /// the manifest hot-reload within a second).
-    pub fn apply_if_changed(
-        &mut self,
-        ctx: &egui::Context,
-        active: Option<&str>,
-        doll_override: Option<&str>,
-    ) {
+    /// Load or unload to match the doll override (from the layout's
+    /// appearance settings) and the declared pool assignments. Call once
+    /// per frame; does nothing when nothing changed and the shared
+    /// icons.toml is untouched (edits hot-reload within a second).
+    pub fn apply_if_changed(&mut self, ctx: &egui::Context, doll_override: Option<&str>) {
         // Per-frame decode allowance for picker thumbnails (this runs
-        // once per frame regardless of skin changes).
+        // once per frame regardless of art changes).
         self.thumb_budget = 3;
-        if self.applied
-            && self.loaded_id.as_deref() == active
-            && self.doll_override.as_deref() == doll_override
-        {
+        if self.applied && self.doll_override.as_deref() == doll_override {
             if !self.manifest_changed_on_disk() {
                 return;
             }
-            tracing::info!("skin.toml changed on disk; reloading skin");
+            tracing::info!("shared icons.toml changed on disk; reloading pool art");
         }
         self.applied = true;
-        self.loaded_id = active.map(str::to_owned);
         self.doll_override = doll_override.map(str::to_owned);
-        self.manifest = SkinManifest::default();
+        self.root = crate::config::Config::global_images_dir().unwrap_or_default();
         self.pool_frames = load_pool_frames(&self.needed_pool_frames);
         self.pool_status_icons = load_pool_set("statusicons", self.statusicon_set.as_deref());
         self.pool_compass = load_pool_set("compass", self.compass_set.as_deref());
         self.pool_edges = load_pool_set("edges", self.edge_set.as_deref());
         self.widget_art = None;
-        self.manifest_mtime = None;
+        self.sheets.clear();
         self.shared_sheet_names.clear();
         self.shared_manifest_mtime = None;
 
-        if let Some(name) = active {
-            match skins::load_manifest(name) {
-                Ok((manifest, root)) => {
-                    self.manifest = manifest;
-                    self.root = root;
-                    self.manifest_mtime = skins::manifest_mtime(&self.root);
-                }
-                Err(err) => {
-                    // Remember the root so a skin.toml appearing later (e.g. a
-                    // scaffold being written) still hot-loads.
-                    if let Ok(dir) = crate::config::Config::skins_dir() {
-                        self.root = dir.join(name);
-                    }
-                    tracing::warn!("Failed to load skin '{}': {:#}", name, err);
-                }
-            }
-        }
-
-        // Shared sheets load with or without a skin, so hotbar icons don't
-        // require one.
+        // Shared sheets (global/images/icons) so hotbar icons work with no
+        // other art at all.
         self.merge_shared_sheets();
 
-        self.sync_textures(ctx, active.unwrap_or("shared-icons"));
+        self.sync_textures(ctx, "pool");
         self.widget_art = self.build_widget_art();
 
         // Reset the creature-card art cache: bases resolve lazily per
         // creature (prepare_creature_art), overlay textures load there too
-        // on first demand. Skinless, the template is the built-in default
-        // (pool resolve cascade) rooted at the pool, so creature art never
-        // requires a skin; convention status overlays fold in either way.
+        // on first demand. The template is the built-in default (pool
+        // resolve cascade) rooted at the pool; convention status overlays
+        // fold in.
         {
-            let root = if active.is_some() {
-                self.root.clone()
-            } else {
-                crate::config::Config::global_images_dir().unwrap_or_else(|_| self.root.clone())
-            };
-            let mut card = self.manifest.creature_card.clone();
+            let mut card = skins::CreatureCardSkin::default();
             card.overlays
                 .extend(crate::core::creature_cards::convention_status_overlays(
                     &card.overlays,
@@ -889,8 +829,8 @@ impl SkinState {
             let mut cache = self.creature_art.lock().expect("creature art lock");
             *cache = CreatureArtCache {
                 card,
-                root,
-                skin_name: active.unwrap_or("pool").to_string(),
+                root: self.root.clone(),
+                skin_name: "pool".to_string(),
                 ..Default::default()
             };
         }
@@ -1035,9 +975,9 @@ impl SkinState {
         }
     }
 
-    /// Fold the shared icon store's sheets into the loaded manifest.
-    /// Skin-local sheets win name collisions; shared paths are absolutized
-    /// against the shared directory so they resolve from any skin root.
+    /// Load the shared icon store's sheets (global/images/icons); shared
+    /// paths are absolutized against the shared directory so they resolve
+    /// from the pool root.
     fn merge_shared_sheets(&mut self) {
         // Record the mtime before parsing so a broken icons.toml warns once
         // instead of re-loading (and re-warning) every poll.
@@ -1049,13 +989,12 @@ impl SkinState {
                 return;
             }
         };
-        self.shared_sheet_names =
-            merge_shared_sheets_into(&mut self.manifest.sheets, shared, &shared_root);
+        self.shared_sheet_names = merge_shared_sheets_into(&mut self.sheets, shared, &shared_root);
     }
 
     /// Force a full reload on the next frame (`.reloadskin`). Unlike the
     /// mtime poll this also picks up edited *images*, which don't touch
-    /// skin.toml.
+    /// the shared icons.toml.
     pub fn force_reload(&mut self) {
         self.applied = false;
     }
@@ -1181,8 +1120,8 @@ impl SkinState {
         }
     }
 
-    /// True when the active skin's manifest or the shared icons.toml mtime
-    /// differs from what was loaded. Rate-limited to one stat per second.
+    /// True when the shared icons.toml mtime differs from what was loaded.
+    /// Rate-limited to one stat per second.
     fn manifest_changed_on_disk(&mut self) -> bool {
         let now = std::time::Instant::now();
         if self
@@ -1192,36 +1131,20 @@ impl SkinState {
             return false;
         }
         self.last_mtime_check = Some(now);
-        let skin_changed = self.loaded_id.is_some() && {
-            let current = skins::manifest_mtime(&self.root);
-            current.is_some() && current != self.manifest_mtime
-        };
         // != (not is_some &&) so deleting icons.toml also unloads its sheets.
-        skin_changed || shared_icons_mtime() != self.shared_manifest_mtime
+        shared_icons_mtime() != self.shared_manifest_mtime
     }
 
-    /// Sprite lookups for widget renderers; None when the skin defines no
-    /// widget art (renderers then use their vector drawings).
+    /// Sprite lookups for widget renderers; None when no widget art is
+    /// assigned (renderers then use their vector drawings).
     pub fn widget_art(&self) -> Option<std::sync::Arc<SkinWidgetArt>> {
         self.widget_art.clone()
     }
 
-    /// Directory name of the loaded skin, if one is active.
-    pub fn loaded_skin(&self) -> Option<&str> {
-        self.loaded_id.as_deref()
-    }
-
-    /// True when `sheet` (any case) came from the shared icon store rather
-    /// than the active skin.
+    /// True when `sheet` (any case) came from the shared icon store.
     pub fn sheet_is_shared(&self, sheet: &str) -> bool {
         self.shared_sheet_names
             .contains(&sheet.to_ascii_lowercase())
-    }
-
-    /// The loaded manifest's injury doll section (for seeding the
-    /// calibrator with the current anchors and dot styling).
-    pub fn doll_manifest(&self) -> &InjuryDollSkin {
-        &self.manifest.injury_doll
     }
 
     /// The active doll override (pool-relative path), if one is set.
@@ -1246,13 +1169,7 @@ impl SkinState {
         };
 
         let mut art = SkinWidgetArt::default();
-        for (id, path) in &self.manifest.icons {
-            if let Some(texture) = tex(path) {
-                art.icons
-                    .insert(id.to_ascii_uppercase(), IconSlot::Sprite(texture));
-            }
-        }
-        // Pool set art fills ids the skin doesn't define (skin wins).
+        // Pool set art fills each glyph id.
         for (id, path) in &self.pool_status_icons {
             if let Some(texture) = tex(path) {
                 art.icons
@@ -1260,7 +1177,7 @@ impl SkinState {
                     .or_insert(IconSlot::Sprite(texture));
             }
         }
-        // Per-indicator overrides beat both.
+        // Per-indicator overrides beat the set.
         for (id, icon) in &self.statusicon_overrides {
             match icon {
                 crate::data::IconRef::Default => {}
@@ -1292,9 +1209,9 @@ impl SkinState {
                 art.pool_icons.insert(path.to_ascii_lowercase(), texture);
             }
         }
-        for (name, spec) in &self.manifest.sheets {
+        for (name, spec) in &self.sheets {
             if spec.cell == 0 {
-                tracing::warn!("Skin sheet '{}': cell size must be > 0", name);
+                tracing::warn!("Icon sheet '{}': cell size must be > 0", name);
                 continue;
             }
             if let Some(texture) = tex(&spec.path) {
@@ -1308,91 +1225,27 @@ impl SkinState {
                 );
             }
         }
-        art.compass_rose = self.manifest.compass.rose.as_ref().and_then(tex);
-        for (direction, path) in &self.manifest.compass.directions {
-            if let Some(texture) = tex(path) {
-                art.compass_dirs
-                    .insert(direction.to_ascii_lowercase(), texture);
-            }
-        }
-        // Interactive dialog-panel control art (button/dropdown/... states),
-        // each a nine-slice that stretches to the control's rect.
-        for (key, spec) in &self.manifest.controls {
-            if let Some(border) = self.resolve_border(spec) {
-                art.controls.insert(key.to_ascii_lowercase(), border);
-            }
-        }
-        // User control-face assignments beat the skin's `[controls]` —
-        // and work with no skin at all. A name resolves like the window
-        // frame picker: the skin's `[frames.*]` first, then pool frames.
+        // User control-face assignments (pool frames), for dialog-panel
+        // controls (button/dropdown/... states).
         for (key, stem) in &self.control_frames {
-            let border = skins::named_frame(&self.manifest, stem)
-                .and_then(|spec| self.resolve_border(spec))
-                .or_else(|| {
-                    self.pool_frames
-                        .get(stem)
-                        .and_then(|spec| self.resolve_border(spec))
-                });
+            let border = self
+                .pool_frames
+                .get(stem)
+                .and_then(|spec| self.resolve_border(spec));
             if let Some(border) = border {
                 art.controls.insert(key.clone(), border);
             }
         }
-        // Decorative edge overlays (strip + corner ornament per edge).
-        let edge_tex = |path: &Option<String>| -> Option<SkinTexture> {
-            path.as_ref()
-                .and_then(|p| self.store.texture(p))
-                .map(|t| SkinTexture {
-                    texture: t.id(),
-                    size: t.size_vec2(),
-                })
-        };
-        for (key, spec) in &self.manifest.edges {
-            // The paint pass only ever asks for these four names; anything
-            // else ([edges.rigth]) would load its textures and then silently
-            // never paint — warn so the skin author finds the typo.
-            if !matches!(
-                key.to_ascii_lowercase().as_str(),
-                "top" | "right" | "bottom" | "left"
-            ) {
-                tracing::warn!(
-                    "skin edge '[edges.{key}]' is not one of top/right/bottom/left and will never paint"
-                );
-                continue;
-            }
-            let strip = edge_tex(&spec.strip);
-            let ornament = edge_tex(&spec.ornament);
-            if strip.is_none() && ornament.is_none() {
-                continue;
-            }
-            art.edges.insert(
-                key.to_ascii_lowercase(),
-                ResolvedEdge {
-                    strip,
-                    ornament,
-                    tile: spec.tile,
-                    anchor_end: spec
-                        .anchor
-                        .as_deref()
-                        .map(|a| a.eq_ignore_ascii_case("end"))
-                        .unwrap_or(false),
-                    thickness: spec.thickness.map(|t| t * spec.scale.max(0.05)),
-                    scale: spec.scale.max(0.05),
-                },
-            );
-        }
-        // An edge pool set replaces the skin's `[edges]` wholesale (same
-        // reasoning as the compass: a set is one coherent look). Roles:
+        // Decorative edge overlays from the edge pool set. Roles:
         // `<side>.png` strips, `<side>-ornament.png` corner art; paint
         // parameters ride in each strip's edge sidecar. The "none"
         // sentinel strips edge art entirely.
-        if self
+        if !self
             .edge_set
             .as_deref()
             .is_some_and(|set| set.eq_ignore_ascii_case("none"))
+            && !self.pool_edges.is_empty()
         {
-            art.edges.clear();
-        } else if !self.pool_edges.is_empty() {
-            art.edges.clear();
             for side in ["top", "right", "bottom", "left"] {
                 let strip = self.pool_edges.get(side).and_then(tex);
                 let ornament = self
@@ -1428,88 +1281,54 @@ impl SkinState {
                 );
             }
         }
-        // A compass pool set with a rose replaces the skin's compass
-        // wholesale (rose + direction overlays are same-canvas art; mixing
-        // sources would misalign them). The "none" sentinel (picker "None")
-        // strips compass art entirely so the widget draws its vector rose.
-        if self
+        // The compass pool set: rose + direction overlays (same-canvas
+        // art). The "none" sentinel (picker "None") leaves compass art
+        // empty so the widget draws its vector rose.
+        if !self
             .compass_set
             .as_deref()
             .is_some_and(|set| set.eq_ignore_ascii_case("none"))
         {
-            art.compass_rose = None;
-            art.compass_dirs.clear();
-        } else if let Some(rose) = self.pool_compass.get("rose").and_then(tex) {
-            art.compass_rose = Some(rose);
-            art.compass_dirs.clear();
-            for (role, path) in &self.pool_compass {
-                if role == "rose" {
-                    continue;
-                }
-                if let Some(texture) = tex(path) {
-                    art.compass_dirs.insert(role.clone(), texture);
-                }
-            }
-        }
-        art.doll_base = self.manifest.injury_doll.base.as_ref().and_then(tex);
-        art.doll_dots = ResolvedDotStyle::from_spec(&self.manifest.injury_doll.dots);
-        for (part, anchor) in &self.manifest.injury_doll.anchors {
-            art.doll_anchors.insert(
-                part.to_ascii_lowercase(),
-                egui::vec2(anchor[0].clamp(0.0, 1.0), anchor[1].clamp(0.0, 1.0)),
-            );
-        }
-        for (part, spec) in &self.manifest.injury_doll.parts {
-            if let Some(condition) = &spec.hidden_when {
-                art.doll_hidden_when
-                    .insert(part.to_ascii_lowercase(), condition.clone());
-            }
-            for (key, path) in &spec.overlays {
-                let Some(level) = skins::severity_level_from_key(key) else {
-                    tracing::warn!(
-                        "Skin injury_doll.{}: unknown severity key '{}' (expected healthy/injury1-3/scar1-3)",
-                        part,
-                        key
-                    );
-                    continue;
-                };
-                if let Some(texture) = tex(path) {
-                    art.doll_parts
-                        .entry(part.to_ascii_lowercase())
-                        .or_default()
-                        .insert(level, texture);
+            if let Some(rose) = self.pool_compass.get("rose").and_then(tex) {
+                art.compass_rose = Some(rose);
+                for (role, path) in &self.pool_compass {
+                    if role == "rose" {
+                        continue;
+                    }
+                    if let Some(texture) = tex(path) {
+                        art.compass_dirs.insert(role.clone(), texture);
+                    }
                 }
             }
         }
 
-        // A doll override replaces the skin's `[injury_doll]` wholesale:
-        // base from the pool image, anchors/dots from its sidecar, severity
-        // rendered as generated dots (pool dolls carry no overlay art).
-        // The "none" sentinel (picker "None") strips doll art entirely so
-        // the widget draws its built-in vector body.
+        // The doll override: base from the pool image, anchors/dots from
+        // its sidecar, severity rendered as generated dots (pool dolls
+        // carry no overlay art). The "none" sentinel (picker "None")
+        // leaves doll art empty so the widget draws its built-in vector
+        // body.
         if let Some(path) = &self.doll_override {
-            if path.eq_ignore_ascii_case("none") {
-                art.doll_base = None;
-                art.doll_parts.clear();
-                art.doll_anchors.clear();
-                art.doll_hidden_when.clear();
-            } else if let Some(texture) = tex(path) {
-                art.doll_base = Some(texture);
-                art.doll_parts.clear();
-                art.doll_anchors.clear();
-                art.doll_hidden_when.clear();
-                let abs = skins::resolve_image_path(&self.root, path);
-                match crate::config::pool::read_sidecar::<crate::config::pool::DollSidecar>(&abs) {
-                    Some(sidecar) => {
-                        for (part, anchor) in &sidecar.anchors {
-                            art.doll_anchors.insert(
-                                part.to_ascii_lowercase(),
-                                egui::vec2(anchor[0].clamp(0.0, 1.0), anchor[1].clamp(0.0, 1.0)),
-                            );
+            if !path.eq_ignore_ascii_case("none") {
+                if let Some(texture) = tex(path) {
+                    art.doll_base = Some(texture);
+                    let abs = skins::resolve_image_path(&self.root, path);
+                    match crate::config::pool::read_sidecar::<crate::config::pool::DollSidecar>(
+                        &abs,
+                    ) {
+                        Some(sidecar) => {
+                            for (part, anchor) in &sidecar.anchors {
+                                art.doll_anchors.insert(
+                                    part.to_ascii_lowercase(),
+                                    egui::vec2(
+                                        anchor[0].clamp(0.0, 1.0),
+                                        anchor[1].clamp(0.0, 1.0),
+                                    ),
+                                );
+                            }
+                            art.doll_dots = ResolvedDotStyle::from_spec(&sidecar.dots);
                         }
-                        art.doll_dots = ResolvedDotStyle::from_spec(&sidecar.dots);
+                        None => art.doll_dots = ResolvedDotStyle::default(),
                     }
-                    None => art.doll_dots = ResolvedDotStyle::default(),
                 }
             }
         }
@@ -1531,13 +1350,6 @@ impl SkinState {
                                 _ => None,
                             })
                             .or_else(|| {
-                                self.manifest
-                                    .icons
-                                    .iter()
-                                    .find(|(icon_id, _)| icon_id.eq_ignore_ascii_case(&id))
-                                    .map(|(_, path)| path.clone())
-                            })
-                            .or_else(|| {
                                 self.pool_status_icons
                                     .iter()
                                     .find(|(glyph, _)| glyph.eq_ignore_ascii_case(&id))
@@ -1554,109 +1366,16 @@ impl SkinState {
             }
         }
         if self.gray_doll {
-            let base_path = self
+            art.doll_base_gray = self
                 .doll_override
                 .clone()
-                .or_else(|| self.manifest.injury_doll.base.clone());
-            art.doll_base_gray = base_path.and_then(|p| tex(&format!("{p}#gray")));
-            if self.doll_override.is_none() {
-                for (part, spec) in &self.manifest.injury_doll.parts {
-                    for (key, path) in &spec.overlays {
-                        let Some(level) = skins::severity_level_from_key(key) else {
-                            continue;
-                        };
-                        if let Some(texture) = tex(&format!("{path}#gray")) {
-                            art.doll_parts_gray
-                                .entry(part.to_ascii_lowercase())
-                                .or_default()
-                                .insert(level, texture);
-                        }
-                    }
-                }
-            }
-        }
-
-        // Load one complete replacement doll set (a variant's skin or a
-        // named `[injury_doll.sets.*]` entry) into lookup form.
-        let load_doll_set = |label: &str, skin: &skins::DollSet| -> LoadedDollSet {
-            let mut loaded = LoadedDollSet {
-                base: skin.base.as_ref().and_then(tex),
-                dots: ResolvedDotStyle::from_spec(&skin.dots),
-                ..Default::default()
-            };
-            for (part, anchor) in &skin.anchors {
-                loaded.anchors.insert(
-                    part.to_ascii_lowercase(),
-                    egui::vec2(anchor[0].clamp(0.0, 1.0), anchor[1].clamp(0.0, 1.0)),
-                );
-            }
-            for (part, spec) in &skin.parts {
-                if let Some(condition) = &spec.hidden_when {
-                    loaded
-                        .hidden_when
-                        .insert(part.to_ascii_lowercase(), condition.clone());
-                }
-                for (key, path) in &spec.overlays {
-                    let Some(level) = skins::severity_level_from_key(key) else {
-                        tracing::warn!(
-                            "Skin injury_doll set '{}', part {}: unknown severity key '{}' (expected healthy/injury1-3/scar1-3)",
-                            label,
-                            part,
-                            key
-                        );
-                        continue;
-                    };
-                    if let Some(texture) = tex(path) {
-                        loaded
-                            .parts
-                            .entry(part.to_ascii_lowercase())
-                            .or_default()
-                            .insert(level, texture);
-                    }
-                    if self.gray_doll {
-                        if let Some(texture) = tex(&format!("{path}#gray")) {
-                            loaded
-                                .parts_gray
-                                .entry(part.to_ascii_lowercase())
-                                .or_default()
-                                .insert(level, texture);
-                        }
-                    }
-                }
-            }
-            if self.gray_doll {
-                loaded.base_gray = skin.base.as_ref().and_then(|p| tex(&format!("{p}#gray")));
-            }
-            loaded
-        };
-
-        // Conditional doll variants: each is a complete replacement set,
-        // loaded up front so activation at render time is just a lookup
-        // swap. A doll override (pool picker) replaces the skin's doll
-        // wholesale and pool dolls carry no variants, so overrides leave
-        // this empty.
-        if self.doll_override.is_none() {
-            for variant in &self.manifest.injury_doll.variants {
-                art.doll_variants.push(LoadedDollVariant {
-                    name: variant.name.clone(),
-                    when: variant.when.clone(),
-                    set: load_doll_set(&variant.name, &variant.skin),
-                });
-            }
-        }
-
-        // Named standalone sets load even under a doll override: the
-        // override replaces only the DEFAULT doll, and windows bound to a
-        // named set keep the art they asked for.
-        for (name, skin) in &self.manifest.injury_doll.sets {
-            art.doll_sets
-                .insert(name.clone(), load_doll_set(name, skin));
+                .and_then(|p| tex(&format!("{p}#gray")));
         }
 
         // Pool dolls bound per-window load as named sets keyed by their
-        // pool path — two doll windows can show two different pool dolls,
-        // skin or no skin. Base from the pool image, anchors/dots from its
-        // sidecar, severity as generated dots (like the global override).
+        // pool path — two doll windows can show two different pool dolls.
+        // Base from the pool image, anchors/dots from its sidecar,
+        // severity as generated dots (like the global override).
         for path in &self.needed_pool_dolls {
             let Some(texture) = tex(path) else {
                 continue;
@@ -1683,8 +1402,6 @@ impl SkinState {
             art.doll_sets.insert(path.clone(), set);
         }
 
-        art.ui_palette = self.build_ui_palette();
-
         if art.is_empty() {
             None
         } else {
@@ -1692,118 +1409,13 @@ impl SkinState {
         }
     }
 
-    /// Derive the editor/menu color palette from the skin's art, then apply
-    /// any `[ui]` manifest overrides. Returns None only when there's nothing
-    /// to derive from AND no `[ui]` entries (editors keep theme visuals).
-    fn build_ui_palette(&self) -> Option<ResolvedUiPalette> {
-        let ui = &self.manifest.ui;
-        // Exhaustive-by-construction (destructures the struct) so a future
-        // [ui] field can't be silently ignored here.
-        let has_overrides = ui.any_set();
-
-        // Sample key assets for derived defaults.
-        let sample = |path: &str| sample_image_colors(&self.root, path);
-        let bg_sample = skins::window_background(&self.manifest, "default")
-            .map(|b| b.image.as_str())
-            .and_then(sample);
-        let button_sample = self
-            .manifest
-            .controls
-            .get("button")
-            .map(|b| b.image.as_str())
-            .and_then(sample);
-        let accent_sample = self.manifest.compass.rose.as_deref().and_then(sample);
-
-        // Nothing to work with: no art samples and no [ui] -> keep theme.
-        let any_sample = bg_sample.is_some_and(|s| s.has_content)
-            || button_sample.is_some_and(|s| s.has_content)
-            || accent_sample.is_some_and(|s| s.has_content);
-        if !has_overrides && !any_sample {
-            return None;
-        }
-
-        // Derived defaults (fall back to tasteful dark values when a sample
-        // is missing so the palette is always complete).
-        let dark = egui::Color32::from_rgb(0x14, 0x16, 0x1b);
-        let win = bg_sample
-            .filter(|s| s.has_content)
-            .map(|s| s.dominant)
-            .unwrap_or(dark);
-        let panel = darken(win, 0.15);
-        let btn = button_sample
-            .filter(|s| s.has_content)
-            .map(|s| s.dominant)
-            .unwrap_or_else(|| lighten_c(win, 0.10));
-        let btn_hover = lighten_c(btn, 0.18);
-        let border = button_sample
-            .filter(|s| s.has_content)
-            .map(|s| s.edge)
-            .or_else(|| bg_sample.filter(|s| s.has_content).map(|s| s.edge))
-            .unwrap_or_else(|| lighten_c(win, 0.25));
-        let accent = accent_sample
-            .filter(|s| s.has_content)
-            .map(|s| s.dominant)
-            .unwrap_or_else(|| egui::Color32::from_rgb(0xe8, 0x93, 0x3a));
-        let text = readable_on(win);
-
-        // Apply [ui] overrides where present.
-        let ov = |field: &Option<String>, default: egui::Color32| {
-            field.as_deref().and_then(parse_hex_rgb).unwrap_or(default)
-        };
-        let accent_c = ov(&ui.accent, accent);
-        let text_c = ov(&ui.text, text);
-        Some(ResolvedUiPalette {
-            window_bg: ov(&ui.window_bg, win),
-            panel_bg: ov(&ui.panel_bg, panel),
-            button_bg: ov(&ui.button_bg, btn),
-            button_hover: ov(&ui.button_hover, btn_hover),
-            text: text_c,
-            accent: accent_c,
-            border: ov(&ui.border, border),
-            menu_bg: ov(&ui.menu_bg, panel),
-            // Title-bar caption defaults to the accent unless the skin pins it.
-            titlebar_text: ov(&ui.titlebar_text, accent_c),
-            // Button label defaults to the body text unless pinned.
-            button_text: ov(&ui.button_text, text_c),
-        })
-    }
-
-    /// Sync the texture store to everything the manifest, pool sets, and
-    /// declared overrides reference. Incremental: unchanged files keep
-    /// their textures (a checkbox toggle no longer re-decodes the world),
+    /// Sync the texture store to everything the pool sets and declared
+    /// overrides reference. Incremental: unchanged files keep their
+    /// textures (a checkbox toggle no longer re-decodes the world),
     /// no-longer-referenced entries free theirs, edited files reload.
     fn sync_textures(&mut self, ctx: &egui::Context, skin_name: &str) {
-        let mut images: Vec<String> = self
-            .manifest
-            .windows
-            .values()
-            .flat_map(|window| {
-                window
-                    .background
-                    .as_ref()
-                    .map(|bg| bg.image.clone())
-                    .into_iter()
-                    .chain(window.border.as_ref().map(|border| border.image.clone()))
-            })
-            .collect();
-        images.extend(
-            self.manifest
-                .frames
-                .values()
-                .map(|frame| frame.image.clone()),
-        );
-        images.extend(
-            self.manifest
-                .controls
-                .values()
-                .map(|ctrl| ctrl.image.clone()),
-        );
-        // Edge-overlay strip + ornament images.
-        for edge in self.manifest.edges.values() {
-            images.extend(edge.strip.clone());
-            images.extend(edge.ornament.clone());
-        }
-        images.extend(self.pool_frames.values().map(|frame| frame.image.clone()));
+        let mut images: Vec<String> =
+            self.pool_frames.values().map(|frame| frame.image.clone()).collect();
         images.extend(self.needed_pool_backgrounds.iter().cloned());
         images.extend(self.needed_pool_icons.iter().cloned());
         images.extend(self.needed_pool_dolls.iter().cloned());
@@ -1819,49 +1431,15 @@ impl SkinState {
                     _ => None,
                 }),
         );
-        images.extend(self.manifest.icons.values().cloned());
-        images.extend(self.manifest.sheets.values().map(|s| s.path.clone()));
-        images.extend(self.manifest.compass.rose.iter().cloned());
-        images.extend(self.manifest.compass.directions.values().cloned());
-        images.extend(self.manifest.injury_doll.base.iter().cloned());
-        images.extend(
-            self.manifest
-                .injury_doll
-                .parts
-                .values()
-                .flat_map(|spec| spec.overlays.values().cloned()),
-        );
-        for variant in &self.manifest.injury_doll.variants {
-            images.extend(variant.skin.base.iter().cloned());
-            images.extend(
-                variant
-                    .skin
-                    .parts
-                    .values()
-                    .flat_map(|spec| spec.overlays.values().cloned()),
-            );
-        }
-        for set in self.manifest.injury_doll.sets.values() {
-            images.extend(set.base.iter().cloned());
-            images.extend(
-                set.parts
-                    .values()
-                    .flat_map(|spec| spec.overlays.values().cloned()),
-            );
-        }
+        images.extend(self.sheets.values().map(|s| s.path.clone()));
         // Grayscale twins for hotbar sheets (barbar's gs variant), cached
         // under a synthetic "<path>#gray" key.
-        let mut gray_paths: Vec<String> = self
-            .manifest
-            .sheets
-            .values()
-            .map(|spec| spec.path.clone())
-            .collect();
+        let mut gray_paths: Vec<String> =
+            self.sheets.values().map(|spec| spec.path.clone()).collect();
         // Lazy grayscale twins: built only for what the checkboxes demand
         // (status icons when "gray inactive" is on, doll art when
         // "grayscale doll" is on). Unchecking drops them.
         if self.gray_status_icons {
-            gray_paths.extend(self.manifest.icons.values().cloned());
             gray_paths.extend(self.pool_status_icons.values().cloned());
             gray_paths.extend(
                 self.statusicon_overrides
@@ -1874,39 +1452,7 @@ impl SkinState {
         }
         if self.gray_doll {
             gray_paths.extend(self.needed_pool_dolls.iter().cloned());
-            match &self.doll_override {
-                Some(path) => gray_paths.push(path.clone()),
-                None => {
-                    gray_paths.extend(self.manifest.injury_doll.base.iter().cloned());
-                    gray_paths.extend(
-                        self.manifest
-                            .injury_doll
-                            .parts
-                            .values()
-                            .flat_map(|spec| spec.overlays.values().cloned()),
-                    );
-                    for variant in &self.manifest.injury_doll.variants {
-                        gray_paths.extend(variant.skin.base.iter().cloned());
-                        gray_paths.extend(
-                            variant
-                                .skin
-                                .parts
-                                .values()
-                                .flat_map(|spec| spec.overlays.values().cloned()),
-                        );
-                    }
-                }
-            }
-            // Named sets stay live under a doll override, so their gray
-            // twins build regardless of the branch above.
-            for set in self.manifest.injury_doll.sets.values() {
-                gray_paths.extend(set.base.iter().cloned());
-                gray_paths.extend(
-                    set.parts
-                        .values()
-                        .flat_map(|spec| spec.overlays.values().cloned()),
-                );
-            }
+            gray_paths.extend(self.doll_override.iter().cloned());
         }
         // One wanted list: bases first, then gray twins (order lets the
         // store skip a twin whose base failed). Keys stay the manifest /
@@ -1932,35 +1478,13 @@ impl SkinState {
         self.store.sync(ctx, &wanted, skin_name);
     }
 
-    /// Resolve the background for a window, falling back to the manifest's
-    /// "default" entry. None when no skin is active, the window has no
-    /// background, or its image failed to load.
-    pub fn background_for(&self, window_name: &str) -> Option<ResolvedBackground> {
-        let spec = skins::window_background(&self.manifest, window_name)?;
-        let texture = self.store.texture(&spec.image)?;
-        let opacity = spec.opacity.clamp(0.0, 1.0);
-        let tint = spec
-            .tint
-            .as_deref()
-            .and_then(parse_hex_rgb)
-            .unwrap_or(egui::Color32::WHITE)
-            .gamma_multiply(opacity);
-        Some(ResolvedBackground {
-            texture: texture.id(),
-            tex_size: texture.size_vec2(),
-            fit: spec.fit,
-            tint,
-            scrim_alpha: (spec.scrim.clamp(0.0, 1.0) * 255.0).round() as u8,
-        })
-    }
-
-    /// Background resolution honoring a per-window override: "none" kills
-    /// the background, a pool-relative path renders that image with
-    /// readable defaults (cover fit, a light theme scrim), anything else
-    /// falls back to the skin's own per-window mapping.
+    /// Background resolution honoring a per-window override: "none" (and
+    /// no override at all) means no background art; a pool-relative path
+    /// renders that image with readable defaults (cover fit, a light
+    /// theme scrim).
     pub fn background_for_with_override(
         &self,
-        window_name: &str,
+        _window_name: &str,
         background_override: Option<&str>,
     ) -> Option<ResolvedBackground> {
         match background_override {
@@ -1972,47 +1496,30 @@ impl SkinState {
                     tex_size: texture.size_vec2(),
                     fit: BackgroundFit::Cover,
                     tint: egui::Color32::WHITE,
-                    // Text stays readable over arbitrary pool art; skins
-                    // that want exact control keep using their manifest.
+                    // Text stays readable over arbitrary pool art.
                     scrim_alpha: (0.25 * 255.0) as u8,
                 })
             }
-            None => self.background_for(window_name),
+            None => None,
         }
     }
 
-    /// Resolve the nine-slice border for a window, falling back to the
-    /// manifest's "default" entry (independently of the background, so a
-    /// window can override one without losing the other).
-    pub fn border_for(&self, window_name: &str) -> Option<ResolvedBorder> {
-        self.resolve_border(skins::window_field(
-            &self.manifest,
-            window_name,
-            |window| window.border.as_ref(),
-        )?)
-    }
-
-    /// Border resolution honoring a per-window user override: "none" kills
-    /// the frame, a named `[frames.*]` entry replaces it, and an unknown
-    /// name (stale layout, switched skin) falls back to the skin's own
-    /// per-window mapping — as does no override at all.
+    /// Border resolution honoring a per-window user override: "none" (and
+    /// no override at all) means no frame; a pool frame stem nine-slices
+    /// through its sidecar. An unknown name (stale layout) resolves to
+    /// nothing.
     pub fn border_for_with_override(
         &self,
-        window_name: &str,
+        _window_name: &str,
         frame_override: Option<&str>,
     ) -> Option<ResolvedBorder> {
         match frame_override {
             Some(name) if name.eq_ignore_ascii_case(skins::NO_FRAME) => None,
-            Some(name) => skins::named_frame(&self.manifest, name)
-                .and_then(|spec| self.resolve_border(spec))
-                .or_else(|| {
-                    // Pool frame (skinless or supplementing the skin).
-                    self.pool_frames
-                        .get(&name.to_ascii_lowercase())
-                        .and_then(|spec| self.resolve_border(spec))
-                })
-                .or_else(|| self.border_for(window_name)),
-            None => self.border_for(window_name),
+            Some(name) => self
+                .pool_frames
+                .get(&name.to_ascii_lowercase())
+                .and_then(|spec| self.resolve_border(spec)),
+            None => None,
         }
     }
 
@@ -2050,17 +1557,11 @@ impl SkinState {
         out
     }
 
-    /// Frames the Appearance picker offers: the active skin's `[frames.*]`
-    /// plus every pool frame with a sidecar (names only — textures load
-    /// lazily for frames actually assigned). Skin names win collisions.
+    /// Frames the Appearance picker offers: every pool frame with a
+    /// sidecar (names only — textures load lazily for frames actually
+    /// assigned).
     pub fn frame_names(&self) -> Vec<String> {
-        let mut names: Vec<String> = self
-            .manifest
-            .frames
-            .keys()
-            .filter(|name| !name.eq_ignore_ascii_case(skins::NO_FRAME))
-            .cloned()
-            .collect();
+        let mut names: Vec<String> = Vec::new();
         for image in crate::config::pool::list_category("frames") {
             let stem = image.stem();
             if stem.eq_ignore_ascii_case(skins::NO_FRAME) {
@@ -2278,92 +1779,6 @@ fn load_thumbnail_impl(
     ))
 }
 
-/// Colors sampled from one skin image for palette derivation: the dominant
-/// opaque color (coarse histogram peak — good for fills) and the average of
-/// the edge ring (good for a nine-slice frame's border color).
-#[derive(Debug, Clone, Copy)]
-pub struct SampledColors {
-    pub dominant: egui::Color32,
-    pub edge: egui::Color32,
-    /// True if the image had meaningful opaque content to sample.
-    pub has_content: bool,
-}
-
-/// Decode a skin image (skin dir, then pool) and sample its dominant + edge
-/// colors. Bounded work: decodes once at skin load, thumbnails big images.
-fn sample_image_colors(root: &Path, image_path: &str) -> Option<SampledColors> {
-    let path = skins::resolve_image_path(root, image_path);
-    let decoded = image::DynamicImage::ImageRgba8(super::image_store::decode_rgba(&path)?);
-    // Cap sampling cost on large atlases.
-    let small = decoded.thumbnail(96, 96);
-    let rgba = small.to_rgba8();
-    let (w, h) = (rgba.width(), rgba.height());
-    if w == 0 || h == 0 {
-        return None;
-    }
-    // Dominant: coarse 4-bit-per-channel histogram over opaque pixels.
-    let mut hist: std::collections::HashMap<u16, (u32, u64, u64, u64)> =
-        std::collections::HashMap::new();
-    let mut opaque = 0u32;
-    for px in rgba.pixels() {
-        let [r, g, b, a] = px.0;
-        if a < 32 {
-            continue;
-        }
-        opaque += 1;
-        let key = ((r as u16 >> 4) << 8) | ((g as u16 >> 4) << 4) | (b as u16 >> 4);
-        let e = hist.entry(key).or_insert((0, 0, 0, 0));
-        e.0 += 1;
-        e.1 += r as u64;
-        e.2 += g as u64;
-        e.3 += b as u64;
-    }
-    if opaque == 0 {
-        return Some(SampledColors {
-            dominant: egui::Color32::TRANSPARENT,
-            edge: egui::Color32::TRANSPARENT,
-            has_content: false,
-        });
-    }
-    let dominant = hist
-        .values()
-        .max_by_key(|(count, ..)| *count)
-        .map(|(count, r, g, b)| {
-            let c = *count as u64;
-            egui::Color32::from_rgb((r / c) as u8, (g / c) as u8, (b / c) as u8)
-        })
-        .unwrap_or(egui::Color32::DARK_GRAY);
-    // Edge ring average (border color for nine-slice frames): the outermost
-    // 2px, opaque pixels only.
-    let (mut er, mut eg, mut eb, mut en) = (0u64, 0u64, 0u64, 0u64);
-    for y in 0..h {
-        for x in 0..w {
-            let on_edge = x < 2 || y < 2 || x >= w - 2 || y >= h - 2;
-            if !on_edge {
-                continue;
-            }
-            let [r, g, b, a] = rgba.get_pixel(x, y).0;
-            if a < 32 {
-                continue;
-            }
-            er += r as u64;
-            eg += g as u64;
-            eb += b as u64;
-            en += 1;
-        }
-    }
-    let edge = if en > 0 {
-        egui::Color32::from_rgb((er / en) as u8, (eg / en) as u8, (eb / en) as u8)
-    } else {
-        dominant
-    };
-    Some(SampledColors {
-        dominant,
-        edge,
-        has_content: true,
-    })
-}
-
 /// Build the shapes that paint a window background into `rect`. The caller
 /// paints them through a painter clipped to `rect` — normally deferred via
 /// a reserved shape slot (`Painter::add(Noop)` + `Painter::set`) so the
@@ -2519,108 +1934,7 @@ fn contrast_color(fill: egui::Color32) -> egui::Color32 {
     }
 }
 
-/// Rewrite the `[injury_doll.anchors]` and `[injury_doll.dots]` tables in a
-/// skin.toml, preserving everything else byte-for-byte (comments included).
-/// Pure string -> string so it's testable without touching the filesystem.
-pub fn calibration_toml(
-    contents: &str,
-    anchors: &HashMap<String, [f32; 2]>,
-    dots: &DollDotSpec,
-) -> anyhow::Result<String> {
-    calibration_toml_for(contents, None, anchors, dots)
-}
-
-/// Like `calibration_toml`, but `variant: Some(name)` writes the anchors
-/// and dots into that `[[injury_doll.variants]]` element's `skin` table
-/// instead of the default set — each variant is a complete doll with its
-/// own calibration. The variant must already exist in the manifest (the
-/// calibrator only offers loaded variants).
-pub fn calibration_toml_for(
-    contents: &str,
-    variant: Option<&str>,
-    anchors: &HashMap<String, [f32; 2]>,
-    dots: &DollDotSpec,
-) -> anyhow::Result<String> {
-    use toml_edit::{value, Array, DocumentMut, Item, Table};
-
-    let mut doc: DocumentMut = contents
-        .parse()
-        .map_err(|err| anyhow::anyhow!("skin.toml is not valid TOML: {}", err))?;
-
-    let existed = doc.contains_key("injury_doll");
-    let doll = doc
-        .entry("injury_doll")
-        .or_insert(Item::Table(Table::new()));
-    let doll = doll
-        .as_table_mut()
-        .ok_or_else(|| anyhow::anyhow!("[injury_doll] is not a table"))?;
-    // A freshly created parent shouldn't emit its own empty [injury_doll]
-    // header; one that already existed keeps whatever shape it had.
-    if !existed {
-        doll.set_implicit(true);
-    }
-
-    // Resolve the table the calibration lands in: the default set, or a
-    // named variant's `skin` table inside the variants array.
-    let target = match variant {
-        None => doll,
-        Some(name) => {
-            let variants = doll
-                .get_mut("variants")
-                .and_then(|item| item.as_array_of_tables_mut())
-                .ok_or_else(|| {
-                    anyhow::anyhow!("skin.toml has no [[injury_doll.variants]] array")
-                })?;
-            let entry = variants
-                .iter_mut()
-                .find(|entry| {
-                    entry
-                        .get("name")
-                        .and_then(|n| n.as_str())
-                        .is_some_and(|n| n == name)
-                })
-                .ok_or_else(|| anyhow::anyhow!("skin.toml has no doll variant named '{}'", name))?;
-            entry
-                .entry("skin")
-                .or_insert(Item::Table(Table::new()))
-                .as_table_mut()
-                .ok_or_else(|| anyhow::anyhow!("variant '{}' skin is not a table", name))?
-        }
-    };
-
-    // Table construction is shared with the pool sidecar writers
-    // (config::pool) so every calibration write rounds and sorts alike.
-    target.insert(
-        "anchors",
-        Item::Table(crate::config::pool::anchors_toml_table(anchors)),
-    );
-    target.insert(
-        "dots",
-        Item::Table(crate::config::pool::dots_toml_table(dots)),
-    );
-
-    Ok(doc.to_string())
-}
-
-/// Write calibrated anchors + dot styling into `skins/<name>/skin.toml`.
-/// The skin hot-reload poll picks the change up within a second.
-pub fn save_calibration(
-    name: &str,
-    variant: Option<&str>,
-    anchors: &HashMap<String, [f32; 2]>,
-    dots: &DollDotSpec,
-) -> anyhow::Result<()> {
-    let root = crate::config::Config::skins_dir()?.join(name);
-    let manifest_path = root.join("skin.toml");
-    let contents = std::fs::read_to_string(&manifest_path)
-        .map_err(|err| anyhow::anyhow!("cannot read {}: {}", manifest_path.display(), err))?;
-    let updated = calibration_toml_for(&contents, variant, anchors, dots)?;
-    crate::config::write_atomic(&manifest_path, updated)
-        .map_err(|err| anyhow::anyhow!("cannot write {}: {}", manifest_path.display(), err))?;
-    Ok(())
-}
-
-/// Insert (or replace) one `[sheets.<name>]` entry in skin.toml, preserving
+/// Insert (or replace) one `[sheets.<name>]` entry in an icon-sheet manifest, preserving
 /// comments and the author's formatting elsewhere (toml_edit, same approach
 /// as `calibration_toml`).
 pub fn sheet_registration_toml(
@@ -2651,30 +1965,6 @@ pub fn sheet_registration_toml(
     sheets.insert(name, Item::Table(entry));
 
     Ok(doc.to_string())
-}
-
-/// Register a hotbar icon sprite sheet into `skins/<skin>/`: copies the
-/// source image under `icons/` and records `[sheets.<name>]` in skin.toml.
-/// The skin hot-reload poll picks the change up within a second.
-pub fn register_sheet(
-    skin: &str,
-    sheet_name: &str,
-    source: &Path,
-    cell: u32,
-) -> anyhow::Result<()> {
-    let root = crate::config::Config::skins_dir()?.join(skin);
-    let manifest_path = root.join("skin.toml");
-    let contents = std::fs::read_to_string(&manifest_path)
-        .map_err(|err| anyhow::anyhow!("cannot read {}: {}", manifest_path.display(), err))?;
-    register_sheet_impl(
-        &root,
-        &manifest_path,
-        &contents,
-        "icons",
-        sheet_name,
-        source,
-        cell,
-    )
 }
 
 /// Register a hotbar icon sprite sheet into the shared store
@@ -3115,30 +2405,6 @@ pub fn parse_hex_rgb(input: &str) -> Option<egui::Color32> {
     Some(egui::Color32::from_rgb(r, g, b))
 }
 
-/// Blend a color toward black by `t` (0..=1).
-fn darken(c: egui::Color32, t: f32) -> egui::Color32 {
-    let t = t.clamp(0.0, 1.0);
-    let ch = |v: u8| (v as f32 * (1.0 - t)).round() as u8;
-    egui::Color32::from_rgb(ch(c.r()), ch(c.g()), ch(c.b()))
-}
-
-/// Blend a color toward white by `t` (0..=1).
-fn lighten_c(c: egui::Color32, t: f32) -> egui::Color32 {
-    let t = t.clamp(0.0, 1.0);
-    let ch = |v: u8| v.saturating_add(((255 - v) as f32 * t).round() as u8);
-    egui::Color32::from_rgb(ch(c.r()), ch(c.g()), ch(c.b()))
-}
-
-/// Near-white or near-black text, whichever reads better on `bg`.
-fn readable_on(bg: egui::Color32) -> egui::Color32 {
-    let luma = 0.299 * bg.r() as f32 + 0.587 * bg.g() as f32 + 0.114 * bg.b() as f32;
-    if luma > 140.0 {
-        egui::Color32::from_rgb(0x1a, 0x1a, 0x1a)
-    } else {
-        egui::Color32::from_rgb(0xe0, 0xdc, 0xd2)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3398,96 +2664,6 @@ mod tests {
     }
 
     #[test]
-    fn calibration_toml_preserves_comments_and_replaces_tables() {
-        let original = r##"# My hand-written skin.
-[meta]
-name = "Test" # keep me
-
-[injury_doll]
-base = "doll/base.png"
-
-# stale calibration to be replaced
-[injury_doll.anchors]
-head = [0.1, 0.1]
-
-[injury_doll.nsys]
-injury1 = "doll/nerves.png"
-"##;
-        let mut anchors = HashMap::new();
-        anchors.insert("head".to_string(), [0.5, 0.09]);
-        anchors.insert("neck".to_string(), [0.5, 0.2]);
-        let dots = DollDotSpec {
-            wound_color: "#aa0000".to_string(),
-            ..DollDotSpec::default()
-        };
-        let updated = calibration_toml(original, &anchors, &dots).unwrap();
-
-        // Hand-written content survives byte-for-byte.
-        assert!(updated.contains("# My hand-written skin."));
-        assert!(updated.contains(r#"name = "Test" # keep me"#));
-        assert!(updated.contains(r#"base = "doll/base.png""#));
-        assert!(updated.contains(r#"injury1 = "doll/nerves.png""#));
-
-        // The stale anchor is gone; the round-trip parses to the new values.
-        let manifest: SkinManifest = toml::from_str(&updated).unwrap();
-        assert_eq!(manifest.injury_doll.anchors.len(), 2);
-        assert_eq!(manifest.injury_doll.anchors["head"], [0.5, 0.09]);
-        assert_eq!(manifest.injury_doll.anchors["neck"], [0.5, 0.2]);
-        assert_eq!(manifest.injury_doll.dots.wound_color, "#aa0000");
-        assert_eq!(
-            manifest.injury_doll.parts["nsys"].overlays["injury1"],
-            "doll/nerves.png"
-        );
-    }
-
-    #[test]
-    fn calibration_toml_for_variant_targets_the_named_element() {
-        let original = r##"# Hand-written skin.
-[injury_doll]
-base = "doll/standing.png"
-
-[injury_doll.anchors]
-head = [0.5, 0.09]
-
-[[injury_doll.variants]]
-name = "downed"
-when = { type = "indicator", id = "prone", active = true }
-[injury_doll.variants.skin]
-base = "doll/downed.png"
-
-[[injury_doll.variants]]
-name = "dead"
-when = { type = "indicator", id = "dead", active = true }
-[injury_doll.variants.skin]
-base = "doll/dead.png"
-"##;
-        let mut anchors = HashMap::new();
-        anchors.insert("head".to_string(), [0.2, 0.7]);
-        let updated =
-            calibration_toml_for(original, Some("downed"), &anchors, &DollDotSpec::default())
-                .unwrap();
-
-        let manifest: SkinManifest = toml::from_str(&updated).unwrap();
-        // The default set's calibration is untouched.
-        assert_eq!(manifest.injury_doll.anchors["head"], [0.5, 0.09]);
-        // Only the named variant gained the anchors; its sibling didn't.
-        let downed = &manifest.injury_doll.variants[0];
-        assert_eq!(downed.name, "downed");
-        assert_eq!(downed.skin.anchors["head"], [0.2, 0.7]);
-        assert_eq!(downed.skin.base.as_deref(), Some("doll/downed.png"));
-        let dead = &manifest.injury_doll.variants[1];
-        assert!(dead.skin.anchors.is_empty());
-        // Hand-written content survives.
-        assert!(updated.contains("# Hand-written skin."));
-
-        // Unknown variant name errors instead of writing somewhere else.
-        assert!(
-            calibration_toml_for(original, Some("missing"), &anchors, &DollDotSpec::default())
-                .is_err()
-        );
-    }
-
-    #[test]
     fn sheet_registration_toml_preserves_comments_and_upserts() {
         let original = r##"# My hand-written skin.
 [meta]
@@ -3502,14 +2678,14 @@ cell = 32
         assert!(updated.contains("# My hand-written skin."));
         assert!(updated.contains(r#"name = "Test" # keep me"#));
         assert!(updated.contains(r#"path = "icons/old.png""#));
-        let manifest: SkinManifest = toml::from_str(&updated).unwrap();
+        let manifest: skins::SkinManifest = toml::from_str(&updated).unwrap();
         assert_eq!(manifest.sheets["rogue"].path, "icons/rogue.png");
         assert_eq!(manifest.sheets["rogue"].cell, 64);
         assert_eq!(manifest.sheets["old"].cell, 32);
 
         // Re-registering the same name replaces its entry.
         let updated = sheet_registration_toml(&updated, "rogue", "icons/rogue2.png", 48).unwrap();
-        let manifest: SkinManifest = toml::from_str(&updated).unwrap();
+        let manifest: skins::SkinManifest = toml::from_str(&updated).unwrap();
         assert_eq!(manifest.sheets["rogue"].path, "icons/rogue2.png");
         assert_eq!(manifest.sheets["rogue"].cell, 48);
     }
@@ -3568,23 +2744,10 @@ cell = 32
     fn sheet_registration_toml_creates_section_when_absent() {
         let original = "[meta]\nname = \"Bare\"\n";
         let updated = sheet_registration_toml(original, "combat", "icons/combat.png", 64).unwrap();
-        let manifest: SkinManifest = toml::from_str(&updated).unwrap();
+        let manifest: skins::SkinManifest = toml::from_str(&updated).unwrap();
         assert_eq!(manifest.sheets["combat"].path, "icons/combat.png");
         // No stray bare [sheets] header for the implicit parent.
         assert!(!updated.contains("[sheets]\n[sheets."));
-    }
-
-    #[test]
-    fn calibration_toml_creates_section_when_absent() {
-        let original = "[meta]\nname = \"Bare\"\n";
-        let mut anchors = HashMap::new();
-        anchors.insert("chest".to_string(), [0.5, 0.3]);
-        let updated = calibration_toml(original, &anchors, &DollDotSpec::default()).unwrap();
-        let manifest: SkinManifest = toml::from_str(&updated).unwrap();
-        assert_eq!(manifest.meta.name, "Bare");
-        assert_eq!(manifest.injury_doll.anchors["chest"], [0.5, 0.3]);
-        // No spurious [injury_doll] header for the implicit parent table.
-        assert!(!updated.contains("[injury_doll]\n"));
     }
 
     #[test]
@@ -3793,7 +2956,7 @@ cell = 32
         );
         let mut state = SkinState::default();
         state.set_status_icon_config(Some("runic"), &overrides);
-        state.apply_if_changed(&env.ctx, None, None);
+        state.apply_if_changed(&env.ctx, None);
 
         let art = state.widget_art().expect("pool icons alone make art");
         // Pool set fills the glyph, keyed by role stem, case-insensitively.
@@ -3807,92 +2970,30 @@ cell = 32
     }
 
     #[test]
-    fn skin_icons_beat_the_pool_set() {
+    fn compass_pool_set_loads_and_none_strips() {
         let env = test_env();
-        write_png(&pool_dir().join("statusicons/runic/stunned.png"), 2);
-        let skin = skin_dir("test");
-        write_png(&skin.join("stunned.png"), 4);
-        std::fs::write(
-            skin.join("skin.toml"),
-            "[icons]\nstunned = \"stunned.png\"\n",
-        )
-        .unwrap();
-
-        let mut state = SkinState::default();
-        state.set_status_icon_config(Some("runic"), &HashMap::new());
-        state.apply_if_changed(&env.ctx, Some("test"), None);
-
-        let art = state.widget_art().unwrap();
-        // The 4px skin sprite won over the 2px pool sprite.
-        assert_eq!(art.icon("stunned").unwrap().size, egui::vec2(4.0, 4.0));
-    }
-
-    #[test]
-    fn compass_pool_set_replaces_skin_wholesale_and_none_strips() {
-        let env = test_env();
-        let skin = skin_dir("test");
-        write_png(&skin.join("rose.png"), 4);
-        write_png(&skin.join("n.png"), 4);
-        std::fs::write(
-            skin.join("skin.toml"),
-            "[compass]\nrose = \"rose.png\"\nn = \"n.png\"\n",
-        )
-        .unwrap();
         write_png(&pool_dir().join("compass/brass/rose.png"), 2);
         write_png(&pool_dir().join("compass/brass/ne.png"), 2);
 
-        // No set selected: the skin's compass art stands.
         let mut state = SkinState::default();
-        state.apply_if_changed(&env.ctx, Some("test"), None);
-        let art = state.widget_art().unwrap();
-        assert_eq!(art.compass_rose.unwrap().size, egui::vec2(4.0, 4.0));
-        assert!(art.compass_dir("n").is_some());
-
-        // A pool set with a rose replaces the skin's compass WHOLESALE:
-        // the skin's "n" does not leak into the pool set's canvas.
         state.set_compass_set(Some("brass"));
-        state.apply_if_changed(&env.ctx, Some("test"), None);
+        state.apply_if_changed(&env.ctx, None);
         let art = state.widget_art().unwrap();
         assert_eq!(art.compass_rose.unwrap().size, egui::vec2(2.0, 2.0));
         assert!(art.compass_dir("ne").is_some());
         assert!(art.compass_dir("n").is_none());
 
         // The "none" sentinel strips all compass art — and since the
-        // compass was this skin's ONLY art, the whole bundle collapses to
-        // None (renderers then use their vector drawings).
+        // compass was the ONLY art, the whole bundle collapses to None
+        // (renderers then use their vector drawings).
         state.set_compass_set(Some("none"));
-        state.apply_if_changed(&env.ctx, Some("test"), None);
+        state.apply_if_changed(&env.ctx, None);
         assert!(state.widget_art().is_none());
     }
 
     #[test]
-    fn doll_override_replaces_default_kills_variants_but_named_sets_survive() {
+    fn doll_override_loads_pool_base_and_sidecar_anchors() {
         let env = test_env();
-        let skin = skin_dir("test");
-        for name in ["base.png", "head_i1.png", "downed.png", "sil.png"] {
-            write_png(&skin.join(name), 4);
-        }
-        std::fs::write(
-            skin.join("skin.toml"),
-            r#"
-            [injury_doll]
-            base = "base.png"
-            [injury_doll.anchors]
-            head = [0.9, 0.9]
-            [injury_doll.head]
-            injury1 = "head_i1.png"
-
-            [[injury_doll.variants]]
-            name = "downed"
-            when = { type = "indicator", id = "prone", active = true }
-            [injury_doll.variants.skin]
-            base = "downed.png"
-
-            [injury_doll.sets.sil]
-            base = "sil.png"
-            "#,
-        )
-        .unwrap();
         write_png(&pool_dir().join("dolls/human.png"), 2);
         std::fs::write(
             pool_dir().join("dolls/human.toml"),
@@ -3900,47 +3001,28 @@ cell = 32
         )
         .unwrap();
 
-        // Override active: pool base + sidecar anchors, skin overlays and
-        // variants gone, but named sets keep the art windows bound to.
+        // Override active: pool base + sidecar anchors, no overlays.
         let mut state = SkinState::default();
-        state.apply_if_changed(&env.ctx, Some("test"), Some("dolls/human.png"));
+        state.apply_if_changed(&env.ctx, Some("dolls/human.png"));
         let art = state.widget_art().unwrap();
         assert_eq!(art.doll_base.unwrap().size, egui::vec2(2.0, 2.0));
         assert!(art.doll_parts.is_empty());
         assert_eq!(art.doll_anchor("head"), egui::vec2(0.4, 0.2));
         assert!(art.doll_variants.is_empty());
-        assert!(art.doll_set_named("sil").is_some());
 
-        // The "none" sentinel strips the default doll; sets still survive.
-        state.apply_if_changed(&env.ctx, Some("test"), Some("none"));
-        let art = state.widget_art().unwrap();
-        assert!(art.doll_base.is_none());
-        assert!(art.doll_set_named("sil").is_some());
-
-        // No override: the skin's own doll, overlays, and variants load.
-        state.apply_if_changed(&env.ctx, Some("test"), None);
-        let art = state.widget_art().unwrap();
-        assert_eq!(art.doll_base.unwrap().size, egui::vec2(4.0, 4.0));
-        assert!(art.doll_overlay("head", 1).is_some());
-        assert_eq!(art.doll_variants.len(), 1);
-        assert_eq!(art.doll_anchor("head"), egui::vec2(0.9, 0.9));
+        // The "none" sentinel strips the doll (vector body renders).
+        state.apply_if_changed(&env.ctx, Some("none"));
+        assert!(state.widget_art().is_none());
     }
 
     #[test]
     fn background_override_none_pool_path_and_fallback() {
         let env = test_env();
-        let skin = skin_dir("test");
-        write_png(&skin.join("bg.png"), 4);
-        std::fs::write(
-            skin.join("skin.toml"),
-            "[window.default.background]\nimage = \"bg.png\"\n",
-        )
-        .unwrap();
         write_png(&pool_dir().join("backgrounds/paper.png"), 2);
 
         let mut state = SkinState::default();
         state.set_needed_pool_backgrounds(vec!["backgrounds/paper.png".to_string()]);
-        state.apply_if_changed(&env.ctx, Some("test"), None);
+        state.apply_if_changed(&env.ctx, None);
 
         // "none" kills the background outright.
         assert!(state
@@ -3953,60 +3035,33 @@ cell = 32
         assert_eq!(bg.tex_size, egui::vec2(2.0, 2.0));
         assert_eq!(bg.fit, BackgroundFit::Cover);
         assert_eq!(bg.scrim_alpha, (0.25 * 255.0) as u8);
-        // No override falls through to the manifest's default entry.
-        let bg = state.background_for_with_override("main", None).unwrap();
-        assert_eq!(bg.tex_size, egui::vec2(4.0, 4.0));
-        // Skinless with no override: nothing.
-        state.apply_if_changed(&env.ctx, None, None);
+        // No override: nothing.
         assert!(state.background_for_with_override("main", None).is_none());
     }
 
     #[test]
-    fn border_override_resolves_none_named_pool_then_falls_back() {
+    fn border_override_resolves_none_and_pool_frames() {
         let env = test_env();
-        let skin = skin_dir("test");
-        write_png(&skin.join("ornate.png"), 4);
-        write_png(&skin.join("winborder.png"), 4);
-        std::fs::write(
-            skin.join("skin.toml"),
-            r#"
-            [frames.ornate]
-            image = "ornate.png"
-            slice = [2.0, 2.0, 2.0, 2.0]
-
-            [window.default.border]
-            image = "winborder.png"
-            slice = [1.0, 1.0, 1.0, 1.0]
-            "#,
-        )
-        .unwrap();
         write_png(&pool_dir().join("frames/brass.png"), 2);
         std::fs::write(pool_dir().join("frames/brass.toml"), "slice = 300\n").unwrap();
 
         let mut state = SkinState::default();
         state.set_needed_pool_frames(vec!["brass".to_string()]);
-        state.apply_if_changed(&env.ctx, Some("test"), None);
+        state.apply_if_changed(&env.ctx, None);
 
-        // "none" kills the frame even though the skin defines a default.
+        // "none" means no frame.
         assert!(state
             .border_for_with_override("main", Some("none"))
             .is_none());
-        // A named skin frame wins.
-        let border = state.border_for_with_override("main", Some("ornate")).unwrap();
-        assert_eq!(border.slice, [2.0, 2.0, 2.0, 2.0]);
         // A pool frame resolves through its sidecar, scale derived so the
         // largest inset lands at DEFAULT_FRAME_BORDER_PT on screen.
         let border = state.border_for_with_override("main", Some("Brass")).unwrap();
         assert_eq!(border.slice, [300.0; 4]);
         assert!((border.scale - 15.0 / 300.0).abs() < 1e-6);
-        // An unknown name (stale layout) falls back to the skin's mapping.
-        let border = state.border_for_with_override("main", Some("ghost")).unwrap();
-        assert_eq!(border.slice, [1.0, 1.0, 1.0, 1.0]);
-        // Pool frames keep working with no skin at all.
-        state.apply_if_changed(&env.ctx, None, None);
+        // An unknown name (stale layout) resolves to nothing.
         assert!(state
-            .border_for_with_override("main", Some("brass"))
-            .is_some());
+            .border_for_with_override("main", Some("ghost"))
+            .is_none());
         assert!(state.border_for_with_override("main", None).is_none());
     }
 
@@ -4016,27 +3071,11 @@ cell = 32
         write_png(&pool_dir().join("frames/withsc.png"), 2);
         std::fs::write(pool_dir().join("frames/withsc.toml"), "slice = 8\n").unwrap();
         write_png(&pool_dir().join("frames/nosc.png"), 2);
-        let skin = skin_dir("test");
-        write_png(&skin.join("fancy.png"), 4);
-        std::fs::write(
-            skin.join("skin.toml"),
-            r#"
-            [frames.fancy]
-            image = "fancy.png"
-            slice = [2.0, 2.0, 2.0, 2.0]
-
-            [frames.none]
-            image = "fancy.png"
-            slice = [2.0, 2.0, 2.0, 2.0]
-            "#,
-        )
-        .unwrap();
 
         let mut state = SkinState::default();
-        state.apply_if_changed(&env.ctx, Some("test"), None);
-        // Sidecar-less pool frames are omitted (they can't nine-slice);
-        // the reserved "none" name never lists.
-        assert_eq!(state.frame_names(), ["fancy", "withsc"]);
+        state.apply_if_changed(&env.ctx, None);
+        // Sidecar-less pool frames are omitted (they can't nine-slice).
+        assert_eq!(state.frame_names(), ["withsc"]);
     }
 
     #[test]
@@ -4051,7 +3090,7 @@ cell = 32
         .unwrap();
 
         let mut state = SkinState::default();
-        state.apply_if_changed(&env.ctx, None, None);
+        state.apply_if_changed(&env.ctx, None);
         let art = state.widget_art().expect("shared sheets alone make art");
         assert!(art.sheet_cell("combat", 1, false).is_some());
         assert_eq!(art.sheet_cell_count("combat"), Some(4));
@@ -4088,13 +3127,13 @@ cell = 32
 
         let mut state = SkinState::default();
         state.set_status_icon_config(Some("runic"), &HashMap::new());
-        state.apply_if_changed(&env.ctx, None, None);
+        state.apply_if_changed(&env.ctx, None);
         let icon_id = state.widget_art().unwrap().icon("stunned").unwrap().texture;
 
         // Declare a new pool background: a reload pass runs, but the icon's
         // texture survives it untouched.
         state.set_needed_pool_backgrounds(vec!["backgrounds/paper.png".to_string()]);
-        state.apply_if_changed(&env.ctx, None, None);
+        state.apply_if_changed(&env.ctx, None);
         assert_eq!(
             state.widget_art().unwrap().icon("stunned").unwrap().texture,
             icon_id
@@ -4106,7 +3145,7 @@ cell = 32
         // Grayscale toggle: the color icon still keeps its texture, and the
         // gray twin appears alongside it.
         state.set_grayscale(true, false);
-        state.apply_if_changed(&env.ctx, None, None);
+        state.apply_if_changed(&env.ctx, None);
         let art = state.widget_art().unwrap();
         assert_eq!(art.icon("stunned").unwrap().texture, icon_id);
         assert!(art.icon_gray("stunned").is_some());
@@ -4131,7 +3170,7 @@ cell = 32
             "dolls/human.png".to_string(),
             "dolls/elf.png".to_string(),
         ]);
-        state.apply_if_changed(&env.ctx, None, None);
+        state.apply_if_changed(&env.ctx, None);
         let art = state.widget_art().expect("pool doll sets alone make art");
         let human = art.doll_set_named("dolls/human.png").unwrap();
         assert_eq!(human.base.unwrap().size, egui::vec2(2.0, 2.0));
@@ -4141,7 +3180,7 @@ cell = 32
         assert_eq!(elf.anchor("head"), egui::vec2(0.3, 0.1));
         // Dropping a binding evicts its set on the next apply.
         state.set_needed_pool_dolls(vec!["dolls/human.png".to_string()]);
-        state.apply_if_changed(&env.ctx, None, None);
+        state.apply_if_changed(&env.ctx, None);
         let art = state.widget_art().unwrap();
         assert!(art.doll_set_named("dolls/elf.png").is_none());
         assert!(art.doll_set_named("dolls/human.png").is_some());
@@ -4168,7 +3207,7 @@ cell = 32
         state.set_control_frames(&controls);
         state.set_needed_pool_frames(vec!["brass".to_string()]);
         state.set_edge_set(Some("vines"));
-        state.apply_if_changed(&env.ctx, None, None);
+        state.apply_if_changed(&env.ctx, None);
 
         let art = state.widget_art().expect("assignments alone make art");
         // The button face nine-slices with the frame's sidecar geometry.
@@ -4186,7 +3225,7 @@ cell = 32
 
         // The "none" sentinel strips edge art.
         state.set_edge_set(Some("none"));
-        state.apply_if_changed(&env.ctx, None, None);
+        state.apply_if_changed(&env.ctx, None);
         let art = state.widget_art().unwrap();
         assert!(!art.has_edges());
         assert!(art.control_border("button", "normal").is_some());
@@ -4213,7 +3252,7 @@ cell = 32
             injuries: Vec::new(),
         };
         let mut state = SkinState::default();
-        state.apply_if_changed(&env.ctx, None, None);
+        state.apply_if_changed(&env.ctx, None);
         state.prepare_creature_art(&env.ctx, &[wanted("coyote")]);
         let cache = state.creature_art.lock().unwrap();
         let art = cache.base("coyote").expect("pool art resolves skinless");
@@ -4255,7 +3294,7 @@ cell = 32
         write_png(&pool_dir().join("creatures/kobold/kobold.png"), 2);
 
         let mut state = SkinState::default();
-        state.apply_if_changed(&env.ctx, None, None);
+        state.apply_if_changed(&env.ctx, None);
         // Boon-decorated live name normalizes onto the variant token.
         state.prepare_creature_art(
             &env.ctx,

@@ -935,13 +935,8 @@ impl VellumGuiApp {
             // PAINT the label directly over the nine-slice art — do NOT place an
             // egui Button, which draws its own dark widget background (button_bg
             // / hover fill) even frameless+transparent, leaving a black box on
-            // top of the silver button sprite. Color follows button_text
-            // (defaults to body text); the skin pins it dark so it reads on a
-            // light button.
-            let color = skin_art
-                .and_then(|art| art.ui_palette.as_ref())
-                .map(|pal| pal.button_text)
-                .unwrap_or_else(|| ui.visuals().text_color());
+            // top of the silver button sprite. Color follows the theme text.
+            let color = ui.visuals().text_color();
             ui.painter().text(
                 rect.center(),
                 egui::Align2::CENTER_CENTER,
@@ -1104,25 +1099,17 @@ impl VellumGuiApp {
         let skin_popup = skin_art
             .and_then(|art| art.control_border("dropdown", "normal"))
             .is_some();
-        // The skinned dropdown popup's fill/stroke follow the active skin's
-        // [ui] palette (menu_bg, border, button_hover, accent) — not a hardcoded
-        // orange, which looked wrong on any non-orange skin (StormFront's
-        // steel-blue dropdown came out orange). Falls back to the previous
-        // fixed colors only when a dropdown is skinned but the palette is
-        // somehow absent.
-        let popup_palette = skin_art.and_then(|art| art.ui_palette.as_ref());
+        // A skinned dropdown keeps a dark popup that reads with the mesh
+        // grounds; the theme visuals otherwise stand.
         ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
             if skin_popup {
                 let v = ui.visuals_mut();
-                let (fill, stroke, hover, sel) = match popup_palette {
-                    Some(p) => (p.menu_bg, p.border, p.button_hover, p.accent),
-                    None => (
-                        egui::Color32::from_rgb(0x12, 0x14, 0x18),
-                        egui::Color32::from_rgb(0x8a, 0x5a, 0x30),
-                        egui::Color32::from_rgb(0x24, 0x1c, 0x12),
-                        egui::Color32::from_rgb(0x3a, 0x28, 0x14),
-                    ),
-                };
+                let (fill, stroke, hover, sel) = (
+                    egui::Color32::from_rgb(0x12, 0x14, 0x18),
+                    egui::Color32::from_rgb(0x8a, 0x5a, 0x30),
+                    egui::Color32::from_rgb(0x24, 0x1c, 0x12),
+                    egui::Color32::from_rgb(0x3a, 0x28, 0x14),
+                );
                 v.window_fill = fill;
                 v.panel_fill = fill;
                 v.window_stroke = egui::Stroke::new(1.0, stroke);

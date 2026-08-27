@@ -490,17 +490,4 @@ impl VellumGuiApp {
         )
     }
 
-    /// Blend `a` toward `b` by `t` (0 = a, 1 = b), per channel. Used to dim an
-    /// inactive tab's text toward the window background so only the active /
-    /// unread tabs stand out.
-    pub(super) fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
-        let t = t.clamp(0.0, 1.0);
-        let mix = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t) as u8;
-        Color32::from_rgba_unmultiplied(
-            mix(a.r(), b.r()),
-            mix(a.g(), b.g()),
-            mix(a.b(), b.b()),
-            a.a(),
-        )
-    }
 }

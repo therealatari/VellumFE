@@ -782,7 +782,9 @@ impl AppCore {
             parts,
             character: self.config.character.as_deref(),
             layout_toml,
-            active_skin: self.config.appearance.active_skin.as_deref(),
+            // The live active-skin concept is gone (skins are presets);
+            // packs no longer bundle a skin dir on export.
+            active_skin: None,
             active_theme: Some(self.config.active_theme.as_str()),
             quickbars_toml,
             settings_toml,
@@ -940,13 +942,10 @@ impl AppCore {
                     Err(e) => self.add_system_message(&format!("Macros did not reload: {e:#}")),
                 }
                 if let Some(skin) = &outcome.skin {
-                    self.config.appearance.active_skin = Some(skin.clone());
-                    let _ = self
-                        .config
-                        .appearance
-                        .save(self.config.character.as_deref());
+                    // The pack's skin dir is extracted but never auto-set:
+                    // skins are presets now — applying migrates it.
                     self.add_system_message(&format!(
-                        "Active skin set to '{skin}' (the GUI applies it on next load or via Settings > Appearance)"
+                        "Skin '{skin}' included — apply it with .setskin {skin}"
                     ));
                 }
                 if let Some(theme) = &outcome.theme {

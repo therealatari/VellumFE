@@ -1,8 +1,8 @@
-//! Injury doll calibrator: click the active skin's doll image to place
+//! Injury doll calibrator: click the assigned pool doll image to place
 //! each body part's dot anchor, style the generated wound/scar dots, and
-//! save the result into the skin's skin.toml (comments preserved). Saved
-//! coordinates are fractions of the base image, so they hold at any
-//! window size or zoom.
+//! save the result into the doll's sidecar toml (calibration travels with
+//! the artwork). Saved coordinates are fractions of the base image, so
+//! they hold at any window size or zoom.
 
 use std::collections::HashMap;
 
@@ -12,39 +12,25 @@ use crate::config::skins::{self, DollDotSpec, DOLL_PARTS};
 use crate::frontend::gui::skin::{self as gui_skin, ResolvedDotStyle};
 use eframe::egui;
 
-/// Where the calibration saves: a skin's skin.toml, or a pool doll's
-/// sidecar toml (calibration travels with the artwork).
-pub(in super::super) enum CalibrationTarget {
-    Skin(String),
-    Pool {
-        image_abs: std::path::PathBuf,
-        /// Display name (image stem) for the window title and messages.
-        label: String,
-    },
+/// Where the calibration saves: a pool doll's sidecar toml.
+pub(in super::super) struct CalibrationTarget {
+    image_abs: std::path::PathBuf,
+    /// Display name (image stem) for the window title and messages.
+    label: String,
 }
 
 impl CalibrationTarget {
     fn label(&self) -> &str {
-        match self {
-            CalibrationTarget::Skin(name) => name,
-            CalibrationTarget::Pool { label, .. } => label,
-        }
+        &self.label
     }
 }
 
 pub(in super::super) struct DollCalibrationState {
     /// Where Save writes.
     target: CalibrationTarget,
-    /// Which doll set is being calibrated: None = the default
-    /// `[injury_doll]`, Some(name) = that `[[injury_doll.variants]]`
-    /// element (each variant is a complete doll with its own base,
-    /// anchors, and dots). Skin targets only; pool dolls have no variants.
-    variant: Option<String>,
-    /// Variant names offered by the active skin, in declaration order.
-    variant_names: Vec<String>,
     /// Working anchors keyed by lowercase protocol part name. Only parts
-    /// the skin (or this session) has placed appear here; the rest render
-    /// at built-in defaults and stay implicit in the saved file.
+    /// the sidecar (or this session) has placed appear here; the rest
+    /// render at built-in defaults and stay implicit in the saved file.
     anchors: HashMap<String, [f32; 2]>,
     /// Index into DOLL_PARTS of the part the next click places.
     selected: usize,
@@ -90,74 +76,37 @@ impl VellumGuiApp {
             self.raise_editor(egui::Id::new("gui_doll_calibration"));
             return;
         }
-        // A doll override calibrates against its pool sidecar and needs no
-        // skin at all; otherwise calibration targets the active skin.
-        let (target, anchors, dots) = if let (Some(pool_path), Some(abs)) = (
+        // Calibration targets the assigned pool doll's sidecar.
+        let (Some(pool_path), Some(abs)) = (
             self.skin_state.doll_override().map(str::to_owned),
             self.skin_state.doll_override_abs_path(),
-        ) {
-            let sidecar: crate::config::pool::DollSidecar =
-                crate::config::pool::read_sidecar(&abs).unwrap_or_default();
-            let label = pool_path
-                .rsplit_once('/')
-                .map(|(_, file)| file)
-                .unwrap_or(&pool_path)
-                .rsplit_once('.')
-                .map(|(stem, _)| stem.to_owned())
-                .unwrap_or(pool_path.clone());
-            (
-                CalibrationTarget::Pool {
-                    image_abs: abs,
-                    label,
-                },
-                sidecar.anchors,
-                sidecar.dots,
-            )
-        } else {
-            let Some(skin_name) = self.skin_state.loaded_skin().map(str::to_owned) else {
-                self.app_core.add_system_message(
-                    "No doll image selected. Pick one in the injuries window's Appearance menu \
-                     (install some with .jinx), or activate a skin with a doll.",
-                );
-                return;
-            };
-            let has_base = self
-                .skin_state
-                .widget_art()
-                .is_some_and(|art| art.doll_base.is_some());
-            if !has_base {
-                self.app_core.add_system_message(&format!(
-                    "Skin '{}' has no injury doll base image; pick a doll in the injuries \
-                     window's Appearance menu or set base under [injury_doll] in its skin.toml.",
-                    skin_name
-                ));
-                return;
-            }
-            let doll = self.skin_state.doll_manifest();
-            (
-                CalibrationTarget::Skin(skin_name),
-                doll.anchors.clone(),
-                doll.dots.clone(),
-            )
+        ) else {
+            self.app_core.add_system_message(
+                "No doll image selected. Pick one in the injuries window's Appearance menu \
+                 (install some with .jinx).",
+            );
+            return;
         };
-        let variant_names = match &target {
-            CalibrationTarget::Skin(_) => self
-                .skin_state
-                .doll_manifest()
-                .variants
-                .iter()
-                .map(|variant| variant.name.clone())
-                .collect(),
-            CalibrationTarget::Pool { .. } => Vec::new(),
+        let sidecar: crate::config::pool::DollSidecar =
+            crate::config::pool::read_sidecar(&abs).unwrap_or_default();
+        let label = pool_path
+            .rsplit_once('/')
+            .map(|(_, file)| file)
+            .unwrap_or(&pool_path)
+            .rsplit_once('.')
+            .map(|(stem, _)| stem.to_owned())
+            .unwrap_or(pool_path.clone());
+        let target = CalibrationTarget {
+            image_abs: abs,
+            label,
         };
+        let (anchors, dots) = (sidecar.anchors, sidecar.dots);
         let anchors = anchors
             .iter()
             .map(|(part, anchor)| (part.to_ascii_lowercase(), *anchor))
             .collect();
         self.doll_calibration = Some(DollCalibrationState {
             target,
-            variant: None,
-            variant_names,
             anchors,
             selected: 0,
             auto_advance: true,
@@ -175,28 +124,18 @@ impl VellumGuiApp {
         let Some(mut state) = self.doll_calibration.take() else {
             return;
         };
-        // Calibrating a variant renders against that set's base; the
-        // index re-resolves every frame so a hot-reloaded manifest stays
-        // in sync with the combo.
-        let variant_index = state.variant.as_deref().and_then(|name| {
-            self.skin_state
-                .widget_art()
-                .and_then(|art| art.doll_variant_names().iter().position(|n| *n == name))
-        });
-        // The base can vanish mid-session (skin.toml edited on disk, doll
-        // override cleared); close rather than calibrating against nothing.
+        // The base can vanish mid-session (doll override cleared); close
+        // rather than calibrating against nothing.
         let Some(base) = self
             .skin_state
             .widget_art()
-            .and_then(|art| art.doll_set(variant_index).base)
+            .and_then(|art| art.doll_set(None).base)
         else {
             self.app_core.add_system_message(
                 "Injury doll calibration closed: the selected doll set has no base image loaded.",
             );
             return;
         };
-        // For reseeding anchors/dots when the set combo changes.
-        let manifest_doll = self.skin_state.doll_manifest().clone();
 
         let mut open = true;
         let mut save_request = false;
@@ -210,62 +149,6 @@ impl VellumGuiApp {
             .resizable(true)
             .show(ctx, |ui| {
                 ui.label("Click the doll to place the highlighted part's dot. Coordinates are stored as fractions of the image, so they hold at any size.");
-                // Skins with doll variants calibrate each set separately —
-                // a variant is a complete doll with its own base and
-                // anchors. Switching sets reseeds the working anchors from
-                // the manifest (unsaved edits to the previous set drop).
-                if matches!(state.target, CalibrationTarget::Skin(_))
-                    && !state.variant_names.is_empty()
-                {
-                    let selected_label = state.variant.clone().unwrap_or_else(|| "Default".into());
-                    let mut picked: Option<Option<String>> = None;
-                    egui::ComboBox::from_label("Doll set")
-                        .selected_text(selected_label)
-                        .show_ui(ui, |ui| {
-                            if ui
-                                .selectable_label(state.variant.is_none(), "Default")
-                                .clicked()
-                            {
-                                picked = Some(None);
-                            }
-                            for name in &state.variant_names {
-                                if ui
-                                    .selectable_label(
-                                        state.variant.as_deref() == Some(name),
-                                        name,
-                                    )
-                                    .clicked()
-                                {
-                                    picked = Some(Some(name.clone()));
-                                }
-                            }
-                        });
-                    if let Some(choice) = picked {
-                        if choice != state.variant {
-                            let (anchors, dots) = match choice.as_deref() {
-                                None => (manifest_doll.anchors.clone(), manifest_doll.dots.clone()),
-                                Some(name) => manifest_doll
-                                    .variants
-                                    .iter()
-                                    .find(|variant| variant.name == name)
-                                    .map(|variant| {
-                                        (variant.skin.anchors.clone(), variant.skin.dots.clone())
-                                    })
-                                    .unwrap_or_default(),
-                            };
-                            state.anchors = anchors
-                                .iter()
-                                .map(|(part, anchor)| (part.to_ascii_lowercase(), *anchor))
-                                .collect();
-                            state.wound_color = dots.wound_color;
-                            state.scar_color = dots.scar_color;
-                            state.opacity = dots.opacity;
-                            state.diameter = dots.diameter;
-                            state.variant = choice;
-                            state.error = None;
-                        }
-                    }
-                }
                 ui.separator();
                 ui.horizontal_top(|ui| {
                     // Part list: click-through order, dot marker for parts
@@ -411,20 +294,10 @@ impl VellumGuiApp {
 
                 ui.separator();
                 ui.horizontal(|ui| {
-                    let (save_label, save_hover) = match &state.target {
-                        CalibrationTarget::Skin(_) if state.variant.is_some() => (
-                            "Save to skin",
-                            "Writes anchors and dots into this variant's skin table inside [[injury_doll.variants]]",
-                        ),
-                        CalibrationTarget::Skin(_) => (
-                            "Save to skin",
-                            "Writes [injury_doll.anchors] and [injury_doll.dots] into the skin's skin.toml",
-                        ),
-                        CalibrationTarget::Pool { .. } => (
-                            "Save",
-                            "Writes anchors and dot styling into the doll's sidecar toml, next to the image — the calibration travels with the artwork",
-                        ),
-                    };
+                    let (save_label, save_hover) = (
+                        "Save",
+                        "Writes anchors and dot styling into the doll's sidecar toml, next to the image — the calibration travels with the artwork",
+                    );
                     if ui.button(save_label).on_hover_text(save_hover).clicked() {
                         save_request = true;
                     }
@@ -446,21 +319,11 @@ impl VellumGuiApp {
             });
 
         if save_request {
-            let result = match &state.target {
-                CalibrationTarget::Skin(skin) => gui_skin::save_calibration(
-                    skin,
-                    state.variant.as_deref(),
-                    &state.anchors,
-                    &state.dot_spec(),
-                ),
-                CalibrationTarget::Pool { image_abs, .. } => {
-                    crate::config::pool::write_doll_sidecar(
-                        image_abs,
-                        &state.anchors,
-                        &state.dot_spec(),
-                    )
-                }
-            };
+            let result = crate::config::pool::write_doll_sidecar(
+                &state.target.image_abs,
+                &state.anchors,
+                &state.dot_spec(),
+            );
             match result {
                 Ok(()) => {
                     state.error = None;

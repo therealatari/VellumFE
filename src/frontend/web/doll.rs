@@ -241,29 +241,25 @@ fn resolve_image(root: &Path, image: &str) -> PathBuf {
 }
 
 /// The doll the frontends should show: the appearance store's doll_image
-/// override (pool image + sidecar calibration, mirroring the GUI's
-/// resolution), else the active skin's `[injury_doll]` section.
+/// (pool image + sidecar calibration, mirroring the GUI's resolution).
+/// None = the vector doll.
 fn active_doll() -> Option<(InjuryDollSkin, PathBuf)> {
     let config = crate::config::Config::load().ok()?;
-    if let Some(image) = config.appearance.doll_image {
-        let root = crate::config::Config::global_images_dir().ok()?;
-        let abs = skins::resolve_image_path(&root, &image);
-        let sidecar: crate::config::pool::DollSidecar =
-            crate::config::pool::read_sidecar(&abs).unwrap_or_default();
-        let doll = InjuryDollSkin {
-            base: Some(image),
-            anchors: sidecar.anchors,
-            dots: sidecar.dots,
-            // Pool dolls carry no overlay art, variants, or named sets.
-            variants: Default::default(),
-            sets: Default::default(),
-            parts: Default::default(),
-        };
-        return Some((doll, root));
-    }
-    let name = config.appearance.active_skin?;
-    let (manifest, root) = skins::load_manifest(&name).ok()?;
-    Some((manifest.injury_doll, root))
+    let image = config.appearance.doll_image?;
+    let root = crate::config::Config::global_images_dir().ok()?;
+    let abs = skins::resolve_image_path(&root, &image);
+    let sidecar: crate::config::pool::DollSidecar =
+        crate::config::pool::read_sidecar(&abs).unwrap_or_default();
+    let doll = InjuryDollSkin {
+        base: Some(image),
+        anchors: sidecar.anchors,
+        dots: sidecar.dots,
+        // Pool dolls carry no overlay art, variants, or named sets.
+        variants: Default::default(),
+        sets: Default::default(),
+        parts: Default::default(),
+    };
+    Some((doll, root))
 }
 
 #[cfg(test)]

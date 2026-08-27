@@ -1145,11 +1145,7 @@ impl VellumGuiApp {
                 .tab_settings
                 .get(tab_key)
                 .and_then(|settings| settings.frame_scale),
-            has_skin_border: self
-                .available_tabs
-                .get(tab_key)
-                .and_then(|tab| self.skin_state.border_for(&tab.window_name))
-                .is_some(),
+            has_skin_border: self.skin_border_for_tab(tab_key).is_some(),
             is_doll,
             is_creature_field: widget_type == Some(WidgetType::CreatureField),
             edge_sets: crate::config::pool::set_names("edges"),
@@ -1191,9 +1187,8 @@ impl VellumGuiApp {
                 .get(tab_key)
                 .and_then(|settings| settings.background_image.clone()),
             has_skin_background: self
-                .available_tabs
-                .get(tab_key)
-                .and_then(|tab| self.skin_state.background_for(&tab.window_name))
+                .widget_render_settings(tab_key)
+                .background
                 .is_some(),
             title_bar_height_override: self
                 .tab_settings

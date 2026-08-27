@@ -20,7 +20,6 @@ use eframe::egui;
 use std::collections::HashMap;
 
 /// ComboBox entry meaning "no skin active" (draft value = empty string).
-const NONE_SKIN: &str = "(none)";
 
 /// ComboBox entry meaning "engine default voice" (draft value = empty string).
 const NONE_VOICE: &str = "(engine default)";
@@ -343,31 +342,6 @@ impl SettingsEditorState {
                         .show_ui(ui, |ui| {
                             for name in &self.theme_names {
                                 ui.selectable_value(value, name.clone(), name);
-                            }
-                        });
-                }
-                return;
-            }
-            "active_skin" => {
-                if let DraftValue::Text(value) = draft {
-                    let selected = if value.trim().is_empty() {
-                        NONE_SKIN.to_string()
-                    } else {
-                        value.clone()
-                    };
-                    egui::ComboBox::from_id_salt(("setting", def.key))
-                        .selected_text(selected)
-                        .show_ui(ui, |ui| {
-                            if ui
-                                .selectable_label(value.trim().is_empty(), NONE_SKIN)
-                                .clicked()
-                            {
-                                value.clear();
-                            }
-                            for name in &self.skin_names {
-                                if ui.selectable_label(value == name, name).clicked() {
-                                    *value = name.clone();
-                                }
                             }
                         });
                 }
@@ -924,10 +898,6 @@ impl VellumGuiApp {
                                                             .to_string();
                                                         state.skin_names.push(name.clone());
                                                         state.skin_names.sort();
-                                                        state.drafts.insert(
-                                                            "active_skin",
-                                                            DraftValue::Text(name),
-                                                        );
                                                         state.new_skin_name.clear();
                                                         state.skin_error = None;
                                                     }
@@ -1455,15 +1425,12 @@ impl VellumGuiApp {
 
             // GUI sizing lives in the per-character layout file; force the
             // zoom/title-bar values to re-apply on the next frame. Vitals
-            // options are edited in the vitals window's context menu, and
-            // the active skin was routed above — preserve the live values
-            // for both rather than restoring this editor's stale open-time
-            // snapshot.
+            // options are edited in the vitals window's context menu —
+            // preserve the live values rather than restoring this editor's
+            // stale open-time snapshot.
             let vitals = self.ui_settings.vitals.clone();
-            let active_skin = self.ui_settings.active_skin.clone();
             self.ui_settings = state.gui_settings.clone();
             self.ui_settings.vitals = vitals;
-            self.ui_settings.active_skin = active_skin;
             self.zoom_applied = false;
             self.applied_title_font_size = None;
             self.applied_density = None;

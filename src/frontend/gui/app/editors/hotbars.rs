@@ -167,8 +167,6 @@ pub(in super::super) struct HotbarEditorState {
     new_sheet_name: String,
     new_sheet_path: String,
     new_sheet_cell: u32,
-    /// Register into the shared store (all skins) vs the active skin.
-    new_sheet_shared: bool,
 }
 
 impl HotbarEditorState {
@@ -185,7 +183,6 @@ impl HotbarEditorState {
             new_sheet_name: String::new(),
             new_sheet_path: String::new(),
             new_sheet_cell: 64,
-            new_sheet_shared: true,
         }
     }
 }
@@ -271,12 +268,10 @@ impl VellumGuiApp {
         let mut load_bar: Option<(HotbarDef, bool)> = None;
         let mut delete_bar: Option<String> = None;
         let mut save_requested = false;
-        // (name, source path, cell, into shared store) for the
-        // sheet-registration form.
-        let mut register_sheet_request: Option<(String, String, u32, bool)> = None;
-        // Sprite lookups for icon pickers/previews; None without a skin.
+        // (name, source path, cell) for the sheet-registration form.
+        let mut register_sheet_request: Option<(String, String, u32)> = None;
+        // Sprite lookups for icon pickers/previews; None without any art.
         let skin_art_arc = self.skin_state.widget_art();
-        let active_skin = self.skin_state.loaded_skin().map(str::to_owned);
 
         egui::Window::new("Hotbars")
             .id(egui::Id::new("gui_hotbar_editor"))
@@ -299,9 +294,8 @@ impl VellumGuiApp {
                     .show(ui, |ui| {
                         ui.weak(
                             "Sheets are tiled into square cells (barbar-style), \
-                             indexed 1-based left to right. Shared sheets work \
-                             with every skin (and without one); a skin sheet \
-                             with the same name wins.",
+                             indexed 1-based left to right. Sheets live in the \
+                             shared icon store and work with every look.",
                         );
                         if let Some(art) = skin_art_arc.as_deref() {
                             for name in art.sheet_names() {
@@ -309,12 +303,7 @@ impl VellumGuiApp {
                                     .sheet_cell_count(&name)
                                     .map(|n| format!("{} cells", n))
                                     .unwrap_or_default();
-                                let scope = if self.skin_state.sheet_is_shared(&name) {
-                                    "shared"
-                                } else {
-                                    "skin"
-                                };
-                                ui.label(format!("• {}  ({}, {})", name, cells, scope));
+                                ui.label(format!("• {}  ({})", name, cells));
                             }
                         }
                         ui.horizontal(|ui| {
@@ -332,28 +321,17 @@ impl VellumGuiApp {
                             );
                             ui.label("cell px:");
                             ui.add(egui::DragValue::new(&mut state.new_sheet_cell).range(8..=512));
-                            if active_skin.is_some() {
-                                ui.checkbox(&mut state.new_sheet_shared, "All skins")
-                                    .on_hover_text(
-                                        "Store in the shared icon folder instead of \
-                                         the active skin",
-                                    );
-                            } else {
-                                // Without a skin there is nowhere else to put it.
-                                state.new_sheet_shared = true;
-                            }
                             if ui.button("Register").clicked() {
                                 register_sheet_request = Some((
                                     state.new_sheet_name.trim().to_string(),
                                     state.new_sheet_path.trim().to_string(),
                                     state.new_sheet_cell,
-                                    state.new_sheet_shared,
                                 ));
                             }
                         });
                         ui.weak(
-                            "Copies the image into the chosen store and records \
-                             it there - no hand-editing needed.",
+                            "Copies the image into the shared icon store and \
+                             records it there - no hand-editing needed.",
                         );
                     });
                 ui.separator();
@@ -855,20 +833,10 @@ impl VellumGuiApp {
             state.hotkey_capture_armed = false;
         }
 
-        if let Some((name, path, cell, shared)) = register_sheet_request {
+        if let Some((name, path, cell)) = register_sheet_request {
             let source = std::path::Path::new(&path);
-            let result = if shared {
-                crate::frontend::gui::skin::register_sheet_shared(&name, source, cell)
-                    .map(|()| "the shared icon store".to_string())
-            } else {
-                match active_skin.as_deref() {
-                    Some(skin) => {
-                        crate::frontend::gui::skin::register_sheet(skin, &name, source, cell)
-                            .map(|()| format!("skin '{}'", skin))
-                    }
-                    None => Err(anyhow::anyhow!("no active skin to register the sheet into")),
-                }
-            };
+            let result = crate::frontend::gui::skin::register_sheet_shared(&name, source, cell)
+                .map(|()| "the shared icon store".to_string());
             match result {
                 Ok(destination) => {
                     // Rebuild textures/art now so the new sheet shows
