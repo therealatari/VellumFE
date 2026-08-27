@@ -2284,7 +2284,7 @@ impl eframe::App for VellumGuiApp {
         // noun maps to exactly one family, feeding the `{family}` tier of
         // the resolve cascade.
         {
-            let wanted: Vec<(String, Option<String>)> = self
+            let wanted: Vec<crate::frontend::gui::skin::WantedCreature> = self
                 .app_core
                 .creature_field
                 .units()
@@ -2297,11 +2297,22 @@ impl eframe::App for VellumGuiApp {
                         .iter()
                         .find(|c| &c.id == m)
                 })
-                .filter_map(|c| {
-                    c.noun.clone().map(|noun| {
-                        let family = crate::core::creature_cards::family_for_noun(&noun);
-                        (noun, family)
-                    })
+                .map(|c| {
+                    let family = c
+                        .noun
+                        .as_deref()
+                        .and_then(crate::core::creature_cards::family_for_noun);
+                    crate::frontend::gui::skin::WantedCreature {
+                        name: c.name.clone(),
+                        noun: c.noun.clone(),
+                        family,
+                        prone: c.flags.as_ref().is_some_and(|f| f.has_flag("prone")),
+                        injuries: c
+                            .flags
+                            .as_ref()
+                            .map(|f| f.injuries.clone())
+                            .unwrap_or_default(),
+                    }
                 })
                 .collect();
             if !wanted.is_empty() {

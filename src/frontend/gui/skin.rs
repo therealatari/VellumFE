@@ -620,6 +620,11 @@ pub struct CreatureArt {
     /// Sidecar-authored ground clearance for a floating neutral pose,
     /// fraction of the drawn sprite height.
     pub lift: Option<f32>,
+    /// Tier extras beside the base: `{token}_<suffix>.png` files keyed by
+    /// lowercased suffix ("prone", "chest2", "leftarm1", ...). The locked
+    /// tier owns them all — pose swaps and per-wound overlays never mix
+    /// across tiers.
+    pub extras: HashMap<String, PathBuf>,
 }
 
 impl CreatureArt {
@@ -629,6 +634,19 @@ impl CreatureArt {
             .iter()
             .find(|(key, _)| key.eq_ignore_ascii_case(name))
             .map(|(_, a)| *a)
+    }
+
+    /// Tier extra by suffix ("prone", "chest2"), case-insensitive.
+    pub fn extra(&self, suffix: &str) -> Option<&PathBuf> {
+        self.extras.get(&suffix.to_ascii_lowercase())
+    }
+
+    /// Whether the tier ships any per-wound overlay art (tier locking:
+    /// if so, the manifest's part tables never mix in).
+    pub fn has_wound_extras(&self) -> bool {
+        self.extras
+            .keys()
+            .any(|key| key.ends_with(|c: char| c.is_ascii_digit()))
     }
 }
 
@@ -686,6 +704,22 @@ impl CreatureArtCache {
     pub fn variant_base(&self, path: &str) -> Option<&CreatureArt> {
         self.variant_bases.get(path).and_then(|art| art.as_ref())
     }
+}
+
+/// One creature the field wants art for this frame: the identity keys
+/// for tier resolution plus the current state that decides which extras
+/// (pose, wound overlays) must be loaded.
+#[derive(Debug, Clone)]
+pub struct WantedCreature {
+    /// Live display name (boon adjectives still on; normalization is the
+    /// cache's job so every caller keys identically).
+    pub name: String,
+    pub noun: Option<String>,
+    pub family: Option<String>,
+    /// crtr_status prone flag — loads the tier's `{token}_prone` art.
+    pub prone: bool,
+    /// Per-part wound ranks — loads `{token}_{loc}{rank}` overlays.
+    pub injuries: Vec<(String, u8)>,
 }
 
 /// Per-skin, per-frame handle to `CreatureArtCache`: loading happens in the
@@ -867,29 +901,73 @@ impl SkinState {
         self.creature_art.clone()
     }
 
-    /// Resolve + load base art for the given creatures (noun, family) and
-    /// the card's overlay textures. Called once per frame from the update
-    /// loop with the current field roster; everything is cached (including
-    /// misses), so a settled room costs a few hash lookups.
-    pub fn prepare_creature_art(
-        &mut self,
-        ctx: &egui::Context,
-        wanted: &[(String, Option<String>)],
-    ) {
+    /// Resolve + load base art for the given creatures and the card's
+    /// overlay textures. Called once per frame from the update loop with
+    /// the current field roster; everything is cached (including misses),
+    /// so a settled room costs a few hash lookups. Bases are keyed by the
+    /// creature's NAME token (boon-stripped slug of obj.name — matches
+    /// the art folder/file naming), tier-locked through
+    /// `resolve_tier_art`; pose and wound overlay textures for each
+    /// creature's current state load on demand and stay path-cached.
+    pub fn prepare_creature_art(&mut self, ctx: &egui::Context, wanted: &[WantedCreature]) {
+        use crate::core::creature_cards::naming;
         let cache = self.creature_art.clone();
         let mut cache = cache.lock().expect("creature art lock");
-        for (noun, family) in wanted {
-            if cache.bases.contains_key(noun.as_str()) {
+        for want in wanted {
+            let token = naming::name_token(&want.name);
+            if token.is_empty() {
                 continue;
             }
-            let art = crate::core::creature_cards::resolve_base_image(
-                &cache.root,
-                &cache.card,
-                Some(noun),
-                family.as_deref(),
-            )
-            .and_then(|path| load_creature_art(ctx, &path, &cache.skin_name));
-            cache.bases.insert(noun.clone(), art);
+            if !cache.bases.contains_key(token.as_str()) {
+                let art = crate::core::creature_cards::resolve_tier_art(
+                    &cache.root,
+                    &cache.card,
+                    Some(&want.name),
+                    want.noun.as_deref(),
+                    want.family.as_deref(),
+                )
+                .and_then(|tier| load_creature_art(ctx, &tier.base, &cache.skin_name));
+                cache.bases.insert(token.clone(), art);
+            }
+            // Extras for the creature's CURRENT state: the prone pose
+            // loads as full creature art (own anchors/footprint); wound
+            // overlays load as plain textures. Both keyed by absolute
+            // path so re-loads are lookups.
+            let Some(Some(art)) = cache.bases.get(token.as_str()) else {
+                continue;
+            };
+            let prone = want
+                .prone
+                .then(|| art.extra("prone").cloned())
+                .flatten();
+            let wounds: Vec<PathBuf> = want
+                .injuries
+                .iter()
+                .filter_map(|(part, rank)| {
+                    art.extra(&format!("{}{rank}", part.to_ascii_lowercase()))
+                        .cloned()
+                })
+                .collect();
+            if let Some(path) = prone {
+                let key = path.to_string_lossy().into_owned();
+                if !cache.variant_bases.contains_key(&key) {
+                    let art = load_creature_art(ctx, &path, &cache.skin_name);
+                    cache.variant_bases.insert(key, art);
+                }
+            }
+            for path in wounds {
+                let key = path.to_string_lossy().into_owned();
+                if !cache.overlays.contains_key(&key) {
+                    let name = cache.skin_name.clone();
+                    let tex = super::image_store::load_texture_file(
+                        ctx,
+                        &path,
+                        &format!("wound:{key}"),
+                        &name,
+                    );
+                    cache.overlays.insert(key, tex);
+                }
+            }
         }
         // Placeholder-free variant bases (pose art) load through the full
         // creature loader so each pose image carries its own derived +
@@ -2122,6 +2200,43 @@ fn load_creature_art(ctx: &egui::Context, path: &Path, skin_name: &str) -> Optio
     // the derived head/feet, and the footprint drives the contact shadow.
     let sidecar = crate::config::pool::read_sidecar::<crate::config::pool::CreatureSidecar>(path)
         .unwrap_or_default();
+    // Tier extras: images beside the base named "{token}_<suffix>" (pose
+    // art, per-wound overlays), discovered once per load. Tier locking:
+    // these are the ONLY overlays this creature's art may use.
+    let mut extras: HashMap<String, PathBuf> = HashMap::new();
+    if let (Some(dir), Some(stem)) = (path.parent(), path.file_stem().and_then(|s| s.to_str())) {
+        let prefix = format!("{stem}_");
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let extra = entry.path();
+                if !extra.is_file() {
+                    continue;
+                }
+                let is_image = extra
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| {
+                        matches!(
+                            ext.to_ascii_lowercase().as_str(),
+                            "png" | "webp" | "jpg" | "jpeg" | "bmp"
+                        )
+                    });
+                if !is_image {
+                    continue;
+                }
+                let Some(suffix) = extra
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .and_then(|s| s.strip_prefix(&prefix))
+                else {
+                    continue;
+                };
+                if !suffix.is_empty() {
+                    extras.insert(suffix.to_ascii_lowercase(), extra);
+                }
+            }
+        }
+    }
     let sidecar_pt = |name: &str| {
         sidecar
             .anchors
@@ -2138,6 +2253,7 @@ fn load_creature_art(ctx: &egui::Context, path: &Path, skin_name: &str) -> Optio
         footprint: sidecar.footprint,
         size: sidecar.size,
         lift: sidecar.lift,
+        extras,
     })
 }
 
@@ -4089,9 +4205,16 @@ cell = 32
         )
         .unwrap();
 
+        let wanted = |name: &str| WantedCreature {
+            name: name.to_string(),
+            noun: Some(name.split(' ').next_back().unwrap_or(name).to_string()),
+            family: None,
+            prone: false,
+            injuries: Vec::new(),
+        };
         let mut state = SkinState::default();
         state.apply_if_changed(&env.ctx, None, None);
-        state.prepare_creature_art(&env.ctx, &[("coyote".to_string(), None)]);
+        state.prepare_creature_art(&env.ctx, &[wanted("coyote")]);
         let cache = state.creature_art.lock().unwrap();
         let art = cache.base("coyote").expect("pool art resolves skinless");
         assert_eq!(art.feet, [0.5, 0.9]);
@@ -4114,9 +4237,66 @@ cell = 32
             .is_some_and(|tex| tex.is_some()));
         // An unknown noun still negative-caches instead of erroring.
         drop(cache);
-        state.prepare_creature_art(&env.ctx, &[("gryphon".to_string(), None)]);
+        state.prepare_creature_art(&env.ctx, &[wanted("gryphon")]);
         let cache = state.creature_art.lock().unwrap();
         assert!(cache.bases.get("gryphon").is_some_and(|art| art.is_none()));
+    }
+
+    #[test]
+    fn tiered_creature_art_locks_a_tier_and_loads_pose_and_wounds() {
+        let env = test_env();
+        // Variant tier for the mongrel kobold: base + prone pose + a
+        // chest wound overlay, token-prefixed per the tier scheme.
+        let variant = pool_dir().join("creatures/kobold/mongrel_kobold");
+        write_png(&variant.join("mongrel_kobold.png"), 4);
+        write_png(&variant.join("mongrel_kobold_prone.png"), 8);
+        write_png(&variant.join("mongrel_kobold_chest2.png"), 2);
+        // Noun tier with its own base (big ugly kobold falls here).
+        write_png(&pool_dir().join("creatures/kobold/kobold.png"), 2);
+
+        let mut state = SkinState::default();
+        state.apply_if_changed(&env.ctx, None, None);
+        // Boon-decorated live name normalizes onto the variant token.
+        state.prepare_creature_art(
+            &env.ctx,
+            &[WantedCreature {
+                name: "a shimmering mongrel kobold".to_string(),
+                noun: Some("kobold".to_string()),
+                family: None,
+                prone: true,
+                injuries: vec![("chest".to_string(), 2)],
+            }],
+        );
+        let cache = state.creature_art.lock().unwrap();
+        let art = cache.base("mongrel_kobold").expect("variant tier resolves");
+        assert_eq!(art.texture.size_vec2(), egui::vec2(4.0, 4.0));
+        // The tier's extras were discovered and the current state's
+        // textures loaded: prone as full art, the wound as a texture.
+        let prone_path = art.extra("prone").expect("prone extra listed").clone();
+        let prone = cache
+            .variant_base(prone_path.to_string_lossy().as_ref())
+            .expect("prone pose loaded");
+        assert_eq!(prone.texture.size_vec2(), egui::vec2(8.0, 8.0));
+        let wound_path = art.extra("chest2").unwrap().to_string_lossy().into_owned();
+        assert!(cache.overlays.get(&wound_path).is_some_and(|t| t.is_some()));
+        assert!(art.has_wound_extras());
+        // Tier locking: a creature without its own variant folder locks
+        // the noun tier — mongrel art never leaks onto it.
+        drop(cache);
+        state.prepare_creature_art(
+            &env.ctx,
+            &[WantedCreature {
+                name: "big ugly kobold".to_string(),
+                noun: Some("kobold".to_string()),
+                family: None,
+                prone: false,
+                injuries: Vec::new(),
+            }],
+        );
+        let cache = state.creature_art.lock().unwrap();
+        let art = cache.base("big_ugly_kobold").expect("noun tier resolves");
+        assert_eq!(art.texture.size_vec2(), egui::vec2(2.0, 2.0));
+        assert!(art.extra("prone").is_none(), "no cross-tier borrowing");
     }
 
     #[test]

@@ -48,7 +48,9 @@ impl VellumGuiApp {
             self.raise_editor(egui::Id::new("gui_creature_calibration"));
             return;
         }
-        let choices: Vec<CreatureChoice> = pool::list_category("creatures")
+        // Deep listing: variant folders (creatures/<noun>/<variant>/) are
+        // below the generic scanner's depth.
+        let choices: Vec<CreatureChoice> = pool::list_creature_images()
             .into_iter()
             .map(|image| CreatureChoice {
                 label: image.display_label(),

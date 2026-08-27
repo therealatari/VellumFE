@@ -200,6 +200,46 @@ fn pool_image(category: &str, set: Option<&str>, path: &Path) -> Option<PoolImag
     })
 }
 
+/// Creature art listing for pickers. Unlike other categories, creatures
+/// nest two levels (`creatures/<noun>/<variant>/` — the tier scheme), so
+/// the generic one-level scan misses variant folders. Uncached: only
+/// editors and the Studio call it, never per-frame paths.
+pub fn list_creature_images() -> Vec<PoolImage> {
+    let Ok(root) = Config::global_image_category_dir("creatures") else {
+        return Vec::new();
+    };
+    let mut images: Vec<PoolImage> = Vec::new();
+    let mut walk = |dir: &Path, set: Option<&str>, images: &mut Vec<PoolImage>| {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return Vec::new();
+        };
+        let mut subdirs = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                subdirs.push(path);
+            } else if let Some(image) = pool_image("creatures", set, &path) {
+                images.push(image);
+            }
+        }
+        subdirs
+    };
+    for noun_dir in walk(&root, None, &mut images) {
+        let Some(noun) = noun_dir.file_name().and_then(|n| n.to_str()).map(String::from) else {
+            continue;
+        };
+        for variant_dir in walk(&noun_dir, Some(&noun), &mut images) {
+            let Some(variant) = variant_dir.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            let set = format!("{noun}/{variant}");
+            walk(&variant_dir, Some(&set), &mut images);
+        }
+    }
+    images.sort_by(|a, b| a.pool_path.cmp(&b.pool_path));
+    images
+}
+
 /// Distinct set names in a category, sorted and case-insensitively deduped.
 ///
 /// Sets come from set folders (`compass/stormfront/`) and from legacy

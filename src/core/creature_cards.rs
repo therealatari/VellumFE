@@ -11,6 +11,7 @@
 //!   adapter rather than rippling foot parts and a `nerves` rename into the
 //!   player-doll ecosystem and its published assets.
 
+pub mod naming;
 pub mod solver;
 
 use std::path::{Path, PathBuf};
@@ -184,6 +185,88 @@ pub fn resolve_base_image(
         .into_iter()
         .map(|candidate| skins::resolve_image_path(root, &candidate))
         .find(|path| path.is_file())
+}
+
+/// One resolved, tier-LOCKED art source: the base image plus the
+/// directory and token that own every overlay for this creature. The
+/// cascade picks one tier, not one file — all wound/pose overlays come
+/// from `{dir}/{token}_*.png`, never mixed across tiers.
+#[derive(Debug, Clone)]
+pub struct ResolvedTierArt {
+    /// Absolute path of the tier's base image.
+    pub base: PathBuf,
+    /// Absolute directory the tier owns (overlays live here).
+    pub dir: PathBuf,
+    /// File-name prefix within the tier ("mongrel_kobold", "default").
+    pub token: String,
+}
+
+/// Tier-locked resolution (the Niffy scheme): `variant → noun → family →
+/// default`, each a `creatures/…` folder whose files are prefixed with
+/// the folder's own token. Legacy flat files (`creatures/kobold.png`)
+/// keep working as that tier with the category root as its directory.
+/// A skin authoring its own `resolve` cascade takes precedence — its
+/// first hit becomes the locked tier, token = the file stem.
+pub fn resolve_tier_art(
+    root: &Path,
+    skin: &CreatureCardSkin,
+    name: Option<&str>,
+    noun: Option<&str>,
+    family: Option<&str>,
+) -> Option<ResolvedTierArt> {
+    // Authored cascade wins (the power tier); the hit's directory and
+    // stem own the overlays so tier locking applies to skins too.
+    if !skin.resolve.is_empty() || skin.base.is_some() {
+        let base = resolve_base_image(root, skin, noun, family)?;
+        let token = base.file_stem()?.to_string_lossy().to_string();
+        let dir = base.parent()?.to_path_buf();
+        return Some(ResolvedTierArt { base, dir, token });
+    }
+
+    let noun_token = noun.map(naming::slug).filter(|t| !t.is_empty());
+    let family_token = family.map(naming::slug).filter(|t| !t.is_empty());
+    let name_token = name.map(naming::name_token).filter(|t| !t.is_empty());
+
+    // (folder-relative dir, token) per tier, in lock order. The variant
+    // tier lives INSIDE its noun folder, so it needs both tokens.
+    let mut tiers: Vec<(String, String)> = Vec::new();
+    if let (Some(name), Some(noun)) = (&name_token, &noun_token) {
+        if name != noun {
+            tiers.push((format!("creatures/{noun}/{name}"), name.clone()));
+        }
+    }
+    if let Some(noun) = &noun_token {
+        tiers.push((format!("creatures/{noun}"), noun.clone()));
+    }
+    if let Some(family) = &family_token {
+        tiers.push((format!("creatures/{family}"), family.clone()));
+    }
+    tiers.push(("creatures/default".to_string(), "default".to_string()));
+
+    for (dir, token) in tiers {
+        // Folder form: creatures/<tier>/<token>.png.
+        let foldered = skins::resolve_image_path(root, &format!("{dir}/{token}.png"));
+        if foldered.is_file() {
+            let parent = foldered.parent()?.to_path_buf();
+            return Some(ResolvedTierArt {
+                base: foldered,
+                dir: parent,
+                token,
+            });
+        }
+        // Legacy flat form: creatures/<token>.png — the tier still locks
+        // (overlays resolve as creatures/<token>_*.png beside it).
+        let flat = skins::resolve_image_path(root, &format!("creatures/{token}.png"));
+        if flat.is_file() {
+            let parent = flat.parent()?.to_path_buf();
+            return Some(ResolvedTierArt {
+                base: flat,
+                dir: parent,
+                token,
+            });
+        }
+    }
+    None
 }
 
 /// Zero-config status overlays from the pool convention: any image at

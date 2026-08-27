@@ -290,7 +290,10 @@ impl VellumGuiApp {
 
         // Skin path: base art + the manifest's resolved card (variant,
         // lift, overlays), all evaluated host-style through resolve_card.
-        let art = art_cache.and_then(|c| c.base(noun));
+        // Art keys on the NAME token (boon-stripped slug — matches the
+        // tiered art folders), same normalization the prepare pass used.
+        let token = crate::core::creature_cards::naming::name_token(&creature.name);
+        let art = art_cache.and_then(|c| c.base(&token));
         let resolved = match (art_cache, flags) {
             (Some(cache), Some(flags)) => Some(crate::core::creature_cards::resolve_card(
                 &cache.card,
@@ -330,11 +333,20 @@ impl VellumGuiApp {
         // metadata (its own anchors, bbox, footprint), so a prone image
         // grounds by its own contact point instead of inheriting the
         // standing base's. Template paths keep the ground pose.
+        // Tier pose art: the locked tier's own {token}_prone image swaps
+        // in while the creature is prone, unless an authored variant
+        // already handles the pose.
+        let prone_art = flags
+            .filter(|f| f.has_flag("prone"))
+            .and(art)
+            .and_then(|a| a.extra("prone"))
+            .and_then(|p| art_cache.and_then(|c| c.variant_base(p.to_string_lossy().as_ref())));
         let active_art = resolved
             .as_ref()
             .and_then(|r| r.base_override())
             .filter(|p| !p.contains('{'))
             .and_then(|p| art_cache.and_then(|c| c.variant_base(p)))
+            .or(prone_art)
             .or(art);
 
         // Sprite geometry before the shadow (the shadow needs the drawn
@@ -792,11 +804,29 @@ impl VellumGuiApp {
                 dest.left() + frac[0] * dest.width(),
                 dest.top() + frac[1] * dest.height(),
             );
-            // Authored wound art when the skin has it; the procedural
-            // rank marker otherwise, so wounds show on every skin.
-            let texture = resolved
-                .part_overlay(part, *rank)
-                .and_then(|image| cache.overlays.get(image).cloned().flatten());
+            // Wound art, tier-locked: the creature's own tier overlays
+            // ({token}_{loc}{rank}) when the tier ships ANY wound art —
+            // never mixed with another source. The manifest's part
+            // tables serve only tiers with no wound art of their own;
+            // the procedural rank marker covers everything else, so
+            // wounds stay visible on every skin.
+            let tier_texture = art
+                .extra(&format!("{}{rank}", part.to_ascii_lowercase()))
+                .and_then(|path| {
+                    cache
+                        .overlays
+                        .get(path.to_string_lossy().as_ref())
+                        .cloned()
+                        .flatten()
+                });
+            let texture = tier_texture.or_else(|| {
+                if art.has_wound_extras() {
+                    return None;
+                }
+                resolved
+                    .part_overlay(part, *rank)
+                    .and_then(|image| cache.overlays.get(image).cloned().flatten())
+            });
             match texture {
                 Some(texture) => {
                     let ts = texture.size_vec2();
