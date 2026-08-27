@@ -135,6 +135,48 @@ impl XmlParser {
         }
     }
 
+    /// Extract the element name from a raw tag string like "<pushStream id=..>"
+    /// or "</compDef>". Empty if the input is not tag-shaped.
+    pub(super) fn tag_name(tag: &str) -> &str {
+        let body = tag
+            .strip_prefix("</")
+            .or_else(|| tag.strip_prefix('<'))
+            .unwrap_or(tag);
+        let end = body
+            .find(|c: char| c.is_ascii_whitespace() || c == '>' || c == '/')
+            .unwrap_or(body.len());
+        &body[..end]
+    }
+
+    /// Every element name the Wrayth wire protocol is known to emit, whether
+    /// or not we handle it. Union of our dispatch chain and the tag set the
+    /// Saga client recognizes. Unknown names indicate new server markup and
+    /// are passed through as visible text (never silently dropped) so
+    /// protocol changes announce themselves. MUST stay sorted: binary search.
+    pub(super) const KNOWN_WIRE_TAGS: &'static [&'static str] = &[
+        "FEVersion", "LaunchURL", "LichWebUI", "PantheonStatus", "a", "annotate", "app", "b",
+        "br", "castTime", "celebration", "checkBox", "clearContainer", "clearDynaStream",
+        "clearStream", "cli", "closeButton", "closeDialog", "closedialog", "cmdButton",
+        "cmdlist", "cmdtimestamp", "compDef", "compass", "component", "container",
+        "continuation", "crtrStatus", "d", "deleteContainer", "description", "dialogData",
+        "dir", "dropDownBox", "dynaStream", "editBox", "endSetup", "exists", "exits",
+        "exposeContainer", "exposeDialog", "exposeStream", "extra", "flag", "forcesave",
+        "getSkinVersion", "group", "hScrollBar", "hostile", "i", "image", "indicator", "inv",
+        "inventoryManager", "inventoryViewItem", "label", "launchURL", "left", "link",
+        "macros", "menu", "menuImage", "menuLink", "mi", "mode", "monopolize", "name", "nav",
+        "nomenu", "noverbupdates", "objective", "objectives", "openDialog", "opendialog",
+        "output", "palette", "playerID", "players", "popBold", "popInputState", "popStream",
+        "popup", "preset", "presets", "progressBar", "prompt", "pulse", "pushBold",
+        "pushInputState", "pushStream", "radio", "resource", "result", "right", "roomDesc",
+        "roommeta", "roundTime", "sentSettings", "sep", "settings", "settingsInfo", "skin",
+        "spell", "stream", "streamId", "streamWindow", "string", "switchQuickBar", "timer",
+        "tipInfo", "upDownEditBox", "updateverbs", "vScrollBar", "worldEvent",
+    ];
+
+    pub(super) fn is_known_wire_tag(name: &str) -> bool {
+        Self::KNOWN_WIRE_TAGS.binary_search(&name).is_ok()
+    }
+
     /// Remove C0 control characters (except \t and \n) and DEL. The wire
     /// occasionally carries stray control bytes; rendering them corrupts
     /// terminal output. Fast path returns the string untouched.

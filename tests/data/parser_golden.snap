@@ -438,7 +438,7 @@ Text { content: " claws at you!", stream: "main", fg_color: None, bg_color: None
 -- line 28: "  a pre-formatted table row"
 Text { content: "  a pre-formatted table row", stream: "main", fg_color: None, bg_color: None, bold: false, mono: true, span_type: Normal, link_data: None }
 -- line 30: "<unknownFutureTag attr=\"value\"/>between unknowns<anotherNewTag>inner text</anotherNewTag>"
-Text { content: "between unknownsinner text", stream: "main", fg_color: None, bg_color: None, bold: false, mono: false, span_type: Normal, link_data: None }
+Text { content: "<unknownFutureTag attr=\"value\"/>between unknowns<anotherNewTag>inner text</anotherNewTag>", stream: "main", fg_color: None, bg_color: None, bold: false, mono: false, span_type: Normal, link_data: None }
 -- line 31: "A line with trailing partial tag <pushStr"
 Text { content: "A line with trailing partial tag A line with trailing partial tag <pushStr", stream: "main", fg_color: None, bg_color: None, bold: false, mono: false, span_type: Normal, link_data: None }
 -- line 32: "<prompt time=\"1756300020\">&gt;</prompt>"

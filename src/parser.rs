@@ -1063,6 +1063,21 @@ impl XmlParser {
         {
             // Ignore these (UI layout tags)
         }
+        // Known wire tags we deliberately don't act on: swallow quietly.
+        // Unknown names mean new server markup — pass through as visible
+        // text so nothing is ever silently dropped.
+        else {
+            let name = Self::tag_name(tag);
+            if Self::is_known_wire_tag(name) {
+                tracing::debug!("Parser: known unhandled tag <{}>", name);
+            } else {
+                tracing::warn!(
+                    "Parser: unknown tag passed through as text: {}",
+                    &tag[..tag.len().min(120)]
+                );
+                text_buffer.push_str(tag);
+            }
+        }
     }
 }
 

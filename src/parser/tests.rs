@@ -198,6 +198,28 @@ fn test_strip_control_chars() {
     );
 }
 
+#[test]
+fn test_known_wire_tags_sorted_and_membership() {
+    // Binary search requires sorted order — a mis-sorted insert would make
+    // random tags "unknown" and spray them into the text stream.
+    let tags = XmlParser::KNOWN_WIRE_TAGS;
+    for pair in tags.windows(2) {
+        assert!(
+            pair[0] < pair[1],
+            "KNOWN_WIRE_TAGS out of order: {:?} >= {:?}",
+            pair[0],
+            pair[1]
+        );
+    }
+    assert!(XmlParser::is_known_wire_tag("pushStream"));
+    assert!(XmlParser::is_known_wire_tag("dialogData"));
+    assert!(!XmlParser::is_known_wire_tag("unknownFutureTag"));
+
+    assert_eq!(XmlParser::tag_name("<pushStream id=\"x\"/>"), "pushStream");
+    assert_eq!(XmlParser::tag_name("</compDef>"), "compDef");
+    assert_eq!(XmlParser::tag_name("<b>"), "b");
+}
+
 // ==================== Basic Text Parsing ====================
 
 #[test]
