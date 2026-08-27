@@ -77,11 +77,14 @@ fn parser_output_matches_golden_snapshot() {
         return;
     }
 
-    let expected = std::fs::read_to_string(&golden_path).unwrap_or_else(|_| {
-        panic!(
-            "missing golden file {GOLDEN_PATH}; run with UPDATE_PARSER_GOLDEN=1 to create it"
-        )
-    });
+    // Normalize CRLF so autocrlf checkouts compare cleanly against our LF output.
+    let expected = std::fs::read_to_string(&golden_path)
+        .unwrap_or_else(|_| {
+            panic!(
+                "missing golden file {GOLDEN_PATH}; run with UPDATE_PARSER_GOLDEN=1 to create it"
+            )
+        })
+        .replace("\r\n", "\n");
 
     if actual != expected {
         // Point at the first differing line so failures are diagnosable
