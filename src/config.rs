@@ -32,6 +32,7 @@ pub mod profiles;
 pub mod registry;
 pub mod room_images;
 mod settings;
+pub mod skin_pack;
 pub mod skins;
 mod sparse;
 mod widgets;

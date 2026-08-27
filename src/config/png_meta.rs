@@ -27,7 +27,9 @@ pub fn read_embedded(path: &Path) -> Option<String> {
     read_embedded_bytes(&bytes)
 }
 
-fn read_embedded_bytes(bytes: &[u8]) -> Option<String> {
+/// In-memory form of [`read_embedded`], for callers holding zip entries
+/// rather than files (skin-pack validation).
+pub fn read_embedded_bytes(bytes: &[u8]) -> Option<String> {
     for (kind, data) in chunks(bytes)? {
         if kind != *b"tEXt" {
             continue;
@@ -55,7 +57,10 @@ pub fn write_embedded(path: &Path, meta: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn write_embedded_bytes(bytes: &[u8], meta: &str) -> Option<Vec<u8>> {
+/// In-memory form of [`write_embedded`], for callers building archives
+/// (skin-pack export bakes each PNG's sidecar in before zipping). None
+/// when the bytes are not a valid PNG.
+pub fn write_embedded_bytes(bytes: &[u8], meta: &str) -> Option<Vec<u8>> {
     let parsed = chunks(bytes)?;
     let mut out = Vec::with_capacity(bytes.len() + meta.len() + 64);
     out.extend_from_slice(&PNG_SIGNATURE);
