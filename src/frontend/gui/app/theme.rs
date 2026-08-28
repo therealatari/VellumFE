@@ -37,7 +37,7 @@ pub(super) fn color_picker_swatch(ui: &mut egui::Ui, value: &mut String) -> bool
 }
 
 /// Build egui visuals from the shared application theme.
-pub(super) fn visuals_from_theme(theme: &AppTheme) -> egui::Visuals {
+pub(crate) fn visuals_from_theme(theme: &AppTheme) -> egui::Visuals {
     let mut visuals = egui::Visuals::dark();
 
     visuals.panel_fill = color32(theme.background_primary);
@@ -231,7 +231,7 @@ pub(super) fn font_ref_key(font: &crate::frontend::gui::persistence::FontRef) ->
 /// (prepended to the default families), and every per-window font registered
 /// as its own named family (falling back to the proportional stack for
 /// missing glyphs).
-pub(super) fn build_font_definitions(
+pub(crate) fn build_font_definitions(
     ui_font: &crate::frontend::gui::persistence::FontRef,
     window_fonts: &[crate::frontend::gui::persistence::FontRef],
 ) -> egui::FontDefinitions {

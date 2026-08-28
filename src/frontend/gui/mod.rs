@@ -25,6 +25,7 @@ pub mod launcher;
 pub mod map_view;
 pub mod persistence;
 pub mod skin;
+pub mod studio;
 pub mod tab_id;
 
 // Re-exports for convenience

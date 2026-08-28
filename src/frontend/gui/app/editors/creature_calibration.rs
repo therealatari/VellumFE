@@ -8,6 +8,7 @@
 use std::collections::HashMap;
 
 use super::super::VellumGuiApp;
+use super::CalibrationOutcome;
 use crate::config::pool::{self, CreatureFootprint, CreatureSidecar};
 use crate::frontend::gui::image_store;
 use crate::frontend::gui::skin::{self as gui_skin, SkinTexture};
@@ -22,7 +23,7 @@ struct CreatureChoice {
     abs_path: std::path::PathBuf,
 }
 
-pub(in super::super) struct CreatureCalibrationState {
+pub(crate) struct CreatureCalibrationState {
     choices: Vec<CreatureChoice>,
     selected: Option<usize>,
     texture: Option<egui::TextureHandle>,
@@ -42,12 +43,11 @@ pub(in super::super) struct CreatureCalibrationState {
     error: Option<String>,
 }
 
-impl VellumGuiApp {
-    pub(in super::super) fn open_creature_calibration(&mut self) {
-        if self.creature_calibration.is_some() {
-            self.raise_editor(egui::Id::new("gui_creature_calibration"));
-            return;
-        }
+impl CreatureCalibrationState {
+    /// Build the picker state from the pool listing. `None` (with the
+    /// explanation in the outcome) when the pool has no creature images.
+    pub(crate) fn open() -> (Option<Self>, CalibrationOutcome) {
+        let mut outcome = CalibrationOutcome::default();
         // Deep listing: variant folders (creatures/<noun>/<variant>/) are
         // below the generic scanner's depth.
         let choices: Vec<CreatureChoice> = pool::list_creature_images()
@@ -59,11 +59,12 @@ impl VellumGuiApp {
             })
             .collect();
         if choices.is_empty() {
-            self.app_core.add_system_message(
+            outcome.messages.push(
                 "No creature images in the pool (global/images/creatures/). Drop PNGs there \
-                 or install some with .jinx, then calibrate.",
+                 or install some with .jinx, then calibrate."
+                    .to_owned(),
             );
-            return;
+            return (None, outcome);
         }
         let selected = (choices.len() == 1).then_some(0);
         let mut state = CreatureCalibrationState {
@@ -86,13 +87,14 @@ impl VellumGuiApp {
         if let Some(index) = selected {
             load_creature_choice(&mut state, index);
         }
-        self.creature_calibration = Some(state);
+        (Some(state), outcome)
     }
 
-    pub(in super::super) fn render_creature_calibration(&mut self, ctx: &egui::Context) {
-        let Some(mut state) = self.creature_calibration.take() else {
-            return;
-        };
+    /// Render the calibrator window for one frame. Sets `closed` in the
+    /// outcome when the user dismissed the window.
+    pub(crate) fn ui(&mut self, ctx: &egui::Context) -> CalibrationOutcome {
+        let mut outcome = CalibrationOutcome::default();
+        let state = self;
         state.ensure_texture(ctx);
         let mut open = true;
         let mut save_request = false;
@@ -374,7 +376,7 @@ impl VellumGuiApp {
         if let Some(index) = load_request {
             state.selected = Some(index);
             state.error = None;
-            load_creature_choice(&mut state, index);
+            load_creature_choice(state, index);
         }
         if save_request {
             if let Some(index) = state.selected {
@@ -393,8 +395,8 @@ impl VellumGuiApp {
                     Ok(()) => {
                         state.error = None;
                         // The per-noun creature cache re-resolves on reload.
-                        self.skin_state.force_reload();
-                        self.app_core.add_system_message(&format!(
+                        outcome.reload_art = true;
+                        outcome.messages.push(format!(
                             "Creature calibration saved for '{}'.",
                             state.choices[index].pool_path
                         ));
@@ -404,8 +406,39 @@ impl VellumGuiApp {
             }
         }
 
-        if open {
+        outcome.closed = !open;
+        outcome
+    }
+}
+
+impl VellumGuiApp {
+    pub(in super::super) fn open_creature_calibration(&mut self) {
+        if self.creature_calibration.is_some() {
+            self.raise_editor(egui::Id::new("gui_creature_calibration"));
+            return;
+        }
+        let (state, outcome) = CreatureCalibrationState::open();
+        for message in outcome.messages {
+            self.app_core.add_system_message(&message);
+        }
+        if let Some(state) = state {
             self.creature_calibration = Some(state);
+        }
+    }
+
+    pub(in super::super) fn render_creature_calibration(&mut self, ctx: &egui::Context) {
+        let Some(state) = self.creature_calibration.as_mut() else {
+            return;
+        };
+        let outcome = state.ui(ctx);
+        if outcome.closed {
+            self.creature_calibration = None;
+        }
+        for message in outcome.messages {
+            self.app_core.add_system_message(&message);
+        }
+        if outcome.reload_art {
+            self.skin_state.force_reload();
         }
     }
 }
@@ -437,7 +470,7 @@ fn load_creature_choice(state: &mut CreatureCalibrationState, index: usize) {
 }
 
 impl CreatureCalibrationState {
-    pub(in super::super) fn ensure_texture(&mut self, ctx: &egui::Context) {
+    fn ensure_texture(&mut self, ctx: &egui::Context) {
         if self.texture.is_some() {
             return;
         }

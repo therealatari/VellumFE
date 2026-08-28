@@ -165,6 +165,10 @@ impl DirectGameArg {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Vellum Studio: standalone art authoring — calibrate pool frames and
+    /// creature sprites without launching the game
+    Studio,
+
     /// Validate layout configuration
     ValidateLayout {
         /// Layout file to validate
@@ -319,6 +323,20 @@ fn main() -> Result<()> {
     // Handle subcommands
     if let Some(command) = cli.command {
         match command {
+            Commands::Studio => {
+                #[cfg(feature = "gui")]
+                {
+                    #[cfg(windows)]
+                    detach_exclusive_console();
+                    return frontend::gui::studio::run_studio();
+                }
+                #[cfg(not(feature = "gui"))]
+                {
+                    eprintln!("✗ This build has no GUI support; Vellum Studio needs the gui feature");
+                    std::process::exit(1);
+                }
+            }
+
             Commands::ValidateLayout { layout } => {
                 // Load the layout file
                 let layout_result = if let Some(path) = layout {

@@ -30,7 +30,7 @@ fn widget_accent_id() -> egui::Id {
 
 /// Publish the raw accent for `widget_accent` readers. Called wherever the
 /// application visuals are (re)built.
-pub(super) fn set_widget_accent(ctx: &egui::Context, accent: Color32) {
+pub(crate) fn set_widget_accent(ctx: &egui::Context, accent: Color32) {
     ctx.data_mut(|data| data.insert_temp(widget_accent_id(), accent));
 }
 

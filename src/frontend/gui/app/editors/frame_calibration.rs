@@ -5,6 +5,7 @@
 //! PNG in the pool" to "assignable everywhere" without touching TOML.
 
 use super::super::VellumGuiApp;
+use super::CalibrationOutcome;
 use crate::config::pool;
 use crate::frontend::gui::image_store;
 use crate::frontend::gui::skin::{self as gui_skin, ResolvedBorder, SkinTexture};
@@ -18,7 +19,7 @@ struct FrameChoice {
     has_sidecar: bool,
 }
 
-pub(in super::super) struct FrameCalibrationState {
+pub(crate) struct FrameCalibrationState {
     choices: Vec<FrameChoice>,
     selected: Option<usize>,
     /// Full-size texture of the selected frame, loaded outside the synced
@@ -50,12 +51,11 @@ impl FrameCalibrationState {
     }
 }
 
-impl VellumGuiApp {
-    pub(in super::super) fn open_frame_calibration(&mut self, initial: Option<String>) {
-        if self.frame_calibration.is_some() && initial.is_none() {
-            self.raise_editor(egui::Id::new("gui_frame_calibration"));
-            return;
-        }
+impl FrameCalibrationState {
+    /// Build the picker state from the pool listing. `None` (with the
+    /// explanation in the outcome) when the pool has no frame images.
+    pub(crate) fn open(initial: Option<String>) -> (Option<Self>, CalibrationOutcome) {
+        let mut outcome = CalibrationOutcome::default();
         let choices: Vec<FrameChoice> = pool::list_category("frames")
             .into_iter()
             .map(|image| FrameChoice {
@@ -66,11 +66,12 @@ impl VellumGuiApp {
             })
             .collect();
         if choices.is_empty() {
-            self.app_core.add_system_message(
+            outcome.messages.push(
                 "No frame images in the pool (global/images/frames/). Drop PNGs there or \
-                 install some with .jinx, then calibrate.",
+                 install some with .jinx, then calibrate."
+                    .to_owned(),
             );
-            return;
+            return (None, outcome);
         }
         let selected = initial
             .as_deref()
@@ -93,13 +94,14 @@ impl VellumGuiApp {
         if let Some(index) = selected {
             load_frame_choice(&mut state, index);
         }
-        self.frame_calibration = Some(state);
+        (Some(state), outcome)
     }
 
-    pub(in super::super) fn render_frame_calibration(&mut self, ctx: &egui::Context) {
-        let Some(mut state) = self.frame_calibration.take() else {
-            return;
-        };
+    /// Render the calibrator window for one frame. Sets `closed` in the
+    /// outcome when the user dismissed the window.
+    pub(crate) fn ui(&mut self, ctx: &egui::Context) -> CalibrationOutcome {
+        let mut outcome = CalibrationOutcome::default();
+        let state = self;
         state.ensure_texture(ctx);
         let mut open = true;
         let mut save_request = false;
@@ -332,7 +334,7 @@ impl VellumGuiApp {
         if let Some(index) = load_request {
             state.selected = Some(index);
             state.error = None;
-            load_frame_choice(&mut state, index);
+            load_frame_choice(state, index);
         }
         if save_request {
             if let Some(index) = state.selected {
@@ -343,8 +345,8 @@ impl VellumGuiApp {
                         state.error = None;
                         state.choices[index].has_sidecar = true;
                         // Assigned windows using this frame re-slice now.
-                        self.skin_state.force_reload();
-                        self.app_core.add_system_message(&format!(
+                        outcome.reload_art = true;
+                        outcome.messages.push(format!(
                             "Frame geometry saved for '{}'.",
                             state.choices[index].stem
                         ));
@@ -354,8 +356,39 @@ impl VellumGuiApp {
             }
         }
 
-        if open {
+        outcome.closed = !open;
+        outcome
+    }
+}
+
+impl VellumGuiApp {
+    pub(in super::super) fn open_frame_calibration(&mut self, initial: Option<String>) {
+        if self.frame_calibration.is_some() && initial.is_none() {
+            self.raise_editor(egui::Id::new("gui_frame_calibration"));
+            return;
+        }
+        let (state, outcome) = FrameCalibrationState::open(initial);
+        for message in outcome.messages {
+            self.app_core.add_system_message(&message);
+        }
+        if let Some(state) = state {
             self.frame_calibration = Some(state);
+        }
+    }
+
+    pub(in super::super) fn render_frame_calibration(&mut self, ctx: &egui::Context) {
+        let Some(state) = self.frame_calibration.as_mut() else {
+            return;
+        };
+        let outcome = state.ui(ctx);
+        if outcome.closed {
+            self.frame_calibration = None;
+        }
+        for message in outcome.messages {
+            self.app_core.add_system_message(&message);
+        }
+        if outcome.reload_art {
+            self.skin_state.force_reload();
         }
     }
 }
@@ -392,7 +425,7 @@ fn load_frame_choice(state: &mut FrameCalibrationState, index: usize) {
 impl FrameCalibrationState {
     /// Ensure the selected image's texture is loaded (needs the egui ctx,
     /// so it runs from render rather than the picker click).
-    pub(in super::super) fn ensure_texture(&mut self, ctx: &egui::Context) {
+    fn ensure_texture(&mut self, ctx: &egui::Context) {
         if self.texture.is_some() {
             return;
         }

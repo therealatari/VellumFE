@@ -34,9 +34,9 @@ pub(super) use colors::ColorsEditorState;
 pub(super) use controller::ControllerEditorState;
 pub(super) use custom_windows::CustomWindowsEditorState;
 pub(super) use dashboard::DashboardEditorState;
-pub(super) use creature_calibration::CreatureCalibrationState;
+pub(crate) use creature_calibration::CreatureCalibrationState;
 pub(super) use doll_calibration::DollCalibrationState;
-pub(super) use frame_calibration::FrameCalibrationState;
+pub(crate) use frame_calibration::FrameCalibrationState;
 pub(super) use hand_icons::HandIconsEditorState;
 pub(super) use highlights::HighlightEditorState;
 pub(super) use hotbars::HotbarEditorState;
@@ -60,6 +60,17 @@ pub(in super::super) use custom_windows::parse_streams;
 
 use super::{theme, VellumGuiApp};
 use eframe::egui;
+
+/// What a hosted calibrator did this frame: system-message text for the
+/// host to surface, whether saved art must be re-resolved, and whether the
+/// user dismissed the window. Lets the calibrators run under both the game
+/// GUI and Vellum Studio.
+#[derive(Default)]
+pub(crate) struct CalibrationOutcome {
+    pub messages: Vec<String>,
+    pub reload_art: bool,
+    pub closed: bool,
+}
 
 impl VellumGuiApp {
     /// Request that the editor window with `window_id` be raised to the top
