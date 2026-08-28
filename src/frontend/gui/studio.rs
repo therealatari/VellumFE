@@ -781,6 +781,22 @@ fn build_cast() -> Vec<CastEntry> {
             tokens.insert(stem.to_string());
         }
     }
+    // Tier extras beside a flat base ({token}_prone, {token}_chest2, …)
+    // are pose/wound art, not castable creatures: drop any stem that
+    // extends another stem with an underscore suffix. (Spawning "coyote
+    // prone" from coyote_prone.png cast the pose image as its own
+    // full-height creature.)
+    let extras: Vec<String> = tokens
+        .iter()
+        .filter(|t| {
+            t.rmatch_indices('_')
+                .any(|(i, _)| tokens.contains(&t[..i]))
+        })
+        .cloned()
+        .collect();
+    for extra in extras {
+        tokens.remove(&extra);
+    }
     tokens
         .into_iter()
         .map(|token| {
