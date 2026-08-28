@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 
 use super::appearance::AppearanceSettings;
 use super::pool::{
-    CreatureSidecar, DollSidecar, EdgeSidecar, FrameSidecar, SidecarKind,
+    BackgroundSidecar, CreatureSidecar, DollSidecar, EdgeSidecar, FrameSidecar, SidecarKind,
 };
 use super::Config;
 
@@ -461,6 +461,7 @@ fn check_metadata(category: &str, text: &str) -> Result<(), String> {
         // (feet anchor + footprint + world size), so they share the schema.
         "creatures" | "scenery" => typed::<CreatureSidecar>(text),
         "edges" => typed::<EdgeSidecar>(text),
+        "backgrounds" => typed::<BackgroundSidecar>(text),
         _ => toml::from_str::<toml::Value>(text)
             .map(|_| ())
             .map_err(|e| e.to_string()),
@@ -1391,6 +1392,32 @@ mod tests {
         assert!(findings.ok());
         assert!(findings.warnings.iter().any(|w| w.contains("mystery")));
         assert!(findings.warnings.iter().any(|w| w.contains("orphan")));
+
+        // A background with its typed fit sidecar validates (embedded and
+        // as a loose sidecar file); the wrong kind there is an error.
+        let mut pack = basic_pack();
+        pack.files.insert(
+            "backgrounds/mesh.png".into(),
+            png_with_meta(9, "kind = \"background\"\nfit = \"tile\"\nscale = 2.0\n"),
+        );
+        pack.files.insert(
+            "backgrounds/paper.png".into(),
+            tiny_png(8),
+        );
+        pack.files.insert(
+            "backgrounds/paper.toml".into(),
+            b"kind = \"background\"\nfit = \"center\"\n".to_vec(),
+        );
+        assert!(validate(&pack).ok(), "{:?}", validate(&pack).errors);
+        pack.files.insert(
+            "backgrounds/bad.png".into(),
+            png_with_meta(9, "kind = \"doll\"\n"),
+        );
+        let findings = validate(&pack);
+        assert!(findings
+            .errors
+            .iter()
+            .any(|e| e.contains("backgrounds/bad.png")));
 
         // The "none" sentinel needs no art.
         let mut pack = basic_pack();

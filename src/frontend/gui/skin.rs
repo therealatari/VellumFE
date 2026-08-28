@@ -21,6 +21,9 @@ pub struct ResolvedBackground {
     pub texture: egui::TextureId,
     pub tex_size: egui::Vec2,
     pub fit: BackgroundFit,
+    /// Tile-mode multiplier over the image's native size (1.0 = native).
+    /// Fits other than Tile ignore it.
+    pub tile_scale: f32,
     /// Multiply tint with opacity premixed into alpha.
     pub tint: egui::Color32,
     /// Scrim opacity as 0..=255 alpha; the paint call supplies the color.
@@ -782,6 +785,11 @@ pub struct SkinState {
     /// Loaded pool frames: lowercase stem -> spec whose `image` is the
     /// pool-relative texture key.
     pool_frames: HashMap<String, skins::BorderSpec>,
+    /// Parsed background sidecars for the needed pool backgrounds, keyed
+    /// by pool path. Cached here because background resolution runs per
+    /// frame — the sidecar files are read only on the (appearance-change)
+    /// reload pass, never during render.
+    pool_background_meta: HashMap<String, PoolBackgroundMeta>,
     /// Lowercased names of sheets that came from the shared icon store
     /// (global/icons) rather than the skin itself.
     shared_sheet_names: std::collections::HashSet<String>,
@@ -821,6 +829,8 @@ impl SkinState {
         self.doll_override = doll_override.map(str::to_owned);
         self.root = crate::config::Config::global_images_dir().unwrap_or_default();
         self.pool_frames = load_pool_frames(&self.needed_pool_frames);
+        self.pool_background_meta =
+            load_pool_background_meta(&self.root, &self.needed_pool_backgrounds);
         self.pool_status_icons = load_pool_set("statusicons", self.statusicon_set.as_deref());
         self.pool_compass = load_pool_set("compass", self.compass_set.as_deref());
         self.pool_edges = load_pool_set("edges", self.edge_set.as_deref());
@@ -1536,8 +1546,8 @@ impl SkinState {
 
     /// Background resolution honoring a per-window override: "none" (and
     /// no override at all) means no background art; a pool-relative path
-    /// renders that image with readable defaults (cover fit, a light
-    /// theme scrim).
+    /// renders that image with readable defaults (a light theme scrim,
+    /// cover fit unless the image's sidecar picks another mode).
     pub fn background_for_with_override(
         &self,
         _window_name: &str,
@@ -1547,10 +1557,12 @@ impl SkinState {
             Some(path) if path.eq_ignore_ascii_case("none") => None,
             Some(path) => {
                 let texture = self.store.texture(path)?;
+                let meta = self.pool_background_meta.get(path);
                 Some(ResolvedBackground {
                     texture: texture.id(),
                     tex_size: texture.size_vec2(),
-                    fit: BackgroundFit::Cover,
+                    fit: meta.and_then(|m| m.fit).unwrap_or(BackgroundFit::Cover),
+                    tile_scale: meta.map(|m| m.tile_scale).unwrap_or(1.0),
                     tint: egui::Color32::WHITE,
                     // Text stays readable over arbitrary pool art.
                     scrim_alpha: (0.25 * 255.0) as u8,
@@ -1558,6 +1570,12 @@ impl SkinState {
             }
             None => None,
         }
+    }
+
+    /// The fit a pool background's sidecar declares, for the Appearance
+    /// menu's checkmarks. None = no declaration (the cover default).
+    pub fn pool_background_fit(&self, path: &str) -> Option<BackgroundFit> {
+        self.pool_background_meta.get(path).and_then(|meta| meta.fit)
     }
 
     /// Border resolution honoring a per-window user override: "none" (and
@@ -1647,6 +1665,67 @@ fn load_pool_set(category: &str, set: Option<&str>) -> HashMap<String, String> {
         Some(set) => crate::config::pool::set_members(category, set),
         None => HashMap::new(),
     }
+}
+
+/// Parsed background sidecar for one pool background image: how the art
+/// wants to be painted, resolved once per reload pass (see
+/// `pool_background_meta`).
+#[derive(Debug, Clone, Copy)]
+struct PoolBackgroundMeta {
+    /// Declared fit; None = no declaration (renderers use cover).
+    fit: Option<BackgroundFit>,
+    /// Tile-mode scale multiplier, already defaulted and clamped.
+    tile_scale: f32,
+}
+
+/// Map a sidecar fit string to the renderer's mode. An unrecognized value
+/// degrades to None (the cover default) with a warning — bad metadata must
+/// never blank a window.
+fn parse_background_fit(fit: &str, source: &str) -> Option<BackgroundFit> {
+    match fit.to_ascii_lowercase().as_str() {
+        "stretch" => Some(BackgroundFit::Stretch),
+        "cover" => Some(BackgroundFit::Cover),
+        "contain" => Some(BackgroundFit::Contain),
+        "tile" => Some(BackgroundFit::Tile),
+        "center" => Some(BackgroundFit::Center),
+        other => {
+            tracing::warn!(
+                "background sidecar for '{}' declares unknown fit '{}'; using cover",
+                source,
+                other
+            );
+            None
+        }
+    }
+}
+
+/// Read the sidecars for the needed pool backgrounds. Images without one
+/// (or with unusable metadata) simply take the defaults — a background
+/// never fails to paint over its metadata.
+fn load_pool_background_meta(
+    root: &std::path::Path,
+    needed: &[String],
+) -> HashMap<String, PoolBackgroundMeta> {
+    let mut meta = HashMap::new();
+    for path in needed {
+        let abs = skins::resolve_image_path(root, path);
+        let Some(sidecar) =
+            crate::config::pool::read_sidecar::<crate::config::pool::BackgroundSidecar>(&abs)
+        else {
+            continue;
+        };
+        meta.insert(
+            path.clone(),
+            PoolBackgroundMeta {
+                fit: sidecar
+                    .fit
+                    .as_deref()
+                    .and_then(|fit| parse_background_fit(fit, path)),
+                tile_scale: sidecar.effective_scale(),
+            },
+        );
+    }
+    meta
 }
 
 /// Load the specs (not textures) for the needed pool frames: match stems
@@ -1880,13 +1959,15 @@ pub fn background_shapes(
             // Cap the grid so a tiny tile in a huge window can't explode the
             // frame's mesh; past the cap the remainder just stays theme fill.
             const MAX_TILES_PER_AXIS: usize = 64;
-            let cols = ((rect.width() / bg.tex_size.x).ceil() as usize).min(MAX_TILES_PER_AXIS);
-            let rows = ((rect.height() / bg.tex_size.y).ceil() as usize).min(MAX_TILES_PER_AXIS);
+            // Sidecar scale multiplies the native tile size (floor guards a
+            // hand-edited zero from dividing the rect by nothing).
+            let tile = bg.tex_size * bg.tile_scale.max(0.05);
+            let cols = ((rect.width() / tile.x).ceil() as usize).min(MAX_TILES_PER_AXIS);
+            let rows = ((rect.height() / tile.y).ceil() as usize).min(MAX_TILES_PER_AXIS);
             for row in 0..rows {
                 for col in 0..cols {
-                    let min = rect.min
-                        + egui::vec2(col as f32 * bg.tex_size.x, row as f32 * bg.tex_size.y);
-                    shapes.push(image(egui::Rect::from_min_size(min, bg.tex_size), full_uv));
+                    let min = rect.min + egui::vec2(col as f32 * tile.x, row as f32 * tile.y);
+                    shapes.push(image(egui::Rect::from_min_size(min, tile), full_uv));
                 }
             }
         }
@@ -3097,6 +3178,62 @@ cell = 32
         assert_eq!(bg.scrim_alpha, (0.25 * 255.0) as u8);
         // No override: nothing.
         assert!(state.background_for_with_override("main", None).is_none());
+    }
+
+    #[test]
+    fn background_sidecar_fit_and_tile_scale_are_honored() {
+        let env = test_env();
+        write_png(&pool_dir().join("backgrounds/mesh.png"), 2);
+        std::fs::write(
+            pool_dir().join("backgrounds/mesh.toml"),
+            "kind = \"background\"\nfit = \"tile\"\nscale = 2.0\n",
+        )
+        .unwrap();
+
+        let mut state = SkinState::default();
+        state.set_needed_pool_backgrounds(vec!["backgrounds/mesh.png".to_string()]);
+        state.apply_if_changed(&env.ctx, None);
+
+        let bg = state
+            .background_for_with_override("main", Some("backgrounds/mesh.png"))
+            .unwrap();
+        assert_eq!(bg.fit, BackgroundFit::Tile);
+        assert_eq!(bg.tile_scale, 2.0);
+        assert_eq!(
+            state.pool_background_fit("backgrounds/mesh.png"),
+            Some(BackgroundFit::Tile)
+        );
+
+        // The tile grid honors the scale: a 2px tile at 2x fills a 8x4
+        // rect with 2 cols x 1 row of 4px tiles (plus the scrim shape).
+        let shapes = background_shapes(
+            egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(8.0, 4.0)),
+            &bg,
+            egui::Color32::BLACK,
+        );
+        assert_eq!(shapes.len(), 2 + 1);
+    }
+
+    #[test]
+    fn background_sidecar_unknown_fit_degrades_to_cover() {
+        let env = test_env();
+        write_png(&pool_dir().join("backgrounds/odd.png"), 2);
+        std::fs::write(
+            pool_dir().join("backgrounds/odd.toml"),
+            "kind = \"background\"\nfit = \"mosaic\"\n",
+        )
+        .unwrap();
+
+        let mut state = SkinState::default();
+        state.set_needed_pool_backgrounds(vec!["backgrounds/odd.png".to_string()]);
+        state.apply_if_changed(&env.ctx, None);
+
+        let bg = state
+            .background_for_with_override("main", Some("backgrounds/odd.png"))
+            .unwrap();
+        assert_eq!(bg.fit, BackgroundFit::Cover);
+        // The menu sees no declaration (Default stays checked).
+        assert!(state.pool_background_fit("backgrounds/odd.png").is_none());
     }
 
     #[test]

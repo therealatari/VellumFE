@@ -589,6 +589,40 @@ impl SidecarKind for EdgeSidecar {
     }
 }
 
+/// Background sidecar: how one pool background image wants to be painted
+/// into a window (`<image>.toml` next to `backgrounds/<image>.png`). Fit
+/// is a property of the artwork — a seamless mesh tiles, a vista covers —
+/// so it travels with the image instead of living in any layout.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct BackgroundSidecar {
+    /// Schema discriminator; see [`SidecarKind`].
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// Paint mode: "stretch" | "cover" | "contain" | "tile" | "center".
+    /// Absent (or unrecognized) = the renderer's cover default.
+    #[serde(default)]
+    pub fit: Option<String>,
+    /// Tile-mode scale multiplier over the image's native size. Absent =
+    /// 1.0; consumers clamp via [`BackgroundSidecar::effective_scale`].
+    #[serde(default)]
+    pub scale: Option<f32>,
+}
+
+impl SidecarKind for BackgroundSidecar {
+    const KIND: &'static str = "background";
+    fn declared_kind(&self) -> Option<&str> {
+        self.kind.as_deref()
+    }
+}
+
+impl BackgroundSidecar {
+    /// The tile scale, defaulted and clamped to a sane range — hand-edited
+    /// metadata must never zero-size (or explode) the tile grid.
+    pub fn effective_scale(&self) -> f32 {
+        self.scale.unwrap_or(1.0).clamp(0.05, 8.0)
+    }
+}
+
 /// On-screen border thickness (points) a scale-less frame normalizes to —
 /// matches what frame authors pick by hand (~14-16pt).
 const DEFAULT_FRAME_BORDER_PT: f32 = 15.0;
@@ -810,6 +844,34 @@ pub fn write_frame_sidecar(
     })
 }
 
+/// Rewrite (or create) a background sidecar's fit/scale fields, preserving
+/// any other content. `None` removes a field (revert to the default).
+pub fn write_background_sidecar(
+    image_abs_path: &Path,
+    sidecar: &BackgroundSidecar,
+) -> anyhow::Result<()> {
+    use toml_edit::value;
+    write_sidecar_tables(image_abs_path, BackgroundSidecar::KIND, |doc| {
+        match sidecar.fit.as_deref() {
+            Some(fit) => {
+                doc.insert("fit", value(fit));
+            }
+            None => {
+                doc.remove("fit");
+            }
+        }
+        match sidecar.scale {
+            Some(scale) => {
+                doc.insert("scale", value(toml_rounded(scale, 10_000.0)));
+            }
+            None => {
+                doc.remove("scale");
+            }
+        }
+        Ok(())
+    })
+}
+
 /// Shared sidecar-writer plumbing: parse the existing sidecar (preserving
 /// hand-written content byte-for-byte), let `fill` upsert its tables,
 /// stamp the `kind` discriminator, write atomically, and bake the same
@@ -1008,6 +1070,53 @@ mod tests {
         assert!(read.size.is_none());
         assert!(read.footprint.is_none());
         assert_eq!(read.lift, Some(0.1));
+    }
+
+    #[test]
+    fn background_sidecar_roundtrips_through_writer() {
+        let dir = tempfile::tempdir().unwrap();
+        let image = dir.path().join("mesh.png");
+        std::fs::write(&image, b"png").unwrap();
+
+        let sidecar = BackgroundSidecar {
+            fit: Some("tile".to_string()),
+            scale: Some(2.0),
+            ..Default::default()
+        };
+        write_background_sidecar(&image, &sidecar).unwrap();
+        let read: BackgroundSidecar = read_sidecar(&image).unwrap();
+        assert_eq!(read.kind.as_deref(), Some("background"));
+        assert_eq!(read.fit.as_deref(), Some("tile"));
+        assert_eq!(read.scale, Some(2.0));
+        assert_eq!(read.effective_scale(), 2.0);
+
+        // Clearing optional fields removes them from the file.
+        write_background_sidecar(&image, &BackgroundSidecar::default()).unwrap();
+        let read: BackgroundSidecar = read_sidecar(&image).unwrap();
+        assert!(read.fit.is_none());
+        assert!(read.scale.is_none());
+        assert_eq!(read.effective_scale(), 1.0);
+
+        // The kind discriminator gates cross-schema reads; legacy
+        // kind-less metadata still loads.
+        assert!(read_sidecar::<DollSidecar>(&image).is_none());
+        std::fs::write(dir.path().join("mesh.toml"), "fit = \"tile\"\n").unwrap();
+        let read: BackgroundSidecar = read_sidecar(&image).unwrap();
+        assert_eq!(read.fit.as_deref(), Some("tile"));
+    }
+
+    #[test]
+    fn background_sidecar_scale_clamps_at_read() {
+        let sidecar = BackgroundSidecar {
+            scale: Some(0.0001),
+            ..Default::default()
+        };
+        assert_eq!(sidecar.effective_scale(), 0.05);
+        let sidecar = BackgroundSidecar {
+            scale: Some(1000.0),
+            ..Default::default()
+        };
+        assert_eq!(sidecar.effective_scale(), 8.0);
     }
 
     #[test]

@@ -111,6 +111,11 @@ pub(super) enum GuiWindowMenuCommand {
     /// Per-window background: pool image path, "none" for no background,
     /// or None to revert to the skin's per-window mapping.
     SetBackground(Option<String>),
+    /// Fit mode for the window's EFFECTIVE background image ("stretch" |
+    /// "contain" | "tile" | "center"; None = the cover default). Saved to
+    /// the image's sidecar — fit is a property of the artwork, so every
+    /// window showing it (and any pack it ships in) follows.
+    SetBackgroundFit(Option<String>),
     /// Per-window title bar height; None reverts to the global setting.
     /// Keeps the menu open like SetTextSize.
     SetTitleBarHeight(Option<f32>),
@@ -357,6 +362,11 @@ pub(super) struct WindowAppearanceView {
     background_override: Option<String>,
     /// Whether the skin resolves a background for this window by default.
     has_skin_background: bool,
+    /// The background image this window actually shows (per-window
+    /// override, else the global default); None hides the fit control.
+    effective_background: Option<String>,
+    /// That image's sidecar-declared fit; None = the cover default.
+    background_fit: Option<crate::config::skins::BackgroundFit>,
     /// Per-window title bar height override; None follows the global.
     title_bar_height_override: Option<f32>,
     /// Global title bar height; 0 = derived from the title font.
@@ -541,6 +551,7 @@ impl VellumGuiApp {
             | C::SetCompassSet(_)
             | C::SetHandIcon { .. }
             | C::SetBackground(_)
+            | C::SetBackgroundFit(_)
             | C::SetTitleBarHeight(_)
             | C::SetTitleBarAlign(_)
             | C::SetShowBorder(_)
@@ -572,6 +583,17 @@ impl VellumGuiApp {
             | C::MoveMultiAccountRow { .. }
             | C::SetVitals(_) => true,
         }
+    }
+
+    /// The background image a window actually shows: its per-window
+    /// override when set, else the global default; the "none" sentinel
+    /// (either level) means no image at all.
+    fn effective_background_path(&self, tab_key: &TabKey) -> Option<String> {
+        self.tab_settings
+            .get(tab_key)
+            .and_then(|settings| settings.background_image.clone())
+            .or_else(|| self.ui_settings.default_background.clone())
+            .filter(|path| !path.eq_ignore_ascii_case("none"))
     }
 
     pub(super) fn apply_window_menu_command(
@@ -705,6 +727,7 @@ impl VellumGuiApp {
             | GuiWindowMenuCommand::SetCompassSet(_)
             | GuiWindowMenuCommand::SetHandIcon { .. }
             | GuiWindowMenuCommand::SetBackground(_)
+            | GuiWindowMenuCommand::SetBackgroundFit(_)
             | GuiWindowMenuCommand::SetTitleBarHeight(_)
             | GuiWindowMenuCommand::SetTitleBarAlign(_)
             | GuiWindowMenuCommand::SetShowBorder(_)
@@ -985,6 +1008,30 @@ impl VellumGuiApp {
                     .background_image = background;
                 self.layout_dirty = true;
             }
+            GuiWindowMenuCommand::SetBackgroundFit(fit) => {
+                if let Some(path) = self.effective_background_path(tab_key) {
+                    let root =
+                        crate::config::Config::global_images_dir().unwrap_or_default();
+                    let abs = crate::config::skins::resolve_image_path(&root, &path);
+                    // Rewrite only the fit; a pack-authored tile scale (or
+                    // any other sidecar content) survives untouched.
+                    let mut sidecar = crate::config::pool::read_sidecar::<
+                        crate::config::pool::BackgroundSidecar,
+                    >(&abs)
+                    .unwrap_or_default();
+                    sidecar.fit = fit;
+                    if let Err(err) =
+                        crate::config::pool::write_background_sidecar(&abs, &sidecar)
+                    {
+                        tracing::warn!(
+                            "cannot write background sidecar for '{path}': {err}"
+                        );
+                    }
+                    // Fit lives in the image's sidecar, not the appearance
+                    // state; force a reload pass so it re-reads.
+                    self.skin_state.force_reload();
+                }
+            }
             GuiWindowMenuCommand::SetTitleBarHeight(height) => {
                 self.tab_settings
                     .entry(tab_key.clone())
@@ -1190,6 +1237,10 @@ impl VellumGuiApp {
                 .widget_render_settings(tab_key)
                 .background
                 .is_some(),
+            background_fit: self
+                .effective_background_path(tab_key)
+                .and_then(|path| self.skin_state.pool_background_fit(&path)),
+            effective_background: self.effective_background_path(tab_key),
             title_bar_height_override: self
                 .tab_settings
                 .get(tab_key)
@@ -2655,6 +2706,51 @@ impl VellumGuiApp {
                             }
                         });
                 });
+                // Fit for the effective image (saved to its sidecar, so it
+                // follows the artwork everywhere); hidden with no image.
+                if view.effective_background.is_some() {
+                    use crate::config::skins::BackgroundFit as Fit;
+                    ui.horizontal(|ui| {
+                        ui.label("Background fit");
+                        let current = view.background_fit;
+                        let selected_label = match current {
+                            None => "Default (cover)",
+                            Some(Fit::Stretch) => "Stretch",
+                            Some(Fit::Cover) => "Cover",
+                            Some(Fit::Contain) => "Contain",
+                            Some(Fit::Tile) => "Tile",
+                            Some(Fit::Center) => "Center",
+                        };
+                        egui::ComboBox::from_id_salt("gui_window_background_fit")
+                            .selected_text(selected_label)
+                            .show_ui(ui, |ui| {
+                                let default_selected =
+                                    matches!(current, None | Some(Fit::Cover));
+                                if ui
+                                    .selectable_label(default_selected, "Default (cover)")
+                                    .clicked()
+                                {
+                                    command =
+                                        Some(GuiWindowMenuCommand::SetBackgroundFit(None));
+                                }
+                                for (label, value, fit) in [
+                                    ("Stretch", "stretch", Fit::Stretch),
+                                    ("Contain", "contain", Fit::Contain),
+                                    ("Tile", "tile", Fit::Tile),
+                                    ("Center", "center", Fit::Center),
+                                ] {
+                                    if ui
+                                        .selectable_label(current == Some(fit), label)
+                                        .clicked()
+                                    {
+                                        command = Some(GuiWindowMenuCommand::SetBackgroundFit(
+                                            Some(value.to_string()),
+                                        ));
+                                    }
+                                }
+                            });
+                    });
+                }
             }
             // Global decorative edge overlays (pool sets; all windows).
             if !view.edge_sets.is_empty() || view.edge_set.is_some() {
