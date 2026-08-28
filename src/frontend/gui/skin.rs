@@ -595,6 +595,9 @@ pub struct CreatureArt {
     /// Sidecar-authored ground clearance for a floating neutral pose,
     /// fraction of the drawn sprite height.
     pub lift: Option<f32>,
+    /// Opaque pixel count (alpha >= 32): the sprite's body mass, for
+    /// pose-ratio sanity warnings.
+    pub alpha_px: u64,
     /// Tier extras beside the base: `{token}_<suffix>.png` files keyed by
     /// lowercased suffix ("prone", "chest2", "leftarm1", ...). The locked
     /// tier owns them all — pose swaps and per-wound overlays never mix
@@ -1722,10 +1725,13 @@ fn load_creature_art(ctx: &egui::Context, path: &Path, skin_name: &str) -> Optio
     if w == 0 || h == 0 {
         return None;
     }
-    // Alpha bbox (threshold matches the palette sampler's).
+    // Alpha bbox (threshold matches the palette sampler's) + opaque pixel
+    // count (the pose-scale normalizer keys on body mass, not box height).
     let (mut x0, mut y0, mut x1, mut y1) = (w, h, 0u32, 0u32);
+    let mut alpha_px: u64 = 0;
     for (x, y, px) in rgba.enumerate_pixels() {
         if px.0[3] >= 32 {
+            alpha_px += 1;
             x0 = x0.min(x);
             y0 = y0.min(y);
             x1 = x1.max(x);
@@ -1807,6 +1813,7 @@ fn load_creature_art(ctx: &egui::Context, path: &Path, skin_name: &str) -> Optio
         footprint: sidecar.footprint,
         size: sidecar.size,
         lift: sidecar.lift,
+        alpha_px,
         extras,
     })
 }

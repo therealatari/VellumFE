@@ -519,20 +519,42 @@ impl VellumGuiApp {
             let scale = if let Some(s) = a.size.filter(|s| *s > 0.0) {
                 // Authored world size (sidecar) wins outright.
                 let content_h = ((a.bbox[3] - a.bbox[1]) * ts.y).max(1.0);
-                s * px_per_unit / content_h
+                let sc = s * px_per_unit / content_h;
+                tracing::debug!(
+                    "[field-scale] {} authored_size={s:.2} content_h={content_h:.0} scale={sc:.4}",
+                    creature.name,
+                );
+                sc
             } else {
                 // No authored size: the BASE art's content height maps to
                 // the creature's STANDING height (not the card box, which
-                // shrinks while prone), and pose/variant art inherits that
-                // same pixel scale — art sets are drawn at one scale, so a
-                // prone image (content height = body thickness) isn't
-                // stretched to standing height.
+                // shrinks while prone). Pose/variant art can't be trusted to
+                // share the base's canvas scale (live art doesn't), so it
+                // normalizes on the LONGEST content axis instead: an
+                // animal's longest dimension is pose-invariant — a prone
+                // coyote is as long as a standing one, a downed biped is as
+                // long as it was tall.
                 let r = art.unwrap_or(a);
                 let rts = r.texture.size_vec2();
                 let content_h = ((r.bbox[3] - r.bbox[1]) * rts.y).max(1.0);
                 let standing =
                     crate::core::creature_cards::standing_height_for(creature);
-                standing * px_per_unit / content_h
+                let mut s = standing * px_per_unit / content_h;
+                if !std::ptr::eq(r, a) {
+                    let max_dim = |art: &crate::frontend::gui::skin::CreatureArt| {
+                        let t = art.texture.size_vec2();
+                        ((art.bbox[2] - art.bbox[0]) * t.x)
+                            .max((art.bbox[3] - art.bbox[1]) * t.y)
+                            .max(1.0)
+                    };
+                    s *= (max_dim(r) / max_dim(a)).clamp(0.4, 2.5);
+                }
+                tracing::debug!(
+                    "[field-scale] {} pose_art={} standing={standing:.2} content_h={content_h:.0} authored_size=None scale={s:.4}",
+                    creature.name,
+                    !std::ptr::eq(r, a),
+                );
+                s
             };
             let (draw_w, draw_h) = (ts.x * scale, ts.y * scale);
             let dest = egui::Rect::from_min_size(
