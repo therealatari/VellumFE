@@ -1,23 +1,42 @@
 //! The creature-field floor solver, ported from the quad-placement
-//! prototype (vellum-quad-prototype.html). Pure data — no frontend
-//! imports, no per-frame work.
+//! prototype and revised against the field-solver v2 prototype
+//! (vellum-field-solver-v2.html). Pure data — no frontend imports, no
+//! per-frame work.
 //!
 //! Contract (the prototype's readouts, promoted to invariants):
 //!
 //! - **Permanence.** A unit's square and offsets are decided once, on
-//!   arrival, and never touched again. Arrivals fit themselves around
-//!   whoever is already standing; removals free squares. Nothing else
-//!   mutates placement. (Screen positions may still shift when the floor
-//!   grows — that is the camera re-framing a wider floor, world
-//!   coordinates unchanged.)
+//!   arrival, and never touched again (Studio `place_at` is the one
+//!   explicit override). Arrivals fit themselves around whoever is already
+//!   standing; removals free squares. Nothing else mutates placement.
+//!   (Screen positions may still shift when the floor grows — that is the
+//!   camera re-framing a wider floor, world coordinates unchanged.)
 //! - **Separation.** Every unit owns its own screen column: the gap to
-//!   any neighbour is at least `sep_frac` × the mean of the two card
-//!   widths, unless the room was genuinely full when it arrived (the unit
-//!   is then marked `tight`).
-//! - **Occlusion budget.** An arrival may hide at most `cover_budget` of
-//!   any existing head/torso (the upper 62% of the card).
+//!   any neighbour is at least `sep_frac` × the mean of the two contact
+//!   spans (the part of each card that actually rests on the floor — a
+//!   tail or a thrown-forward paw overhangs it harmlessly), unless the
+//!   room was genuinely full when it arrived (the unit is then marked
+//!   `tight`).
+//! - **Occlusion cap.** Occlusion is a FEASIBILITY BOUND, not a cost: a
+//!   candidate hiding more than `occlusion_cap` of any identity region
+//!   (its own or a neighbour's) is rejected outright, and the depth terms
+//!   optimise freely inside what remains. Penalising occlusion instead
+//!   cannot buy depth — side-by-side cards never overlap, which is exactly
+//!   how a cost converges on a straight row.
+//! - **Spawn zone.** Feet land inside the ellipse inscribed in the floor's
+//!   world extent (shrunk by `zone_inset`); the ellipse supplies the border
+//!   the old margin columns used to, so the whole floor gets used.
+//! - **Fall envelope.** An arrival reserves room for the pose it is not in
+//!   yet: the union of its standing and prone rects must not overlap a
+//!   neighbour's envelope past the (relaxable) threshold, because
+//!   relocation after the fact is forbidden by permanence.
 //! - **Ground-z depth.** Draw order and next/prev targeting sort on the
 //!   unit's ground depth, never on a lifted screen position.
+//!
+//! When the floor hits its column cap the hard rules relax a notch at a
+//! time (`relax_steps`) before falling through to the least-bad candidate:
+//! loosening in order costs a little overlap; falling through costs a
+//! pile-up.
 //!
 //! The solver works in a fixed VIRTUAL STAGE (880×470, the prototype's
 //! canvas). Renderers map virtual→actual rect uniformly; every screen-
@@ -28,6 +47,82 @@
 pub const STAGE_W: f32 = 880.0;
 pub const STAGE_H: f32 = 470.0;
 
+/// What the separation rule measures a card's width by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeparationBasis {
+    /// The contact span — the fraction of the card that rests on the
+    /// floor. Extremities may overlap; body mass may not.
+    Contact,
+    /// The full card box, overhang included.
+    Card,
+}
+
+/// Placement tunables, defaults matching the v2 prototype's shipped
+/// values. Per-field and cloneable; a skin overlays them via
+/// [`FieldParams::apply_solver`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct SolverParams {
+    /// Inscribed spawn ellipse on/off ("ellipse" vs "grid" in TOML).
+    pub zone_on: bool,
+    /// Ellipse shrink from the floor's edge (fraction).
+    pub zone_inset: f32,
+    /// Radial centre pull inside the ellipse (squared falloff).
+    pub centre_pull: f32,
+    /// Depth bases sampled per square.
+    pub depth_samples: u32,
+    /// Depth jitter amplitude, in row depths.
+    pub depth_jitter: f32,
+    /// Lateral jitter amplitude, in cell widths.
+    pub lateral_jitter: f32,
+    /// Repulsion from other creatures' world depth.
+    pub depth_spread: f32,
+    /// Repulsion from other creatures' foot SCREEN y — the term that
+    /// actually kills the visual row (the eye reads screen y, not z).
+    pub row_band_push: f32,
+    /// Row-band kernel width in stage pixels.
+    pub row_band_px: f32,
+    /// Max identity-region coverage a candidate may cause, either way.
+    pub occlusion_cap: f32,
+    /// Soft score noise, shuffling which acceptable home is taken.
+    pub variation: f32,
+    /// First arrival into an empty field goes dead centre, near row.
+    pub seed_front: bool,
+    /// Fall-envelope overlap cost weight.
+    pub fall_reserve: f32,
+    /// Whether the worst envelope overlap is a hard (relaxable) bound.
+    pub fall_reserve_hard: bool,
+    /// Width basis for the separation rule.
+    pub separation_basis: SeparationBasis,
+    /// Fisher-Yates the candidate list so ties don't bias to a=0.
+    pub shuffle_ties: bool,
+    /// Constraint-loosening notches once floor growth is exhausted.
+    pub relax_steps: u32,
+}
+
+impl Default for SolverParams {
+    fn default() -> Self {
+        Self {
+            zone_on: true,
+            zone_inset: 0.10,
+            centre_pull: 0.45,
+            depth_samples: 9,
+            depth_jitter: 0.22,
+            lateral_jitter: 0.12,
+            depth_spread: 0.70,
+            row_band_push: 1.60,
+            row_band_px: 28.0,
+            occlusion_cap: 0.18,
+            variation: 0.35,
+            seed_front: true,
+            fall_reserve: 0.9,
+            fall_reserve_hard: true,
+            separation_basis: SeparationBasis::Contact,
+            shuffle_ties: true,
+            relax_steps: 4,
+        }
+    }
+}
+
 /// Tuning, defaults matching the prototype's shipped sliders.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FieldParams {
@@ -37,24 +132,20 @@ pub struct FieldParams {
     pub per_square: u32,
     /// Column cap (odd; growth is symmetric).
     pub max_cols: u32,
-    /// Centre-clustering strength for the score's middle preference.
-    pub cluster: f32,
     /// Square width in world units at 3 columns.
     pub cell_w: f32,
     /// Lateral offset search range, in cell widths.
     pub spread: f32,
-    /// Required side gap as a fraction of mean card width.
+    /// Required side gap as a fraction of the mean separation width.
     pub sep_frac: f32,
-    /// Depth jitter amplitude, in row depths.
-    pub jitter: f32,
-    /// Max fraction of an existing head/torso an arrival may hide.
-    pub cover_budget: f32,
     /// Camera: focal length, eye height, near depth, row depth, horizon.
     pub focal: f32,
     pub cam_h: f32,
     pub z0: f32,
     pub dz: f32,
     pub horizon: f32,
+    /// Placement tunables (the v2 solver knobs).
+    pub solver: SolverParams,
 }
 
 impl Default for FieldParams {
@@ -63,33 +154,42 @@ impl Default for FieldParams {
             rows: 3,
             per_square: 1,
             max_cols: 11,
-            cluster: 1.0,
             cell_w: 1.15,
             spread: 1.15,
             sep_frac: 0.6,
-            jitter: 0.2,
-            cover_budget: 0.15,
             focal: 420.0,
             cam_h: 1.6,
             z0: 2.4,
             dz: 1.5,
             horizon: 96.0,
+            solver: SolverParams::default(),
         }
     }
 }
 
 /// A card's world-space dimensions (width, height) in the same units as
-/// `cell_w`. Supplied by the caller from the sprite's aspect; defaults are
-/// a generic biped.
+/// `cell_w`, plus the contact span: the fraction of the width that
+/// actually rests on the floor (measured ~65% on the standing dummy and
+/// coyote — tails, daggers and thrown-forward paws overhang the rest).
+/// Supplied by the caller from the sprite's aspect; defaults are a
+/// generic biped.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CardSize {
     pub w: f32,
     pub h: f32,
+    pub span: f32,
+}
+
+impl CardSize {
+    /// A card with the default contact span.
+    pub fn new(w: f32, h: f32) -> Self {
+        Self { w, h, span: 0.65 }
+    }
 }
 
 impl Default for CardSize {
     fn default() -> Self {
-        Self { w: 0.6, h: 1.2 }
+        Self::new(0.6, 1.2)
     }
 }
 
@@ -111,8 +211,13 @@ pub struct Unit {
     /// Offsets within the square: lateral in cell widths, depth in world z.
     pub off_x: f32,
     pub off_z: f32,
-    /// Card dimensions used for projection and separation.
+    /// Card dimensions for the CURRENT pose, used for projection and
+    /// separation. `resize` swaps this on pose change.
     pub size: CardSize,
+    /// Both pose boxes, fixed at arrival: the fall envelope every later
+    /// arrival reserves against is their union.
+    pub standing: CardSize,
+    pub prone: CardSize,
     /// Arrived with no clear column left (separation rule unmet). Never
     /// "fixed" later — permanence forbids moving anyone.
     pub tight: bool,
@@ -185,6 +290,102 @@ impl FieldParams {
         take(&mut self.horizon, cam.horizon, "horizon", -500.0, 2000.0);
         take(&mut self.cell_w, cam.cell_width, "cell_width", 0.1, 10.0);
     }
+
+    /// Overlay a skin's `[creature_field.solver]` onto the placement
+    /// tunables, same discipline as `apply_camera`: unset keys keep their
+    /// current value, garbage clamps and logs, never drops the widget.
+    pub fn apply_solver(&mut self, sol: &crate::config::skins::CreatureFieldSolver) {
+        fn take(slot: &mut f32, value: Option<f32>, key: &str, lo: f32, hi: f32) {
+            let Some(v) = value else { return };
+            if !v.is_finite() {
+                tracing::warn!("[creature_field.solver] {key} is not a number; keeping {slot}");
+                return;
+            }
+            let c = v.clamp(lo, hi);
+            if c != v {
+                tracing::warn!(
+                    "[creature_field.solver] {key} = {v} out of range {lo}..={hi}; using {c}"
+                );
+            }
+            *slot = c;
+        }
+        let s = &mut self.solver;
+        match sol.zone.as_deref() {
+            None => {}
+            Some("ellipse") => s.zone_on = true,
+            Some("grid") => s.zone_on = false,
+            Some(other) => {
+                tracing::warn!(
+                    "[creature_field.solver] zone = {other:?} (want \"ellipse\" or \"grid\"); keeping current"
+                );
+            }
+        }
+        take(&mut s.zone_inset, sol.zone_inset, "zone_inset", 0.0, 0.45);
+        take(&mut s.centre_pull, sol.centre_pull, "centre_pull", 0.0, 5.0);
+        if let Some(n) = sol.depth_samples {
+            let c = n.clamp(1, 41);
+            if c != n {
+                tracing::warn!(
+                    "[creature_field.solver] depth_samples = {n} out of range 1..=41; using {c}"
+                );
+            }
+            s.depth_samples = c;
+        }
+        take(&mut s.depth_jitter, sol.depth_jitter, "depth_jitter", 0.0, 1.0);
+        take(
+            &mut s.lateral_jitter,
+            sol.lateral_jitter,
+            "lateral_jitter",
+            0.0,
+            1.0,
+        );
+        take(&mut s.depth_spread, sol.depth_spread, "depth_spread", 0.0, 5.0);
+        take(
+            &mut s.row_band_push,
+            sol.row_band_push,
+            "row_band_push",
+            0.0,
+            10.0,
+        );
+        take(&mut s.row_band_px, sol.row_band_px, "row_band_px", 1.0, 200.0);
+        take(
+            &mut s.occlusion_cap,
+            sol.occlusion_cap,
+            "occlusion_cap",
+            0.0,
+            0.95,
+        );
+        take(&mut s.variation, sol.variation, "variation", 0.0, 2.0);
+        if let Some(v) = sol.seed_front {
+            s.seed_front = v;
+        }
+        take(&mut s.fall_reserve, sol.fall_reserve, "fall_reserve", 0.0, 5.0);
+        if let Some(v) = sol.fall_reserve_hard {
+            s.fall_reserve_hard = v;
+        }
+        match sol.separation_basis.as_deref() {
+            None => {}
+            Some("contact") => s.separation_basis = SeparationBasis::Contact,
+            Some("card") => s.separation_basis = SeparationBasis::Card,
+            Some(other) => {
+                tracing::warn!(
+                    "[creature_field.solver] separation_basis = {other:?} (want \"contact\" or \"card\"); keeping current"
+                );
+            }
+        }
+        if let Some(n) = sol.relax_steps {
+            let c = n.min(10);
+            if c != n {
+                tracing::warn!(
+                    "[creature_field.solver] relax_steps = {n} out of range 0..=10; using {c}"
+                );
+            }
+            s.relax_steps = c;
+        }
+        if let Some(v) = sol.shuffle_ties {
+            s.shuffle_ties = v;
+        }
+    }
 }
 
 impl CreatureField {
@@ -224,10 +425,12 @@ impl CreatureField {
         self.cell_w() / self.params.cell_w
     }
 
-    /// The outermost column on each side is margin, never occupied — a
-    /// visible border so nothing sits flush against the floor's edge.
+    /// With the inscribed zone on, the ellipse supplies the visible border
+    /// and every column is usable — which is the point: the floor gets
+    /// used. Zone off, the outermost column each side reverts to margin so
+    /// nothing sits flush against the floor's edge.
     fn usable_cols(&self) -> Vec<i32> {
-        if self.cols.len() <= 2 {
+        if self.params.solver.zone_on || self.cols.len() <= 2 {
             self.cols.clone()
         } else {
             self.cols[1..self.cols.len() - 1].to_vec()
@@ -246,8 +449,8 @@ impl CreatureField {
             .max((self.col_left(hi) + self.cell_w()).abs())
     }
 
-    /// Grow symmetrically, one column each side, recreating the margin on
-    /// both edges and keeping the vanishing point centred.
+    /// Grow symmetrically, one column each side, keeping the vanishing
+    /// point centred.
     fn grow_floor(&mut self) -> bool {
         if self.cols.len() as u32 + 2 > self.params.max_cols {
             return false;
@@ -260,14 +463,21 @@ impl CreatureField {
     }
 
     /// Shrink one column pair, only when nobody would be left standing on
-    /// (or outside) the new margin.
+    /// (or outside) the new edge.
     fn shrink_floor(&mut self) -> bool {
         if self.cols.len() <= 3 {
             return false;
         }
         let lo = self.cols[0];
         let hi = self.cols[self.cols.len() - 1];
-        if self.units.iter().any(|u| u.ci < lo + 2 || u.ci > hi - 2) {
+        // Zone on: every column is usable, so only the removed pair must
+        // be clear. Zone off: the new outermost pair becomes margin too.
+        let pad = if self.params.solver.zone_on { 1 } else { 2 };
+        if self
+            .units
+            .iter()
+            .any(|u| u.ci < lo + pad || u.ci > hi - pad)
+        {
             return false;
         }
         self.cols.remove(0);
@@ -372,6 +582,30 @@ impl CreatureField {
         }
     }
 
+    /// The FALL ENVELOPE: the union of a creature's two pose rects at one
+    /// ground point. This is the footprint the solver actually reserves —
+    /// a creature that arrives cleanly beside a standing neighbour must
+    /// still not collide with it once either of them goes down.
+    fn env_for(
+        &self,
+        standing: CardSize,
+        prone: CardSize,
+        ci: i32,
+        row: u32,
+        off_x: f32,
+        off_z: f32,
+    ) -> ScreenRect {
+        let a = self.rect_for(standing, ci, row, off_x, off_z);
+        let b = self.rect_for(prone, ci, row, off_x, off_z);
+        ScreenRect {
+            x0: a.x0.min(b.x0),
+            y0: a.y0.min(b.y0),
+            x1: a.x1.max(b.x1),
+            y1: a.y1.max(b.y1),
+            z: a.z,
+        }
+    }
+
     /// Endpoints (virtual stage) of the floor grid line along depth row
     /// `r` (0..=rows). For renderers.
     pub fn floor_row_line(&self, r: u32) -> ((f32, f32), (f32, f32)) {
@@ -396,6 +630,37 @@ impl CreatureField {
             (self.screen_x(x, zn), self.screen_y(zn)),
             (self.screen_x(x, zf), self.screen_y(zf)),
         )
+    }
+
+    // ---- spawn zone -----------------------------------------------------
+
+    /// The ellipse inscribed in the floor's world-space extent, shrunk by
+    /// `zone_inset`. Recomputed from the columns every call, so grow and
+    /// shrink keep it correct with no cached state. Returns
+    /// (centre x, centre z, semi-axis x, semi-axis z).
+    fn zone(&self) -> (f32, f32, f32, f32) {
+        let lo = *self.cols.first().unwrap();
+        let hi = *self.cols.last().unwrap();
+        let xl = self.col_left(lo);
+        let xr = self.col_left(hi) + self.cell_w();
+        let zn = self.depth_at(0.0);
+        let zf = self.depth_at(self.params.rows as f32);
+        let k = 1.0 - self.params.solver.zone_inset;
+        (
+            (xl + xr) / 2.0,
+            (zn + zf) / 2.0,
+            ((xr - xl) / 2.0 * k).max(1e-3),
+            ((zf - zn) / 2.0 * k).max(1e-3),
+        )
+    }
+
+    /// Normalised radius in the spawn ellipse: <= 1 is inside, 0 is dead
+    /// centre.
+    fn zone_r(&self, wx: f32, wz: f32) -> f32 {
+        let (cx, cz, a, b) = self.zone();
+        let dx = (wx - cx) / a;
+        let dz = (wz - cz) / b;
+        (dx * dx + dz * dz).sqrt()
     }
 
     // ---- queries --------------------------------------------------------
@@ -435,7 +700,7 @@ impl CreatureField {
 
     // ---- invariant meters (tests + debug overlays) ----------------------
 
-    /// Worst head/torso coverage across all units, front-to-back.
+    /// Worst identity-region coverage across all units, front-to-back.
     pub fn worst_coverage(&self) -> f32 {
         let mut order = self.draw_order();
         order.reverse(); // nearest first
@@ -452,15 +717,16 @@ impl CreatureField {
     }
 
     /// Smallest neighbour gap / required clearance across all unit pairs;
-    /// >= 1.0 means the separation rule holds everywhere. Empty/singleton
-    /// fields report a comfortable 9.0.
+    /// >= 1.0 means the separation rule holds everywhere. Widths follow the
+    /// configured separation basis. Empty/singleton fields report a
+    /// comfortable 9.0.
     pub fn min_separation_ratio(&self) -> f32 {
         let mut xs: Vec<(f32, f32)> = self
             .units
             .iter()
             .map(|u| {
                 let r = self.rect(u);
-                (r.center_x(), r.width())
+                (r.center_x(), self.sep_width(&r, u.size))
             })
             .collect();
         if xs.len() < 2 {
@@ -482,19 +748,25 @@ impl CreatureField {
         }
     }
 
-    // ---- mutation -------------------------------------------------------
-
-    /// Place a new creature, leaving every existing unit untouched.
-    /// Returns the new unit's id.
-    pub fn arrive(&mut self, exist: &str, size: CardSize) -> UnitId {
-        let placement = self.choose_home(size, exist, None);
-        self.commit_arrival(exist, size, placement)
+    /// The width the separation rule measures a card by, on screen.
+    fn sep_width(&self, r: &ScreenRect, size: CardSize) -> f32 {
+        match self.params.solver.separation_basis {
+            SeparationBasis::Contact => r.width() * size.span,
+            SeparationBasis::Card => r.width(),
+        }
     }
 
-    /// Remove a creature (looted / gone). If it was one member of a
-    /// mounted pair, the pair splits first and the survivor keeps the
-    /// unit's square — the dismount-before-death ordering, enforced here
-    /// so callers cannot tear a rider down with its mount.
+    // ---- mutation -------------------------------------------------------
+
+    /// Place a new creature, leaving every existing unit untouched. Takes
+    /// both pose boxes: the standing box is the current pose at arrival,
+    /// the pair defines the fall envelope reserved for it (and against
+    /// existing units) forever after. Returns the new unit's id.
+    pub fn arrive(&mut self, exist: &str, standing: CardSize, prone: CardSize) -> UnitId {
+        let placement = self.choose_home(standing, prone, exist, None);
+        self.commit_arrival(exist, standing, prone, placement)
+    }
+
     /// Editor drag-to-place: move a unit's ground point to an arbitrary
     /// stage-space position, inverting the foot projection into (ci, row,
     /// off_x, off_z) so the unit lands exactly under the cursor (nearest
@@ -528,7 +800,7 @@ impl CreatureField {
 
     /// Update a placed unit's card box in place (pose change: prone/stand).
     /// Position never moves — permanence — so a wide prone box may overlap
-    /// a neighbour; separation only ever applies at arrival.
+    /// a neighbour; the fall envelope reserved that room at arrival.
     pub fn resize(&mut self, exist: &str, size: CardSize) {
         if let Some(u) = self
             .units
@@ -539,6 +811,10 @@ impl CreatureField {
         }
     }
 
+    /// Remove a creature (looted / gone). If it was one member of a
+    /// mounted pair, the pair splits first and the survivor keeps the
+    /// unit's square — the dismount-before-death ordering, enforced here
+    /// so callers cannot tear a rider down with its mount.
     pub fn depart(&mut self, exist: &str) {
         let Some(idx) = self
             .units
@@ -591,7 +867,7 @@ impl CreatureField {
     /// is placed NEAR it — nearest passing square outward from the mount's
     /// foot point, growing the floor rather than flinging the rider across
     /// the room. Locality beats compactness here.
-    pub fn dismount(&mut self, rider: &str, rider_size: CardSize) {
+    pub fn dismount(&mut self, rider: &str, standing: CardSize, prone: CardSize) {
         let Some(idx) = self
             .units
             .iter()
@@ -601,11 +877,17 @@ impl CreatureField {
         };
         self.units[idx].members.retain(|m| m != rider);
         let anchor = self.foot(&self.units[idx]);
-        let placement = self.choose_home(rider_size, rider, Some(anchor));
-        self.commit_arrival(rider, rider_size, placement);
+        let placement = self.choose_home(standing, prone, rider, Some(anchor));
+        self.commit_arrival(rider, standing, prone, placement);
     }
 
-    fn commit_arrival(&mut self, exist: &str, size: CardSize, p: Placement) -> UnitId {
+    fn commit_arrival(
+        &mut self,
+        exist: &str,
+        standing: CardSize,
+        prone: CardSize,
+        p: Placement,
+    ) -> UnitId {
         let id = self.next_id;
         self.next_id += 1;
         self.units.push(Unit {
@@ -615,7 +897,9 @@ impl CreatureField {
             row: p.row,
             off_x: p.off_x,
             off_z: p.off_z,
-            size,
+            size: standing,
+            standing,
+            prone,
             tight: p.tight,
         });
         // Grow once it is getting tight, so the next arrival has room.
@@ -638,155 +922,314 @@ impl CreatureField {
     /// Preference, not a law: shorter-behind-taller reads badly, but a
     /// hard rule would let one troll lock every square behind it forever.
     /// Actual occlusion is measured directly; this only breaks ties.
+    /// Heights compare STANDING boxes — the pose a card returns to.
     fn height_penalty(&self, ci: i32, row: u32, h: f32) -> u32 {
         self.units
             .iter()
             .filter(|u| u.ci == ci)
-            .filter(|u| (u.row > row && u.size.h < h) || (u.row < row && u.size.h > h))
+            .filter(|u| (u.row > row && u.standing.h < h) || (u.row < row && u.standing.h > h))
             .count() as u32
     }
 
-    /// Choose a home for one new card. `near` switches to affinity mode
-    /// (dismount): candidates are ranked by screen distance from the
-    /// anchor instead of the arrival score, and the floor grows when
-    /// nothing nearby passes.
-    fn choose_home(&mut self, size: CardSize, exist: &str, near: Option<(f32, f32)>) -> Placement {
-        let mut rng = Rng::new(seed_of(exist));
-        // The roomiest near-miss survives across growth attempts, in case
-        // nothing anywhere clears the separation bar.
-        let mut loose: Option<Placement> = None;
-        for _attempt in 0..self.params.max_cols {
-            let others: Vec<ScreenRect> = self.units.iter().map(|u| self.rect(u)).collect();
-            let cols = self.usable_cols();
-            let sigma = ((cols.len() as f32 / 3.0) * self.params.cluster).max(0.55);
-            let mut best: Option<Placement> = None;
-            for &ci in &cols {
-                for row in 0..self.params.rows {
-                    let occ = self.occupants_of(ci, row);
-                    if occ >= self.params.per_square.max(1) as usize + 1 {
+    /// All (square, offset) candidates for one arrival: every usable
+    /// column × row under the occupancy cap, `depth_samples` depth bases
+    /// spanning ±0.40 of a row depth plus jitter, 11 lateral offsets
+    /// spanning ±0.7·spread plus jitter. Fisher-Yates shuffled so ties
+    /// don't systematically resolve to the first square visited.
+    fn candidates(&self, standing_h: f32, rng: &mut Rng) -> Vec<Candidate> {
+        let s = &self.params.solver;
+        let nz = s.depth_samples.max(1) as usize;
+        const NX: usize = 11;
+        let mut out = Vec::new();
+        for ci in self.usable_cols() {
+            for row in 0..self.params.rows {
+                let occ = self.occupants_of(ci, row);
+                if occ >= self.params.per_square.max(1) as usize + 1 {
+                    continue;
+                }
+                let hpen = self.height_penalty(ci, row, standing_h) as f32;
+                for a in 0..nz {
+                    let base = if nz == 1 {
+                        0.0
+                    } else {
+                        -0.40 + 0.80 * a as f32 / (nz - 1) as f32
+                    };
+                    let oz = base * self.params.dz
+                        + (rng.unit() * 2.0 - 1.0) * self.params.dz * s.depth_jitter * 0.5;
+                    if oz.abs() > self.params.dz * 0.44 {
                         continue;
                     }
-                    let hpen = self.height_penalty(ci, row, size.h) as f32;
-                    const NZ: usize = 5;
-                    const NX: usize = 11;
-                    for a in 0..NZ {
-                        let oz = (-0.34 + a as f32 * 0.17) * self.params.dz
-                            + (rng.unit() * 2.0 - 1.0) * self.params.dz * self.params.jitter * 0.5;
-                        if oz.abs() > self.params.dz * 0.44 {
-                            continue;
-                        }
-                        for b in 0..NX {
-                            let ox = (-0.7 + 1.4 * b as f32 / (NX - 1) as f32)
-                                * self.params.spread.max(0.2);
-                            let r = self.rect_for(size, ci, row, ox, oz);
-                            if r.x0 < 6.0 || r.x1 > STAGE_W - 6.0 {
-                                continue;
-                            }
-                            // Separation: every unit owns its own screen
-                            // column. Clearance scales with card widths, so
-                            // the rule survives any zoom unchanged.
-                            let mut slack = f32::INFINITY;
-                            for o in &others {
-                                let gap = (r.center_x() - o.center_x()).abs();
-                                let need = self.params.sep_frac * (r.width() + o.width()) / 2.0;
-                                slack = slack.min(gap - need);
-                            }
-                            let tight = !others.is_empty() && slack < 0.0;
-                            let front: Vec<ScreenRect> =
-                                others.iter().filter(|o| o.z < r.z).copied().collect();
-                            let cov_new = covered_by(&r, &front);
-                            // The budget is on TOTAL coverage, not just what
-                            // this arrival adds: an existing unit's occluders
-                            // are everything nearer than it PLUS the
-                            // candidate. Skip units the candidate can't even
-                            // touch — their total is unchanged by us.
-                            let mut behind_cov: f32 = 0.0;
-                            for o in others.iter().filter(|o| o.z >= r.z) {
-                                if r.x1 < o.x0 || r.x0 > o.x1 || r.y1 < o.y0 || r.y0 > o.y1 {
-                                    continue;
-                                }
-                                let mut occluders: Vec<ScreenRect> =
-                                    others.iter().filter(|p| p.z < o.z).copied().collect();
-                                occluders.push(r);
-                                behind_cov = behind_cov.max(covered_by(o, &occluders));
-                            }
-                            // Hard rules: separation AND the occlusion
-                            // budget, both directions. A candidate failing
-                            // either is a near-miss — kept as the least-bad
-                            // fallback, never preferred while the floor can
-                            // still grow.
-                            let over_budget = cov_new > self.params.cover_budget
-                                || behind_cov > self.params.cover_budget;
-                            let score = match near {
-                                // Affinity mode: nearest passing square wins.
-                                Some((ax, ay)) => {
-                                    let fx = (r.center_x() - ax).abs();
-                                    let fy = (r.y1 - ay).abs();
-                                    (fx * fx + fy * fy).sqrt()
-                                }
-                                None => {
-                                    1.7 * cov_new
-                                        + 1.3 * behind_cov
-                                        + 0.35
-                                            * (1.0
-                                                - (-((ci * ci) as f32) / (2.0 * sigma * sigma))
-                                                    .exp())
-                                        + 0.95 * occ as f32
-                                        + 0.18 * ox.abs()
-                                        + 0.22 * hpen
-                                }
-                            };
-                            let cand = Placement {
-                                ci,
-                                row,
-                                off_x: ox,
-                                off_z: oz,
-                                tight,
-                                score,
-                            };
-                            if tight || over_budget {
-                                let fs = (-slack).max(0.0) + cov_new + behind_cov;
-                                if loose.as_ref().is_none_or(|l| fs < l.score) {
-                                    // A committed near-miss is always
-                                    // `tight`, whichever rule it missed.
-                                    loose = Some(Placement {
-                                        score: fs,
-                                        tight: true,
-                                        ..cand
-                                    });
-                                }
-                                continue;
-                            }
-                            if best.as_ref().is_none_or(|b| score < b.score) {
-                                best = Some(cand);
-                            }
-                        }
+                    for b in 0..NX {
+                        let ox = (-0.7 + 1.4 * b as f32 / (NX - 1) as f32)
+                            * self.params.spread.max(0.2)
+                            + (rng.unit() * 2.0 - 1.0) * s.lateral_jitter;
+                        out.push(Candidate {
+                            ci,
+                            row,
+                            ox,
+                            oz,
+                            occ,
+                            hpen,
+                        });
                     }
+                }
+            }
+        }
+        if s.shuffle_ties {
+            for k in (1..out.len()).rev() {
+                let j = ((rng.unit() * (k as f32 + 1.0)) as usize).min(k);
+                out.swap(k, j);
+            }
+        }
+        out
+    }
+
+    /// Choose a home for one new card. `near` switches to affinity mode
+    /// (dismount): passing candidates are ranked by screen distance from
+    /// the anchor instead of the arrival score; the hard rules — zone,
+    /// occlusion cap, separation, fall envelope — apply in both modes.
+    fn choose_home(
+        &mut self,
+        standing: CardSize,
+        prone: CardSize,
+        exist: &str,
+        near: Option<(f32, f32)>,
+    ) -> Placement {
+        let s = self.params.solver.clone();
+        let mut rng = Rng::new(seed_of(exist));
+
+        // Seed the empty room front and centre. A lone arrival has no
+        // occlusion or separation to solve for, so the scored search has
+        // nothing to distinguish candidates by and settles on the middle
+        // of the zone — visually, a creature stranded at mid-depth. Put it
+        // dead centre of the near-row middle square, closest to the
+        // camera, and let everyone after it arrange around that anchor.
+        if near.is_none() && s.seed_front && self.units.is_empty() {
+            let mid = self
+                .usable_cols()
+                .into_iter()
+                .min_by_key(|c| c.abs())
+                .unwrap_or(0);
+            return Placement {
+                ci: mid,
+                row: 0,
+                off_x: 0.0,
+                off_z: 0.0,
+                tight: false,
+                score: 0.0,
+            };
+        }
+
+        // GRADED RELAXATION. The occlusion cap and the fall envelope are
+        // hard rules, and hard rules need somewhere to go when the room
+        // genuinely runs out. The floor grows first; once it hits max_cols
+        // the constraints loosen a notch at a time and the search retries.
+        // Without this the solver drops straight to the "loose" fallback
+        // the moment growth is exhausted. Loosening in order costs a
+        // little overlap; falling through costs a pile-up.
+        let mut loose: Option<Placement> = None;
+        let mut relax: u32 = 0;
+        for _attempt in 0..(self.params.max_cols + s.relax_steps + 2) {
+            let env_thr = 0.50 + relax as f32 * 0.15;
+            let cap_thr = (s.occlusion_cap * (1.0 + relax as f32 * 0.40)).min(0.95);
+            // Each neighbour carries its fall envelope, not just its
+            // current pose, so an arrival reserves against the room they
+            // will need when they go down.
+            let others: Vec<Neighbor> = self
+                .units
+                .iter()
+                .map(|u| {
+                    let rect = self.rect(u);
+                    Neighbor {
+                        cw: self.sep_width(&rect, u.size),
+                        env: self.env_for(u.standing, u.prone, u.ci, u.row, u.off_x, u.off_z),
+                        rect,
+                    }
+                })
+                .collect();
+            let mut best: Option<Placement> = None;
+            for cd in self.candidates(standing.h, &mut rng) {
+                let r = self.rect_for(standing, cd.ci, cd.row, cd.ox, cd.oz);
+                if r.x0 < 6.0 || r.x1 > STAGE_W - 6.0 {
+                    continue;
+                }
+                // The foot must fall inside the inscribed spawn zone.
+                let wx = (cd.ci as f32 + cd.ox) * self.cell_w();
+                let rad = self.zone_r(wx, r.z);
+                if s.zone_on && rad > 1.0 {
+                    continue;
+                }
+                // NOTE: the prototype's set-piece exclusion (scenery
+                // blocking squares) is not ported — it needs stage-scene
+                // wiring the solver doesn't have yet.
+
+                // Separation: every unit owns its own screen column.
+                // Clearance scales with contact spans, so the rule
+                // survives any zoom unchanged.
+                let my_cw = self.sep_width(&r, standing);
+                let mut slack = f32::INFINITY;
+                for o in &others {
+                    let gap = (r.center_x() - o.rect.center_x()).abs();
+                    let need = self.params.sep_frac * (my_cw + o.cw) / 2.0;
+                    slack = slack.min(gap - need);
+                }
+                let tight = !others.is_empty() && slack < 0.0;
+
+                let mut behind_cov: f32 = 0.0;
+                let mut front: Vec<ScreenRect> = Vec::new();
+                for o in &others {
+                    if o.rect.z < r.z {
+                        front.push(o.rect);
+                    } else {
+                        behind_cov =
+                            behind_cov.max(covered_by(&o.rect, std::slice::from_ref(&r)));
+                    }
+                }
+                let cov_new = covered_by(&r, &front);
+
+                // Occlusion is a feasibility bound, not a cost. Depth
+                // variety and occlusion are in direct tension — cards side
+                // by side on one depth line never overlap, which is
+                // exactly why a scored penalty converges on a straight
+                // row. Cap it hard, the way separation is capped, and let
+                // the depth terms optimise freely inside what remains.
+                if cov_new > cap_thr || behind_cov > cap_thr {
+                    let os = cov_new.max(behind_cov);
+                    if loose.as_ref().is_none_or(|l| os < l.score) {
+                        loose = Some(Placement {
+                            ci: cd.ci,
+                            row: cd.row,
+                            off_x: cd.ox,
+                            off_z: cd.oz,
+                            tight: true,
+                            score: os,
+                        });
+                    }
+                    continue;
+                }
+
+                let mut score = match near {
+                    // Affinity mode: nearest passing square wins.
+                    Some((ax, ay)) => {
+                        let fx = (r.center_x() - ax).abs();
+                        let fy = (r.y1 - ay).abs();
+                        (fx * fx + fy * fy).sqrt()
+                    }
+                    None => {
+                        let mut sc = 1.7 * cov_new
+                            + 1.3 * behind_cov
+                            + 0.95 * cd.occ as f32
+                            + 0.18 * cd.ox.abs()
+                            + 0.22 * cd.hpen;
+                        // Centre pull: radial in the ellipse. Squared, so
+                        // the middle is broadly flat and the rim falls off
+                        // hard.
+                        sc += s.centre_pull * rad * rad;
+                        // Depth spread: repel from other creatures' world
+                        // depth. Row band: repel from their foot SCREEN y
+                        // — the eye reads screen y, not world z, and
+                        // perspective compresses far rows together.
+                        let mut d_crowd = 0.0;
+                        let mut b_crowd = 0.0;
+                        for o in &others {
+                            let dz = (r.z - o.rect.z) / (self.params.dz * 0.55);
+                            d_crowd += (-dz * dz).exp();
+                            let dy = (r.y1 - o.rect.y1) / s.row_band_px.max(1.0);
+                            b_crowd += (-dy * dy).exp();
+                        }
+                        sc += s.depth_spread * d_crowd + s.row_band_push * b_crowd;
+                        // Variation shuffles which of the ACCEPTABLE homes
+                        // is taken — the hard rules stay hard, so it never
+                        // buys an unacceptable one.
+                        sc += s.variation * (rng.unit() - 0.5) * 0.55;
+                        sc
+                    }
+                };
+
+                // Fall reserve: room for the pose this creature is not in
+                // yet, kept free in advance — cheaper than relocating
+                // anyone later, and relocation is forbidden outright.
+                if s.fall_reserve > 0.0 && !others.is_empty() {
+                    let my_env = self.env_for(standing, prone, cd.ci, cd.row, cd.ox, cd.oz);
+                    let mut env_pen = 0.0;
+                    let mut worst: f32 = 0.0;
+                    for o in &others {
+                        let ov = overlap_1d(&my_env, &o.env);
+                        env_pen += ov;
+                        worst = worst.max(ov);
+                    }
+                    if s.fall_reserve_hard && worst > env_thr {
+                        if loose.as_ref().is_none_or(|l| worst < l.score) {
+                            loose = Some(Placement {
+                                ci: cd.ci,
+                                row: cd.row,
+                                off_x: cd.ox,
+                                off_z: cd.oz,
+                                tight: true,
+                                score: worst,
+                            });
+                        }
+                        continue;
+                    }
+                    if near.is_none() {
+                        score += s.fall_reserve * env_pen;
+                    }
+                }
+
+                if tight {
+                    let fs = -slack + 0.3 * cov_new;
+                    if loose.as_ref().is_none_or(|l| fs < l.score) {
+                        loose = Some(Placement {
+                            ci: cd.ci,
+                            row: cd.row,
+                            off_x: cd.ox,
+                            off_z: cd.oz,
+                            tight: true,
+                            score: fs,
+                        });
+                    }
+                    continue;
+                }
+                if best.as_ref().is_none_or(|b| score < b.score) {
+                    best = Some(Placement {
+                        ci: cd.ci,
+                        row: cd.row,
+                        off_x: cd.ox,
+                        off_z: cd.oz,
+                        tight: false,
+                        score,
+                    });
                 }
             }
             if let Some(best) = best {
                 return best;
             }
             if !self.grow_floor() {
-                // Floor at cap: the roomiest near-miss, or dead centre.
-                return loose.unwrap_or(Placement {
-                    ci: 0,
-                    row: 0,
-                    off_x: 0.0,
-                    off_z: 0.0,
-                    tight: true,
-                    score: 0.0,
-                });
+                if relax < s.relax_steps {
+                    relax += 1;
+                    continue;
+                }
+                break;
             }
         }
-        loose.unwrap_or(Placement {
-            ci: 0,
-            row: 0,
+        if let Some(loose) = loose {
+            return loose;
+        }
+        // Truly nothing measured: a random usable column, first row that
+        // doesn't stand a short card behind a tall one, marked tight.
+        let cols = self.usable_cols();
+        let ci = cols[((rng.unit() * cols.len() as f32) as usize).min(cols.len() - 1)];
+        let row = (0..self.params.rows)
+            .find(|&rw| self.height_penalty(ci, rw, standing.h) == 0)
+            .unwrap_or(0);
+        Placement {
+            ci,
+            row,
             off_x: 0.0,
             off_z: 0.0,
             tight: true,
             score: 0.0,
-        })
+        }
     }
 }
 
@@ -800,18 +1243,49 @@ struct Placement {
     score: f32,
 }
 
-/// Fraction of `r`'s head/torso hidden by any rect in `list` (all assumed
-/// nearer, drawn on top). Only the upper 62% is sampled: that is the part
-/// that tells you which creature this is — feet hidden behind a nearer
-/// body is fine.
+#[derive(Debug, Clone, Copy)]
+struct Candidate {
+    ci: i32,
+    row: u32,
+    ox: f32,
+    oz: f32,
+    occ: usize,
+    hpen: f32,
+}
+
+/// One existing unit as the solver sees it: current-pose rect, separation
+/// width on that rect, and the fall envelope it reserved at arrival.
+struct Neighbor {
+    rect: ScreenRect,
+    env: ScreenRect,
+    cw: f32,
+}
+
+/// Horizontal overlap of two rects as a fraction of the narrower one.
+fn overlap_1d(a: &ScreenRect, b: &ScreenRect) -> f32 {
+    let o = a.x1.min(b.x1) - a.x0.max(b.x0);
+    if o <= 0.0 {
+        return 0.0;
+    }
+    o / (a.width().min(b.width())).max(1.0)
+}
+
+/// Fraction of `r`'s IDENTITY REGION hidden by any rect in `list` (all
+/// assumed nearer, drawn on top). The region derives from the card's own
+/// aspect, not from its pose name: the top-62% rule assumes a head sits on
+/// top, which is true of an upright humanoid and false of a quadruped — a
+/// standing coyote is wider than tall with its head halfway up an edge,
+/// and keying off a label would let arrivals bury it and score clean.
 fn covered_by(r: &ScreenRect, list: &[ScreenRect]) -> f32 {
     if list.is_empty() {
         return 0.0;
     }
     const NX: usize = 9;
     const NY: usize = 13;
+    let aspect = (r.x1 - r.x0) / (r.y1 - r.y0).max(1.0);
+    let idf = (0.62 + 0.75 * (aspect - 0.6)).clamp(0.55, 0.95);
     let y_top = r.y0;
-    let y_bot = r.y0 + (r.y1 - r.y0) * 0.62;
+    let y_bot = r.y0 + (r.y1 - r.y0) * idf;
     let mut hit = 0usize;
     for i in 0..NX {
         for j in 0..NY {
@@ -830,6 +1304,9 @@ fn covered_by(r: &ScreenRect, list: &[ScreenRect]) -> f32 {
 
 /// Deterministic per-creature seed: numeric exist ids hash to themselves,
 /// anything else FNV-hashes, so the same roster always lays out the same.
+/// (The prototype adds a per-engagement session salt so two fights in one
+/// room differ; deliberately skipped here to keep layouts reproducible —
+/// a future knob.)
 fn seed_of(exist: &str) -> u32 {
     exist.parse::<u32>().unwrap_or_else(|_| {
         let mut h: u32 = 2166136261;
@@ -862,13 +1339,23 @@ mod tests {
     use super::*;
 
     fn kobold() -> CardSize {
-        CardSize { w: 0.60, h: 0.92 }
+        CardSize::new(0.60, 0.92)
     }
     fn troll() -> CardSize {
-        CardSize { w: 0.78, h: 1.52 }
+        CardSize::new(0.78, 1.52)
     }
     fn spider() -> CardSize {
-        CardSize { w: 0.92, h: 0.60 }
+        CardSize::new(0.92, 0.60)
+    }
+
+    /// The prone box the game derives for a biped of this standing size
+    /// (see `card_size_for` in creature_cards.rs).
+    fn prone_of(s: CardSize) -> CardSize {
+        CardSize::new((s.h * 0.90).max(0.35), (s.h * 0.35).max(0.30))
+    }
+
+    fn arrive(f: &mut CreatureField, exist: &str, s: CardSize) -> UnitId {
+        f.arrive(exist, s, prone_of(s))
     }
 
     fn world_pos(f: &CreatureField, exist: &str) -> (i32, u32, f32, f32) {
@@ -877,9 +1364,13 @@ mod tests {
     }
 
     fn fill(f: &mut CreatureField, n: usize) {
+        fill_more(f, 0, n);
+    }
+
+    fn fill_more(f: &mut CreatureField, from: usize, to: usize) {
         let sizes = [kobold(), troll(), spider()];
-        for i in 0..n {
-            f.arrive(&format!("{}", 1000 + i), sizes[i % 3]);
+        for i in from..to {
+            arrive(f, &format!("{}", 1000 + i), sizes[i % 3]);
         }
     }
 
@@ -902,13 +1393,6 @@ mod tests {
         }
     }
 
-    fn fill_more(f: &mut CreatureField, from: usize, to: usize) {
-        let sizes = [kobold(), troll(), spider()];
-        for i in from..to {
-            f.arrive(&format!("{}", 1000 + i), sizes[i % 3]);
-        }
-    }
-
     #[test]
     fn removals_never_move_survivors() {
         let mut f = CreatureField::default();
@@ -927,7 +1411,7 @@ mod tests {
     }
 
     #[test]
-    fn separation_and_coverage_hold_at_moderate_population() {
+    fn separation_and_occlusion_hold_at_moderate_population() {
         let mut f = CreatureField::default();
         fill(&mut f, 7); // the prototype's default room
         assert!(
@@ -936,28 +1420,80 @@ mod tests {
             f.min_separation_ratio()
         );
         assert!(
-            f.worst_coverage() <= f.params.cover_budget + 1e-3,
-            "worst coverage {} over budget {}",
+            f.worst_coverage() <= f.params.solver.occlusion_cap + 1e-3,
+            "worst coverage {} over cap {}",
             f.worst_coverage(),
-            f.params.cover_budget
+            f.params.solver.occlusion_cap
         );
         assert!(f.units().iter().all(|u| !u.tight));
     }
 
+    /// The zone supplies the border the old margin columns used to: every
+    /// foot lands inside the inscribed ellipse, so nothing sits flush
+    /// against the floor's edge — while the whole floor stays usable.
     #[test]
-    fn margins_are_never_occupied_and_growth_is_symmetric() {
+    fn zone_excludes_rim_placements() {
         let mut f = CreatureField::default();
-        fill(&mut f, 12);
+        fill(&mut f, 9);
         let lo = *f.columns().first().unwrap();
         let hi = *f.columns().last().unwrap();
         assert_eq!(lo, -hi, "growth must stay centred");
         for u in f.units() {
+            let wx = (u.ci as f32 + u.off_x) * f.cell_w();
+            let rad = f.zone_r(wx, f.ground_z(u));
             assert!(
-                u.ci > lo && u.ci < hi,
-                "unit on margin column {} (floor {lo}..{hi})",
-                u.ci
+                rad <= 1.0 + 1e-3,
+                "unit at normalised radius {rad} — outside the spawn zone"
             );
         }
+    }
+
+    /// First arrival into an empty field seeds the near-row middle square,
+    /// dead centre — not a scored spot in the middle of the zone.
+    #[test]
+    fn empty_field_seeds_front_and_centre() {
+        let mut f = CreatureField::default();
+        arrive(&mut f, "first", kobold());
+        let u = f.unit_of("first").unwrap();
+        assert_eq!((u.ci, u.row), (0, 0));
+        assert_eq!((u.off_x, u.off_z), (0.0, 0.0));
+        assert!(!u.tight);
+    }
+
+    /// The fall envelope reserves room in advance: a pair with very wide
+    /// prone boxes must end up farther apart than their standing cards
+    /// alone would require, and their envelopes must respect the hard
+    /// overlap bound (0.50 at relax 0).
+    #[test]
+    fn fall_envelope_reserves_room() {
+        let standing = CardSize::new(0.5, 1.4);
+        let wide_prone = CardSize::new(2.2, 0.4);
+        let mut f = CreatureField::default();
+        f.arrive("a", standing, wide_prone);
+        f.arrive("b", standing, wide_prone);
+        let ua = f.unit_of("a").unwrap().clone();
+        let ub = f.unit_of("b").unwrap().clone();
+        let env_a = f.env_for(ua.standing, ua.prone, ua.ci, ua.row, ua.off_x, ua.off_z);
+        let env_b = f.env_for(ub.standing, ub.prone, ub.ci, ub.row, ub.off_x, ub.off_z);
+        assert!(
+            overlap_1d(&env_a, &env_b) <= 0.50 + 1e-3,
+            "envelope overlap {} over the hard bound",
+            overlap_1d(&env_a, &env_b)
+        );
+        // Control: the same standing cards with narrow prone boxes are
+        // allowed to sit closer; the wide-prone pair must sit at least as
+        // far apart as the envelope demands over the card demand.
+        let d_wide = (f.foot(&ua).0 - f.foot(&ub).0).abs();
+        let mut g = CreatureField::default();
+        g.arrive("a", standing, standing);
+        g.arrive("b", standing, standing);
+        let ga = g.foot(g.unit_of("a").unwrap()).0;
+        let gb = g.foot(g.unit_of("b").unwrap()).0;
+        let d_narrow = (ga - gb).abs();
+        assert!(
+            d_wide + 1e-3 >= d_narrow,
+            "wide-prone pair ({d_wide}px) packed tighter than narrow control ({d_narrow}px)"
+        );
     }
 
     #[test]
@@ -973,6 +1509,8 @@ mod tests {
         assert_eq!(f.columns().len(), 3, "empty floor contracts to base");
     }
 
+    /// Determinism: the RNG is seeded per creature from its exist id, so
+    /// the same roster in the same arrival order lays out identically.
     #[test]
     fn same_roster_lays_out_identically() {
         let mut a = CreatureField::default();
@@ -1011,9 +1549,9 @@ mod tests {
     #[test]
     fn mount_merges_keeping_the_mounts_square() {
         let mut f = CreatureField::default();
-        f.arrive("mount1", troll());
-        f.arrive("rider1", kobold());
-        f.arrive("bystander", spider());
+        arrive(&mut f, "mount1", troll());
+        arrive(&mut f, "rider1", kobold());
+        arrive(&mut f, "bystander", spider());
         let mount_home = world_pos(&f, "mount1");
         f.mount("rider1", "mount1");
         assert_eq!(f.units().len(), 2);
@@ -1030,12 +1568,12 @@ mod tests {
     #[test]
     fn dismount_places_rider_near_the_mount() {
         let mut f = CreatureField::default();
-        f.arrive("mount1", troll());
+        arrive(&mut f, "mount1", troll());
         f.mount("rider1", "mount1"); // rider joins without own square
                                      // Crowd the room so nearness is actually contested.
         fill_more(&mut f, 0, 5);
         let mount_foot = f.foot(f.unit_of("mount1").unwrap());
-        f.dismount("rider1", kobold());
+        f.dismount("rider1", kobold(), prone_of(kobold()));
         let rider = f.unit_of("rider1").unwrap();
         assert_eq!(rider.members, vec!["rider1"]);
         let rider_foot = f.foot(rider);
@@ -1046,8 +1584,8 @@ mod tests {
         assert!(d < STAGE_W / 2.0, "rider flung {d}px from its mount");
         assert!(!rider.tight, "affinity placement must honour separation");
         assert!(
-            f.worst_coverage() <= f.params.cover_budget + 1e-3,
-            "dismount broke the occlusion budget: {} (rider tight={}, cols={})",
+            f.worst_coverage() <= f.params.solver.occlusion_cap + 1e-3,
+            "dismount broke the occlusion cap: {} (rider tight={}, cols={})",
             f.worst_coverage(),
             f.unit_of("rider1").unwrap().tight,
             f.columns().len(),
@@ -1059,7 +1597,7 @@ mod tests {
     #[test]
     fn mount_death_while_ridden_spares_the_rider() {
         let mut f = CreatureField::default();
-        f.arrive("mount1", troll());
+        arrive(&mut f, "mount1", troll());
         f.mount("rider1", "mount1");
         let home = world_pos(&f, "mount1");
         f.depart("mount1");
@@ -1073,7 +1611,7 @@ mod tests {
     #[test]
     fn rider_death_while_ridden_leaves_mount_in_place() {
         let mut f = CreatureField::default();
-        f.arrive("mount1", troll());
+        arrive(&mut f, "mount1", troll());
         f.mount("rider1", "mount1");
         let home = world_pos(&f, "mount1");
         f.depart("rider1");
@@ -1085,7 +1623,7 @@ mod tests {
     fn generation_bumps_only_on_placement_changes() {
         let mut f = CreatureField::default();
         let g0 = f.generation;
-        f.arrive("a", kobold());
+        arrive(&mut f, "a", kobold());
         assert!(f.generation > g0);
         let g1 = f.generation;
         let _ = f.draw_order();
@@ -1107,7 +1645,7 @@ mod tests {
         let lo = *f.columns().first().unwrap();
         let hi = *f.columns().last().unwrap();
         for u in f.units() {
-            assert!(u.ci > lo && u.ci < hi);
+            assert!(u.ci >= lo && u.ci <= hi);
         }
     }
 
@@ -1176,5 +1714,63 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(p.cam_h, d.cam_h);
+    }
+
+    #[test]
+    fn skin_solver_overlays_defaults_and_clamps_bad_values() {
+        use crate::config::skins::CreatureFieldSolver;
+        let d = FieldParams::default();
+
+        // Unset keys keep the built-in defaults.
+        let mut p = FieldParams::default();
+        p.apply_solver(&CreatureFieldSolver::default());
+        assert_eq!(p, d);
+
+        // Set keys land on the right tunables, including the two string
+        // vocabularies.
+        let mut p = FieldParams::default();
+        p.apply_solver(&CreatureFieldSolver {
+            zone: Some("grid".into()),
+            zone_inset: Some(0.2),
+            centre_pull: Some(1.0),
+            depth_samples: Some(5),
+            depth_jitter: Some(0.1),
+            lateral_jitter: Some(0.05),
+            depth_spread: Some(0.3),
+            row_band_push: Some(2.0),
+            row_band_px: Some(40.0),
+            occlusion_cap: Some(0.25),
+            variation: Some(0.1),
+            seed_front: Some(false),
+            fall_reserve: Some(1.2),
+            fall_reserve_hard: Some(false),
+            separation_basis: Some("card".into()),
+            relax_steps: Some(2),
+            shuffle_ties: Some(false),
+        });
+        let s = &p.solver;
+        assert!(!s.zone_on);
+        assert_eq!(s.separation_basis, SeparationBasis::Card);
+        assert_eq!(
+            (s.zone_inset, s.centre_pull, s.depth_samples, s.relax_steps),
+            (0.2, 1.0, 5, 2)
+        );
+        assert!(!s.seed_front && !s.fall_reserve_hard && !s.shuffle_ties);
+
+        // Out-of-range clamps; unknown vocabulary keeps the current value.
+        let mut p = FieldParams::default();
+        p.apply_solver(&CreatureFieldSolver {
+            occlusion_cap: Some(5.0),
+            relax_steps: Some(99),
+            zone: Some("hexes".into()),
+            separation_basis: Some("feet".into()),
+            depth_jitter: Some(f32::NAN),
+            ..Default::default()
+        });
+        assert_eq!(p.solver.occlusion_cap, 0.95);
+        assert_eq!(p.solver.relax_steps, 10);
+        assert!(p.solver.zone_on, "unknown zone word keeps the default");
+        assert_eq!(p.solver.separation_basis, SeparationBasis::Contact);
+        assert_eq!(p.solver.depth_jitter, d.solver.depth_jitter);
     }
 }

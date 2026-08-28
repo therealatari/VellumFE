@@ -273,9 +273,9 @@ mod tests {
     #[test]
     fn cycle_skips_corpses_unconditionally_and_keeps_x_order() {
         let mut field = CreatureField::default();
-        field.arrive("#1", CardSize::default());
-        field.arrive("#2", CardSize::default());
-        field.arrive("#3", CardSize::default());
+        field.arrive("#1", CardSize::default(), CardSize::default());
+        field.arrive("#2", CardSize::default(), CardSize::default());
+        field.arrive("#3", CardSize::default(), CardSize::default());
         let creatures = vec![
             creature("#1", "orc", false),
             creature("#2", "troll", true), // corpse: never in the cycle
@@ -290,8 +290,8 @@ mod tests {
     #[test]
     fn cycle_honors_excluded_nouns_and_all_dead_is_empty() {
         let mut field = CreatureField::default();
-        field.arrive("#1", CardSize::default());
-        field.arrive("#2", CardSize::default());
+        field.arrive("#1", CardSize::default(), CardSize::default());
+        field.arrive("#2", CardSize::default(), CardSize::default());
         let creatures = vec![
             creature("#1", "coal", false),
             creature("#2", "orc", true),

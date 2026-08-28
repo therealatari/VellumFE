@@ -149,15 +149,17 @@ impl StageState {
                 .unit_of(&old_rider)
                 .is_some_and(|u| u.members.len() > 1);
             if still_paired {
-                let size = self
+                let (standing, prone) = self
                     .app_core
                     .game_state
                     .room_creatures
                     .iter()
                     .find(|c| c.id == old_rider)
-                    .map(crate::core::creature_cards::card_size_for)
+                    .map(crate::core::creature_cards::card_boxes_for)
                     .unwrap_or_default();
-                self.app_core.creature_field.dismount(&old_rider, size);
+                self.app_core
+                    .creature_field
+                    .dismount(&old_rider, standing, prone);
             }
         }
         if let Some((rider, mount)) = &desired {

@@ -327,6 +327,8 @@ pub struct CreatureCardSkin {
 pub struct CreatureFieldSkin {
     #[serde(default)]
     pub camera: CreatureFieldCamera,
+    #[serde(default)]
+    pub solver: CreatureFieldSolver,
 }
 
 /// `[creature_field.camera]` — the six ground-plane parameters. All
@@ -355,6 +357,68 @@ pub struct CreatureFieldCamera {
     /// affects how future arrivals fit, never where placed units stand.
     #[serde(default)]
     pub cell_width: Option<f32>,
+}
+
+/// `[creature_field.solver]` — placement tunables for the creature-field
+/// solver. All optional; `None` keeps the solver's built-in default. Same
+/// authoring-vocabulary discipline as the camera table: names read plainer
+/// than the solver's field names, and bad values clamp with a warning in
+/// `FieldParams::apply_solver`.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct CreatureFieldSolver {
+    /// Spawn zone shape: "ellipse" (inscribed spawn ellipse, default) or
+    /// "grid" (margin columns, no ellipse).
+    #[serde(default)]
+    pub zone: Option<String>,
+    /// Ellipse shrink from the floor edge. Default 0.10.
+    #[serde(default)]
+    pub zone_inset: Option<f32>,
+    /// Radial centre pull (squared falloff). Default 0.45.
+    #[serde(default)]
+    pub centre_pull: Option<f32>,
+    /// Depth bases sampled per square. Default 9.
+    #[serde(default)]
+    pub depth_samples: Option<u32>,
+    /// Depth jitter amplitude, in row depths. Default 0.22.
+    #[serde(default)]
+    pub depth_jitter: Option<f32>,
+    /// Lateral jitter amplitude, in cell widths. Default 0.12.
+    #[serde(default)]
+    pub lateral_jitter: Option<f32>,
+    /// Repulsion from neighbours' world depth. Default 0.70.
+    #[serde(default)]
+    pub depth_spread: Option<f32>,
+    /// Repulsion from neighbours' foot screen y. Default 1.60.
+    #[serde(default)]
+    pub row_band_push: Option<f32>,
+    /// Row-band kernel width in stage pixels. Default 28.
+    #[serde(default)]
+    pub row_band_px: Option<f32>,
+    /// Max identity-region coverage a candidate may cause. Default 0.18.
+    #[serde(default)]
+    pub occlusion_cap: Option<f32>,
+    /// Soft score noise. Default 0.35.
+    #[serde(default)]
+    pub variation: Option<f32>,
+    /// First arrival into an empty field goes front and centre. Default
+    /// true.
+    #[serde(default)]
+    pub seed_front: Option<bool>,
+    /// Fall-envelope overlap cost weight. Default 0.9.
+    #[serde(default)]
+    pub fall_reserve: Option<f32>,
+    /// Whether the worst envelope overlap is a hard bound. Default true.
+    #[serde(default)]
+    pub fall_reserve_hard: Option<bool>,
+    /// Separation width basis: "contact" (default) or "card".
+    #[serde(default)]
+    pub separation_basis: Option<String>,
+    /// Constraint-loosening notches at the column cap. Default 4.
+    #[serde(default)]
+    pub relax_steps: Option<u32>,
+    /// Shuffle the candidate list so ties don't bias. Default true.
+    #[serde(default)]
+    pub shuffle_ties: Option<bool>,
 }
 
 /// One status/effect layer on the card.

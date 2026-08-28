@@ -344,21 +344,32 @@ pub fn field_member(c: &crate::core::state::Creature, excluded_nouns: &[String])
 /// the stage; relative size within the clamp is information and is never
 /// normalized away. Bosses keep at least the old visibility bump on top.
 pub fn card_size_for(c: &crate::core::state::Creature) -> solver::CardSize {
-    let h = standing_height_for(c);
+    let (standing, prone) = card_boxes_for(c);
     let lying = c.is_dead() || c.flags.as_ref().is_some_and(|f| f.has_flag("prone"));
     if lying {
-        // Prone box from the bestiary body type: a downed biped is roughly
-        // a third of its standing height and as long as it was tall; a
-        // quadruped is already low, so it keeps more of its height.
-        let quad = bestiary_body_type(&c.name, c.noun.as_deref())
-            .is_some_and(|t| t == "quadruped");
-        let ph = if quad { h * 0.70 } else { h * 0.35 };
-        return solver::CardSize {
-            w: (h * 0.90).max(0.35),
-            h: ph.max(0.30),
-        };
+        prone
+    } else {
+        standing
     }
-    solver::CardSize { w: h * 0.5, h }
+}
+
+/// Both pose boxes for one creature, pose-agnostic: (standing, prone).
+/// The solver reserves the union of the two (the fall envelope) at
+/// arrival, so a later pose swap never needs to move anyone.
+pub fn card_boxes_for(
+    c: &crate::core::state::Creature,
+) -> (solver::CardSize, solver::CardSize) {
+    let h = standing_height_for(c);
+    // Prone box from the bestiary body type: a downed biped is roughly a
+    // third of its standing height and as long as it was tall; a
+    // quadruped is already low, so it keeps more of its height.
+    let quad =
+        bestiary_body_type(&c.name, c.noun.as_deref()).is_some_and(|t| t == "quadruped");
+    let ph = if quad { h * 0.70 } else { h * 0.35 };
+    (
+        solver::CardSize::new(h * 0.5, h),
+        solver::CardSize::new((h * 0.90).max(0.35), ph.max(0.30)),
+    )
 }
 
 /// Standing card height in world units, pose-agnostic — the anchor for
@@ -484,7 +495,11 @@ pub fn sync_field(
             .map(|u| u.members.first().map(String::as_str) == Some(c.id.as_str()));
         match primary {
             None => {
-                field.arrive(&c.id, card_size_for(c));
+                let (standing, prone) = card_boxes_for(c);
+                field.arrive(&c.id, standing, prone);
+                // The creature may already be down on arrival (we walked
+                // in on it); the box swaps to the current pose here.
+                field.resize(&c.id, card_size_for(c));
             }
             Some(true) => field.resize(&c.id, card_size_for(c)),
             Some(false) => {}

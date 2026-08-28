@@ -266,9 +266,11 @@ async fn main() {
             use vellum_fe::core::creature_cards::solver::{CardSize, CreatureField};
             use vellum_fe::core::remote::RemoteFieldCard;
             let mut cf = CreatureField::default();
-            cf.arrive("111", CardSize::default());
-            cf.arrive("222", CardSize { w: 0.78, h: 1.52 }); // boss-sized
-            cf.arrive("555", CardSize { w: 0.92, h: 0.60 }); // low, wide
+            cf.arrive("111", CardSize::default(), CardSize::default());
+            let boss = CardSize::new(0.78, 1.52);
+            cf.arrive("222", boss, CardSize::new(1.37, 0.53)); // boss-sized
+            let spider = CardSize::new(0.92, 0.60);
+            cf.arrive("555", spider, CardSize::new(0.92, 0.42)); // low, wide
             let meta = |id: &str| match id {
                 "111" => (
                     "hog",
