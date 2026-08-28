@@ -171,6 +171,15 @@ pub struct CreatureEntry {
     pub family: Option<String>,
     #[serde(rename = "type", skip_serializing_if = "Option::is_none", default)]
     pub creature_type: Option<String>,
+    /// Height in feet, from the template. Drives the creature field's card
+    /// scale (a kobold and a cyclops stop rendering the same height).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub height: Option<f64>,
+    /// Size bucket ("tiny" | "small" | "medium" | "large" | "huge") — the
+    /// card-scale fallback when the template has no height. Empty in many
+    /// templates; treat "" as absent.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub size: Option<String>,
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
     pub undead: bool,
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
@@ -393,6 +402,10 @@ pub fn ruby_template_to_json(text: &str) -> String {
     let key_re = regex::Regex::new(r"([A-Za-z_][A-Za-z0-9_]*)\s*:").expect("static regex");
     let nil_re = regex::Regex::new(r"\bnil\b").expect("static regex");
     let range_re = regex::Regex::new(r"\((-?\d+)\s*\.\.\s*(-?\d+)\)").expect("static regex");
+    // Bare ranges (`uids: [14012050..14012070]`) appeared with the areas
+    // rework; rewritten after the parenthesized form so the two can't
+    // double-match.
+    let bare_range_re = regex::Regex::new(r"(-?\d+)\s*\.\.\s*(-?\d+)").expect("static regex");
     let paren_re = regex::Regex::new(r"\((-?\d+)\)").expect("static regex");
     let comment_re = regex::Regex::new(r"#[^\r\n]*").expect("static regex");
     let trailing_re = regex::Regex::new(r",(\s*[}\]])").expect("static regex");
@@ -413,14 +426,16 @@ pub fn ruby_template_to_json(text: &str) -> String {
         &'a regex::Regex,
         &'a regex::Regex,
         &'a regex::Regex,
+        &'a regex::Regex,
     );
     fn flush(code: &mut String, out: &mut String, res: Rewrites) {
-        let (comment_re, key_re, nil_re, range_re, paren_re, trailing_re) = res;
+        let (comment_re, key_re, nil_re, range_re, bare_range_re, paren_re, trailing_re) = res;
         let stripped = comment_re.replace_all(code, "");
         let keys = key_re.replace_all(&stripped, "\"$1\":");
         let nils = nil_re.replace_all(&keys, "null");
         let ranges = range_re.replace_all(&nils, "[$1, $2]");
-        let parens = paren_re.replace_all(&ranges, "$1");
+        let bare = bare_range_re.replace_all(&ranges, "[$1, $2]");
+        let parens = paren_re.replace_all(&bare, "$1");
         out.push_str(&trailing_re.replace_all(&parens, "$1"));
         code.clear();
     }
@@ -450,6 +465,7 @@ pub fn ruby_template_to_json(text: &str) -> String {
                     &key_re,
                     &nil_re,
                     &range_re,
+                    &bare_range_re,
                     &paren_re,
                     &trailing_re,
                 ),
@@ -468,6 +484,7 @@ pub fn ruby_template_to_json(text: &str) -> String {
             &key_re,
             &nil_re,
             &range_re,
+            &bare_range_re,
             &paren_re,
             &trailing_re,
         ),
@@ -639,6 +656,11 @@ pub fn entry_from_template_json(v: &serde_json::Value) -> Option<CreatureEntry> 
         level: v.get("level").and_then(|x| x.as_i64()),
         family: v.get("family").and_then(v_str),
         creature_type: v.get("type").and_then(v_str),
+        height: v.get("height").and_then(|h| h.as_f64()),
+        size: v
+            .get("size")
+            .and_then(v_str)
+            .filter(|s| !s.trim().is_empty()),
         undead: v.get("undead").and_then(|x| x.as_bool()).unwrap_or(false),
         boss: v.get("boss").and_then(|x| x.as_bool()).unwrap_or(false),
         tags: v.get("otherclass").map(v_str_list).unwrap_or_default(),

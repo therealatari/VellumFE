@@ -335,15 +335,65 @@ pub fn field_member(c: &crate::core::state::Creature, excluded_nouns: &[String])
     hostile && (c.is_valid_target(excluded_nouns) || c.is_dead())
 }
 
-/// Card size for one creature: bosses get a visibly bigger card. Real
-/// per-family sizes arrive with art (the sprite's aspect); these are the
-/// placeholder-card dimensions.
+/// Card size for one creature, resolved at arrival — synchronously, so
+/// the solver reserves the right room before any art has loaded.
+///
+/// Scale cascade: bestiary `height` (feet; a ~6 ft human is the 1.2-unit
+/// default card) → bestiary `size` bucket → default. Clamped so extremes
+/// stay readable — a rat still gets a visible card, a dragon still fits
+/// the stage; relative size within the clamp is information and is never
+/// normalized away. Bosses keep at least the old visibility bump on top.
 pub fn card_size_for(c: &crate::core::state::Creature) -> solver::CardSize {
-    if c.flags.as_ref().is_some_and(|f| f.is_boss()) {
-        solver::CardSize { w: 0.78, h: 1.52 }
-    } else {
-        solver::CardSize::default()
+    let boss = c.flags.as_ref().is_some_and(|f| f.is_boss());
+    let h = match (bestiary_height_units(&c.name, c.noun.as_deref()), boss) {
+        (Some(h), true) => (h * 1.15).max(1.52),
+        (Some(h), false) => h,
+        (None, true) => 1.52,
+        (None, false) => solver::CardSize::default().h,
     }
+    .clamp(0.55, 2.6);
+    solver::CardSize { w: h * 0.5, h }
+}
+
+/// World-unit height for a creature from the bundled bestiary. Matching
+/// keys on the boon-stripped canonical name (the wire name may carry a
+/// boon adjective the templates never do), falling back to the noun when
+/// every entry sharing it agrees — the same discipline as
+/// [`family_for_noun`], so an ambiguous noun never guesses.
+fn bestiary_height_units(name: &str, noun: Option<&str>) -> Option<f32> {
+    let canonical = naming::canonical_name(name);
+    let noun = noun
+        .filter(|n| !n.trim().is_empty())
+        .map(str::to_string)
+        .or_else(|| canonical.split_whitespace().last().map(str::to_string))?;
+    let db = crate::core::bestiary::format::shared();
+    let entries = db.by_noun(&noun);
+    let of = |e: &crate::core::bestiary::CreatureEntry| -> Option<f32> {
+        if let Some(feet) = e.height {
+            // 6 ft ≡ the 1.2-unit default card.
+            return Some(feet as f32 * 0.2);
+        }
+        match e.size.as_deref().map(str::trim) {
+            Some(s) if s.eq_ignore_ascii_case("tiny") => Some(0.55),
+            Some(s) if s.eq_ignore_ascii_case("small") => Some(0.85),
+            Some(s) if s.eq_ignore_ascii_case("medium") => Some(1.2),
+            Some(s) if s.eq_ignore_ascii_case("large") => Some(1.6),
+            Some(s) if s.eq_ignore_ascii_case("huge") => Some(2.1),
+            _ => None,
+        }
+    };
+    if let Some(entry) = entries
+        .iter()
+        .find(|e| e.name.eq_ignore_ascii_case(&canonical))
+    {
+        return of(entry);
+    }
+    // No exact name: only trust the noun when its entries agree.
+    let mut heights = entries.iter().filter_map(|e| of(e));
+    let first = heights.next()?;
+    heights
+        .all(|h| (h - first).abs() < 0.05)
+        .then_some(first)
 }
 
 /// Event-driven roster sync: diff the field's units against the room's
@@ -772,6 +822,34 @@ mod tests {
                 canonical_part(part).is_some(),
                 "CreatureBar part {part} must map to a doll part"
             );
+        }
+    }
+
+    /// Card scale resolves the bundled bestiary's height (feet, 6 ft ≡ the
+    /// 1.2-unit default) with the size bucket as fallback; boon adjectives
+    /// on the wire name never break the match; unknowns keep the default.
+    #[test]
+    fn card_size_resolves_bestiary_height_with_boon_and_fallback() {
+        let creature = |name: &str, noun: &str| crate::core::state::Creature {
+            name: name.to_string(),
+            noun: (!noun.is_empty()).then(|| noun.to_string()),
+            id: "1".into(),
+            status: None,
+            flags: None,
+        };
+        // big ugly kobold: height 4 ft -> 0.8 units.
+        let kobold = card_size_for(&creature("big ugly kobold", "kobold"));
+        assert!((kobold.h - 0.8).abs() < 0.01, "kobold h = {}", kobold.h);
+        // A boon adjective on the wire name still matches the template.
+        let boon = card_size_for(&creature("dazzling big ugly kobold", "kobold"));
+        assert!((boon.h - kobold.h).abs() < 0.001);
+        // Unknown creature: the default card.
+        let unknown = card_size_for(&creature("test dummy", "dummy"));
+        assert!((unknown.h - solver::CardSize::default().h).abs() < 0.001);
+        // Clamp: nothing renders below 0.55 or above 2.6 units.
+        for e in crate::core::bestiary::format::shared().by_noun("rat") {
+            let c = card_size_for(&creature(&e.name, "rat"));
+            assert!(c.h >= 0.55 && c.h <= 2.6);
         }
     }
 }
