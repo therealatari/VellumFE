@@ -495,6 +495,37 @@ impl CreatureField {
     /// mounted pair, the pair splits first and the survivor keeps the
     /// unit's square — the dismount-before-death ordering, enforced here
     /// so callers cannot tear a rider down with its mount.
+    /// Editor drag-to-place: move a unit's ground point to an arbitrary
+    /// stage-space position, inverting the foot projection into (ci, row,
+    /// off_x, off_z) so the unit lands exactly under the cursor (nearest
+    /// row, leftover depth in off_z). Deliberately bypasses separation —
+    /// a Studio override, never called during play.
+    pub fn place_at(&mut self, exist: &str, sx: f32, sy: f32) {
+        let (x, z) = self.ground_from_screen(sx, sy);
+        let wx = (x - STAGE_W / 2.0) * z / self.f_eff().max(1e-3);
+        let cell = self.cell_w();
+        let ci_f = wx / cell;
+        let (lo, hi) = (
+            *self.cols.first().unwrap_or(&0) as f32,
+            *self.cols.last().unwrap_or(&0) as f32,
+        );
+        let ci = ci_f.round().clamp(lo, hi);
+        let row = (((z - self.params.z0) / self.params.dz - 0.5).round())
+            .clamp(0.0, self.params.rows.saturating_sub(1) as f32);
+        let off_z = z - self.depth_at(row + 0.5);
+        if let Some(u) = self
+            .units
+            .iter_mut()
+            .find(|u| u.members.iter().any(|m| m == exist))
+        {
+            u.ci = ci as i32;
+            u.row = row as u32;
+            u.off_x = ci_f - ci;
+            u.off_z = off_z;
+        }
+        self.generation += 1;
+    }
+
     /// Update a placed unit's card box in place (pose change: prone/stand).
     /// Position never moves — permanence — so a wide prone box may overlap
     /// a neighbour; separation only ever applies at arrival.

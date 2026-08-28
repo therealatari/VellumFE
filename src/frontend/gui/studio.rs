@@ -76,6 +76,8 @@ struct StageState {
     prop_filter: String,
     /// Selected placed prop (index into scene.props); drag-to-place moves it.
     selected_prop: Option<usize>,
+    /// Creature exist id being dragged on the stage (grabbed by its card).
+    dragging_creature: Option<String>,
     /// Status lines raised inside panel closures, drained by stage_ui.
     pending_status: Vec<String>,
 }
@@ -106,6 +108,7 @@ impl StageState {
             scene_name: String::new(),
             prop_filter: String::new(),
             selected_prop: None,
+            dragging_creature: None,
             pending_status: Vec::new(),
         })
     }
@@ -689,6 +692,43 @@ impl StageState {
                         prop.z = z;
                     }
                 }
+            }
+        } else {
+            // Creature drag-to-place: grab a card (topmost = nearest under
+            // the pointer) and drag its ground point around the floor. The
+            // solver inverts the projection; separation is deliberately
+            // bypassed — the Stage exists to compose exact arrangements.
+            let response = ui.interact(
+                rect,
+                ui.id().with("stage_creature_drag"),
+                egui::Sense::drag(),
+            );
+            if response.drag_started() {
+                self.dragging_creature = response.interact_pointer_pos().and_then(|pos| {
+                    let (sx, sy) = super::app::VellumGuiApp::creature_field_stage_pos(rect, pos);
+                    let field = &self.app_core.creature_field;
+                    let mut hit: Option<(f32, String)> = None;
+                    for u in field.units() {
+                        let r = field.rect(u);
+                        let inside = sx >= r.x0 && sx <= r.x1 && sy >= r.y0 && sy <= r.y1;
+                        if inside && hit.as_ref().is_none_or(|(z, _)| r.z < *z) {
+                            hit = Some((r.z, u.members[0].clone()));
+                        }
+                    }
+                    hit.map(|(_, id)| id)
+                });
+            }
+            if response.dragged() {
+                if let (Some(id), Some(pos)) = (
+                    self.dragging_creature.clone(),
+                    response.interact_pointer_pos(),
+                ) {
+                    let (sx, sy) = super::app::VellumGuiApp::creature_field_stage_pos(rect, pos);
+                    self.app_core.creature_field.place_at(&id, sx, sy);
+                }
+            }
+            if response.drag_stopped() {
+                self.dragging_creature = None;
             }
         }
         // The renderer's click-to-target emits the game command; the Stage
