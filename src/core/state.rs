@@ -712,7 +712,7 @@ pub struct CreatureFlags {
 /// Maps `<crtrStatus>` transient-status attribute names to the canonical
 /// status names used by the text parse and the status_abbrev config
 /// (e.g. the feed says "immobile", everything else says "immobilized").
-const CRTR_STATUS_FLAGS: [(&str, &str); 12] = [
+pub const CRTR_STATUS_FLAGS: [(&str, &str); 12] = [
     ("immobile", "immobilized"),
     ("webbed", "webbed"),
     ("sleeping", "sleeping"),

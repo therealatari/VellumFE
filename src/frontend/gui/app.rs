@@ -156,6 +156,35 @@ pub(super) struct WidgetRenderSettings {
         std::sync::Arc<std::collections::BTreeMap<u16, crate::core::multiaccount::PeerStatus>>,
 }
 
+impl WidgetRenderSettings {
+    /// Studio Stage settings: the creature-field renderer reads only
+    /// `creature_art`; the rest are the neutral defaults.
+    pub(super) fn for_creature_field(creature_art: skin::SharedCreatureArt) -> Self {
+        Self {
+            text_size: 14.0,
+            map_zoom: None,
+            font_family: egui::FontFamily::Proportional,
+            effects_bar_height: 18.0,
+            bar_corner_radius: 3.0,
+            auto_contrast_bar_text: false,
+            wrap_text: true,
+            vitals: super::persistence::VitalsConfig::default(),
+            background: None,
+            skin_art: None,
+            creature_art: Some(creature_art),
+            command_input_seed: None,
+            command_input_completion: None,
+            command_input_drag_gutter: false,
+            hand_icon_size: 24.0,
+            gray_inactive_icons: false,
+            gray_icon_overrides: Default::default(),
+            doll_grayscale: false,
+            effect_countdown_now: None,
+            multiaccount_peers: Default::default(),
+        }
+    }
+}
+
 /// Stable widget id for the command-input TextEdit, wherever it renders
 /// (docked window, detached viewport, or the fallback bottom panel). Focus
 /// routing and cursor placement key off this id.
@@ -297,8 +326,8 @@ enum GuiLinkDispatch {
 }
 
 #[derive(Clone, Debug)]
-struct GuiLinkClick {
-    link_data: LinkData,
+pub(super) struct GuiLinkClick {
+    pub(super) link_data: LinkData,
     click_pos: (u16, u16),
 }
 

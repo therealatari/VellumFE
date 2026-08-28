@@ -77,7 +77,8 @@ fn hsv_muted(hue: f32) -> (u8, u8, u8) {
 }
 
 impl VellumGuiApp {
-    pub(super) fn render_creature_field_content(
+    // Studio's Stage drives this exact production path; hence gui-wide.
+    pub(in crate::frontend::gui) fn render_creature_field_content(
         app_core: &AppCore,
         ui: &mut egui::Ui,
         window_name: &str,
