@@ -511,7 +511,16 @@ impl VellumGuiApp {
                 .and_then(|r| r.authored_anchor("feet"))
                 .unwrap_or(a.feet);
             let ts = a.texture.size_vec2();
-            let scale = (card.width() / ts.x).min(card.height() / ts.y);
+            // Scale by the art's CONTENT (alpha bbox), not the raw texture:
+            // transparent padding must not shrink the creature, and wide art
+            // (quadrupeds, prone poses) must not be width-crushed by the
+            // narrow card box. The content's drawn height equals the card's
+            // world height on screen; a sidecar `size` (world units, e.g. a
+            // prone pose whose content height is body thickness) overrides.
+            let content_h = ((a.bbox[3] - a.bbox[1]) * ts.y).max(1.0);
+            let px_per_unit = card.height() / unit.size.h.max(0.01);
+            let world_h = a.size.filter(|s| *s > 0.0).unwrap_or(unit.size.h);
+            let scale = (world_h * px_per_unit) / content_h;
             let (draw_w, draw_h) = (ts.x * scale, ts.y * scale);
             let dest = egui::Rect::from_min_size(
                 egui::pos2(
