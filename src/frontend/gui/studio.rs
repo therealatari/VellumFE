@@ -89,7 +89,7 @@ impl StageState {
         let mut app_core = AppCore::new(config)?;
         // In-memory only: the def carries show_grid/show_order for the
         // renderer's per-window lookup. Never saved.
-        if let Some(mut def) = crate::config::Config::get_window_template("creaturefield") {
+        if let Some(mut def) = crate::core::local_catalog::seed("creaturefield") {
             def.base_mut().name = STAGE_WINDOW.to_string();
             app_core.layout.windows.push(def);
         }

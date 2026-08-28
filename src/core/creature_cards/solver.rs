@@ -324,7 +324,7 @@ impl CreatureField {
 
     /// Project an arbitrary ground point for scenery: `x` is stage-space
     /// screen x (0..STAGE_W — props author their lateral position directly
-    /// on the stage, so the camera never reframes them), `z` is world depth
+    /// on the stage, so the camera never re-aims at them), `z` is world depth
     /// on the camera axis. Returns the foot point plus pixels-per-world-
     /// unit at that depth — the same `mscale * f_eff / z` cards project
     /// their size through, so a prop's world height stays in scale with the
@@ -495,6 +495,19 @@ impl CreatureField {
     /// mounted pair, the pair splits first and the survivor keeps the
     /// unit's square — the dismount-before-death ordering, enforced here
     /// so callers cannot tear a rider down with its mount.
+    /// Update a placed unit's card box in place (pose change: prone/stand).
+    /// Position never moves — permanence — so a wide prone box may overlap
+    /// a neighbour; separation only ever applies at arrival.
+    pub fn resize(&mut self, exist: &str, size: CardSize) {
+        if let Some(u) = self
+            .units
+            .iter_mut()
+            .find(|u| u.members.iter().any(|m| m == exist))
+        {
+            u.size = size;
+        }
+    }
+
     pub fn depart(&mut self, exist: &str) {
         let Some(idx) = self
             .units

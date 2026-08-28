@@ -344,15 +344,62 @@ pub fn field_member(c: &crate::core::state::Creature, excluded_nouns: &[String])
 /// the stage; relative size within the clamp is information and is never
 /// normalized away. Bosses keep at least the old visibility bump on top.
 pub fn card_size_for(c: &crate::core::state::Creature) -> solver::CardSize {
+    let h = standing_height_for(c);
+    let lying = c.is_dead() || c.flags.as_ref().is_some_and(|f| f.has_flag("prone"));
+    if lying {
+        // Prone box from the bestiary body type: a downed biped is roughly
+        // a third of its standing height and as long as it was tall; a
+        // quadruped is already low, so it keeps more of its height.
+        let quad = bestiary_body_type(&c.name, c.noun.as_deref())
+            .is_some_and(|t| t == "quadruped");
+        let ph = if quad { h * 0.70 } else { h * 0.35 };
+        return solver::CardSize {
+            w: (h * 0.90).max(0.35),
+            h: ph.max(0.30),
+        };
+    }
+    solver::CardSize { w: h * 0.5, h }
+}
+
+/// Standing card height in world units, pose-agnostic — the anchor for
+/// sprite pixel scale even while the card box is a prone one.
+pub fn standing_height_for(c: &crate::core::state::Creature) -> f32 {
     let boss = c.flags.as_ref().is_some_and(|f| f.is_boss());
-    let h = match (bestiary_height_units(&c.name, c.noun.as_deref()), boss) {
+    match (bestiary_height_units(&c.name, c.noun.as_deref()), boss) {
         (Some(h), true) => (h * 1.15).max(1.52),
         (Some(h), false) => h,
         (None, true) => 1.52,
         (None, false) => solver::CardSize::default().h,
     }
-    .clamp(0.55, 2.6);
-    solver::CardSize { w: h * 0.5, h }
+    .clamp(0.55, 2.6)
+}
+
+/// Bestiary body type (`biped`/`quadruped`/`avian`/`ooze`…), lowercased,
+/// matched with the same exact-name-then-noun-agreement discipline as
+/// [`bestiary_height_units`].
+fn bestiary_body_type(name: &str, noun: Option<&str>) -> Option<String> {
+    let canonical = naming::canonical_name(name);
+    let noun = noun
+        .filter(|n| !n.trim().is_empty())
+        .map(str::to_string)
+        .or_else(|| canonical.split_whitespace().last().map(str::to_string))?;
+    let db = crate::core::bestiary::format::shared();
+    let entries = db.by_noun(&noun);
+    let of = |e: &&crate::core::bestiary::CreatureEntry| -> Option<String> {
+        e.creature_type
+            .as_deref()
+            .map(|t| t.trim().to_ascii_lowercase())
+            .filter(|t| !t.is_empty())
+    };
+    if let Some(entry) = entries
+        .iter()
+        .find(|e| e.name.eq_ignore_ascii_case(&canonical))
+    {
+        return of(&entry);
+    }
+    let mut types = entries.iter().filter_map(|e| of(&e));
+    let first = types.next()?;
+    types.all(|t| t == first).then_some(first)
 }
 
 /// World-unit height for a creature from the bundled bestiary. Matching
@@ -428,8 +475,19 @@ pub fn sync_field(
         field.depart(&exist);
     }
     for c in wanted {
-        if field.unit_of(&c.id).is_none() {
-            field.arrive(&c.id, card_size_for(c));
+        // Pose changes (prone/stand/death) bump the generation via
+        // crtrStatus, so already-placed units re-derive their box here;
+        // resize only through the unit's primary member so a rider's pose
+        // never clobbers the mount's footprint.
+        let primary = field
+            .unit_of(&c.id)
+            .map(|u| u.members.first().map(String::as_str) == Some(c.id.as_str()));
+        match primary {
+            None => {
+                field.arrive(&c.id, card_size_for(c));
+            }
+            Some(true) => field.resize(&c.id, card_size_for(c)),
+            Some(false) => {}
         }
     }
 }
@@ -851,5 +909,41 @@ mod tests {
             let c = card_size_for(&creature(&e.name, "rat"));
             assert!(c.h >= 0.55 && c.h <= 2.6);
         }
+    }
+
+    /// A prone creature's card box goes short and wide, scaled by the
+    /// bestiary body type (a biped flattens more than a quadruped); the
+    /// standing height stays available as the sprite pixel-scale anchor.
+    #[test]
+    fn prone_card_box_derives_from_body_type() {
+        let prone = |name: &str, noun: &str| crate::core::state::Creature {
+            name: name.to_string(),
+            noun: Some(noun.to_string()),
+            id: "1".into(),
+            status: None,
+            flags: Some(crate::core::state::CreatureFlags {
+                statuses: vec!["prone".to_string()],
+                hostile: true,
+                ..Default::default()
+            }),
+        };
+        // Biped kobold (4 ft -> 0.8 standing): prone = 0.35x tall, 0.9x wide.
+        let c = prone("big ugly kobold", "kobold");
+        let standing = standing_height_for(&c);
+        assert!((standing - 0.8).abs() < 0.01);
+        let box_ = card_size_for(&c);
+        assert!(
+            (box_.h - (standing * 0.35).max(0.30)).abs() < 0.01,
+            "h = {}",
+            box_.h
+        );
+        assert!((box_.w - standing * 0.9).abs() < 0.01, "w = {}", box_.w);
+        assert!(box_.h < box_.w, "prone box must be wider than tall");
+        // Standing pose is unchanged by the prone plumbing.
+        let up = card_size_for(&crate::core::state::Creature {
+            flags: None,
+            ..prone("big ugly kobold", "kobold")
+        });
+        assert!((up.h - standing).abs() < 0.001);
     }
 }

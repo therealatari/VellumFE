@@ -522,14 +522,17 @@ impl VellumGuiApp {
                 s * px_per_unit / content_h
             } else {
                 // No authored size: the BASE art's content height maps to
-                // the card's world height, and pose/variant art inherits
-                // that same pixel scale — art sets are drawn at one scale,
-                // so a prone image (content height = body thickness) isn't
+                // the creature's STANDING height (not the card box, which
+                // shrinks while prone), and pose/variant art inherits that
+                // same pixel scale — art sets are drawn at one scale, so a
+                // prone image (content height = body thickness) isn't
                 // stretched to standing height.
                 let r = art.unwrap_or(a);
                 let rts = r.texture.size_vec2();
                 let content_h = ((r.bbox[3] - r.bbox[1]) * rts.y).max(1.0);
-                card.height() / content_h
+                let standing =
+                    crate::core::creature_cards::standing_height_for(creature);
+                standing * px_per_unit / content_h
             };
             let (draw_w, draw_h) = (ts.x * scale, ts.y * scale);
             let dest = egui::Rect::from_min_size(
