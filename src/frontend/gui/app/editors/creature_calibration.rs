@@ -17,6 +17,14 @@ use eframe::egui;
 /// Anchor names offered up front; any other name can be added freely.
 const SUGGESTED_ANCHORS: &[&str] = &["feet", "head", "mouth", "back", "saddle"];
 
+/// Wound-part anchors, offered as a second suggestion group: the field's
+/// injury overlays look these up by doll-part name on the image's sidecar
+/// (`art.anchor(part)`), so placing them here positions wound markers and
+/// `{token}_{part}{rank}` art per creature.
+fn wound_anchor_names() -> impl Iterator<Item = &'static str> {
+    crate::config::INJURY_AREAS.iter().copied()
+}
+
 struct CreatureChoice {
     label: String,
     pool_path: String,
@@ -145,12 +153,16 @@ impl CreatureCalibrationState {
                         let mut names: Vec<String> =
                             SUGGESTED_ANCHORS.iter().map(|s| s.to_string()).collect();
                         for key in state.anchors.keys() {
-                            if !names.iter().any(|n| n.eq_ignore_ascii_case(key)) {
+                            if !names.iter().any(|n| n.eq_ignore_ascii_case(key))
+                                && !wound_anchor_names().any(|w| w.eq_ignore_ascii_case(key))
+                            {
                                 names.push(key.clone());
                             }
                         }
                         names.sort();
-                        for name in names {
+                        let mut anchor_row = |ui: &mut egui::Ui,
+                                              state: &mut CreatureCalibrationState,
+                                              name: String| {
                             let placed = state.anchors.contains_key(&name);
                             let label = if placed {
                                 format!("{name} \u{2022}")
@@ -163,7 +175,20 @@ impl CreatureCalibrationState {
                             {
                                 state.selected_anchor = name;
                             }
+                        };
+                        for name in names {
+                            anchor_row(ui, state, name);
                         }
+                        // Wound parts: the injury overlays look these up by
+                        // doll-part name, collapsed so the common anchors
+                        // stay one glance.
+                        egui::CollapsingHeader::new("Wound parts")
+                            .default_open(false)
+                            .show(ui, |ui| {
+                                for name in wound_anchor_names() {
+                                    anchor_row(ui, state, name.to_string());
+                                }
+                            });
                         ui.add_space(4.0);
                         ui.horizontal(|ui| {
                             let field = egui::TextEdit::singleline(&mut state.new_anchor_name)
