@@ -67,6 +67,17 @@ struct StageState {
     show_order: bool,
     /// Currently applied rider/mount pair (first flagged rider + mount).
     pair: Option<(String, String)>,
+    /// The Stage's scene, held as the Arc the render settings take; edits
+    /// go through `Arc::make_mut` (cheap — the render clone is per-frame).
+    scene: std::sync::Arc<crate::config::scenes::StageScene>,
+    /// Scene name box (save target / last loaded).
+    scene_name: String,
+    /// Scenery-pool filter box.
+    prop_filter: String,
+    /// Selected placed prop (index into scene.props); drag-to-place moves it.
+    selected_prop: Option<usize>,
+    /// Status lines raised inside panel closures, drained by stage_ui.
+    pending_status: Vec<String>,
 }
 
 /// Fabricated layout window carrying the Stage's grid/order toggles.
@@ -91,6 +102,11 @@ impl StageState {
             show_grid: true,
             show_order: false,
             pair: None,
+            scene: std::sync::Arc::new(crate::config::scenes::StageScene::default()),
+            scene_name: String::new(),
+            prop_filter: String::new(),
+            selected_prop: None,
+            pending_status: Vec::new(),
         })
     }
 
@@ -234,8 +250,196 @@ impl StageState {
             .collect()
     }
 
+    /// The Scene section: backdrop + scenery props, persisted whole-file
+    /// to `global/scenes/<name>.toml`.
+    fn scene_ui(&mut self, ui: &mut egui::Ui) {
+        use crate::config::scenes::{self, SceneProp, StageScene};
+        use std::sync::Arc;
+
+        ui.heading("Scene");
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.scene_name)
+                    .hint_text("scene name")
+                    .desired_width(110.0),
+            );
+            if ui.button("Save").clicked() {
+                match self.scene.save(&self.scene_name) {
+                    Ok(()) => self
+                        .pending_status
+                        .push(format!("Scene '{}' saved", self.scene_name.trim())),
+                    Err(err) => self.pending_status.push(format!("Scene save failed: {err:#}")),
+                }
+            }
+            if ui.button("New").clicked() {
+                self.scene = Arc::new(StageScene::default());
+                self.scene_name.clear();
+                self.selected_prop = None;
+            }
+        });
+        let saved = scenes::list_scenes();
+        if !saved.is_empty() {
+            egui::ComboBox::from_id_salt("scene_load")
+                .selected_text("Load…")
+                .show_ui(ui, |ui| {
+                    for name in &saved {
+                        if ui.selectable_label(false, name).clicked() {
+                            match StageScene::load(name) {
+                                Ok(scene) => {
+                                    self.scene = Arc::new(scene);
+                                    self.scene_name = name.clone();
+                                    self.selected_prop = None;
+                                }
+                                Err(err) => self
+                                    .pending_status
+                                    .push(format!("Scene load failed: {err:#}")),
+                            }
+                        }
+                    }
+                });
+        }
+
+        let backgrounds = crate::config::pool::list_category("scenes");
+        ui.horizontal(|ui| {
+            ui.label("Backdrop");
+            let current = self.scene.background.clone();
+            let text = current
+                .as_deref()
+                .map(|p| p.rsplit('/').next().unwrap_or(p).to_string())
+                .unwrap_or_else(|| "(none)".to_string());
+            egui::ComboBox::from_id_salt("scene_bg")
+                .selected_text(text)
+                .show_ui(ui, |ui| {
+                    if ui.selectable_label(current.is_none(), "(none)").clicked() {
+                        Arc::make_mut(&mut self.scene).background = None;
+                    }
+                    for image in &backgrounds {
+                        let on = current.as_deref() == Some(image.pool_path.as_str());
+                        if ui.selectable_label(on, image.display_label()).clicked() {
+                            Arc::make_mut(&mut self.scene).background =
+                                Some(image.pool_path.clone());
+                        }
+                    }
+                });
+        });
+        ui.horizontal(|ui| {
+            ui.label("Color");
+            // The picker needs a concrete color; an unset scene edits a
+            // neutral slate and only stores once touched (None keeps the
+            // default panel fill).
+            let mut rgb = self
+                .scene
+                .background_color
+                .as_deref()
+                .and_then(parse_hex_rgb)
+                .unwrap_or([64, 64, 72]);
+            if ui.color_edit_button_srgb(&mut rgb).changed() {
+                Arc::make_mut(&mut self.scene).background_color =
+                    Some(format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2]));
+            }
+            if self.scene.background_color.is_some()
+                && ui.small_button("x").on_hover_text("Clear color").clicked()
+            {
+                Arc::make_mut(&mut self.scene).background_color = None;
+            }
+        });
+
+        ui.label("Props");
+        let pool = crate::config::pool::list_category("scenery");
+        if backgrounds.is_empty() && pool.is_empty() {
+            ui.weak(
+                "Drop PNGs into global/images/scenes (backgrounds, author at 880x470) \
+                 or global/images/scenery (props)",
+            );
+        }
+        ui.add(
+            egui::TextEdit::singleline(&mut self.prop_filter)
+                .hint_text("filter")
+                .desired_width(140.0),
+        );
+        let filter = self.prop_filter.to_ascii_lowercase();
+        let mut add_request: Option<String> = None;
+        egui::ScrollArea::vertical()
+            .id_salt("scene_pool")
+            .max_height(110.0)
+            .show(ui, |ui| {
+                for image in &pool {
+                    if !filter.is_empty()
+                        && !image.pool_path.to_ascii_lowercase().contains(&filter)
+                    {
+                        continue;
+                    }
+                    ui.horizontal(|ui| {
+                        if ui.small_button("Add").clicked() {
+                            add_request = Some(image.pool_path.clone());
+                        }
+                        ui.label(image.display_label());
+                    });
+                }
+            });
+        let (z_near, z_far) = self.app_core.creature_field.depth_range();
+        if let Some(image) = add_request {
+            // New props spawn at stage centre, mid depth.
+            let scene = Arc::make_mut(&mut self.scene);
+            scene.props.push(SceneProp {
+                image,
+                x: crate::core::creature_cards::solver::STAGE_W / 2.0,
+                z: (z_near + z_far) / 2.0,
+                scale: 1.0,
+            });
+            self.selected_prop = Some(scene.props.len() - 1);
+        }
+        let placed: Vec<String> = self
+            .scene
+            .props
+            .iter()
+            .map(|p| p.image.rsplit('/').next().unwrap_or(&p.image).to_string())
+            .collect();
+        let mut remove_request: Option<usize> = None;
+        for (k, name) in placed.iter().enumerate() {
+            ui.horizontal(|ui| {
+                if ui.small_button("x").on_hover_text("Remove").clicked() {
+                    remove_request = Some(k);
+                }
+                if ui
+                    .selectable_label(self.selected_prop == Some(k), name)
+                    .clicked()
+                {
+                    self.selected_prop = Some(k);
+                }
+            });
+        }
+        if let Some(k) = remove_request {
+            Arc::make_mut(&mut self.scene).props.remove(k);
+            self.selected_prop = match self.selected_prop {
+                Some(s) if s == k => None,
+                Some(s) if s > k => Some(s - 1),
+                other => other,
+            };
+        }
+        if let Some(k) = self.selected_prop {
+            let scene = Arc::make_mut(&mut self.scene);
+            if let Some(prop) = scene.props.get_mut(k) {
+                ui.horizontal(|ui| {
+                    ui.label("x");
+                    ui.add(egui::DragValue::new(&mut prop.x).speed(2.0));
+                    ui.label("z");
+                    ui.add(egui::DragValue::new(&mut prop.z).speed(0.02));
+                });
+                prop.x = prop
+                    .x
+                    .clamp(0.0, crate::core::creature_cards::solver::STAGE_W);
+                prop.z = prop.z.clamp(z_near, z_far);
+                ui.add(egui::Slider::new(&mut prop.scale, 0.1..=5.0).text("scale"));
+                ui.weak("Drag on the stage to move the selected prop");
+            }
+        }
+    }
+
     fn panel_ui(&mut self, ui: &mut egui::Ui) {
         egui::ScrollArea::vertical().show(ui, |ui| {
+            self.scene_ui(ui);
+            ui.separator();
             ui.heading("Cast");
             ui.horizontal(|ui| {
                 ui.add(
@@ -454,13 +658,39 @@ impl StageState {
             ui.checkbox(&mut self.show_order, "Draw order");
         });
         self.apply_view_options();
-        let settings = super::app::WidgetRenderSettings::for_creature_field(art);
+        // The renderer allocates the remaining region; remember it for the
+        // drag interact below (same origin + size).
+        let rect = egui::Rect::from_min_size(ui.next_widget_position(), ui.available_size());
+        let settings =
+            super::app::WidgetRenderSettings::for_creature_field(art, Some(self.scene.clone()));
         let click = super::app::VellumGuiApp::render_creature_field_content(
             &self.app_core,
             ui,
             STAGE_WINDOW,
             &settings,
         );
+        // Drag-to-place: while a prop is selected, dragging the field view
+        // moves it on the ground plane (screen → stage → ground, through
+        // the renderer's own mapping and the solver's inverse projection).
+        if let Some(k) = self.selected_prop {
+            let response = ui.interact(
+                rect,
+                ui.id().with("scene_prop_drag"),
+                egui::Sense::drag(),
+            );
+            if response.dragged() {
+                if let Some(pos) = response.interact_pointer_pos() {
+                    let (sx, sy) =
+                        super::app::VellumGuiApp::creature_field_stage_pos(rect, pos);
+                    let (x, z) = self.app_core.creature_field.ground_from_screen(sx, sy);
+                    let scene = std::sync::Arc::make_mut(&mut self.scene);
+                    if let Some(prop) = scene.props.get_mut(k) {
+                        prop.x = x;
+                        prop.z = z;
+                    }
+                }
+            }
+        }
         // The renderer's click-to-target emits the game command; the Stage
         // applies it locally instead of sending it anywhere.
         if let Some(click) = click {
@@ -469,6 +699,20 @@ impl StageState {
             }
         }
     }
+}
+
+/// "#rrggbb" -> srgb components, for seeding the color picker. None for
+/// anything malformed (the picker then edits its neutral default).
+fn parse_hex_rgb(text: &str) -> Option<[u8; 3]> {
+    let hex = text.trim().strip_prefix('#').unwrap_or(text.trim());
+    if hex.len() != 6 {
+        return None;
+    }
+    Some([
+        u8::from_str_radix(&hex[0..2], 16).ok()?,
+        u8::from_str_radix(&hex[2..4], 16).ok()?,
+        u8::from_str_radix(&hex[4..6], 16).ok()?,
+    ])
 }
 
 /// Distinct castable base tokens from the creature pool: a BASE image is
@@ -665,11 +909,16 @@ impl StudioApp {
         if !wanted.is_empty() {
             self.skin_state.prepare_creature_art(ctx, &wanted);
         }
+        self.skin_state.prepare_scene_art(ctx, &stage.scene);
         let art = self.skin_state.creature_art();
         egui::Panel::right("stage_panel")
             .default_size(300.0)
             .show(root, |ui| stage.panel_ui(ui));
         egui::CentralPanel::default().show(root, |ui| stage.field_ui(ui, art));
+        let pending: Vec<String> = stage.pending_status.drain(..).collect();
+        for message in pending {
+            self.push_status(message);
+        }
     }
 }
 

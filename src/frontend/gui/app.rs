@@ -128,6 +128,10 @@ pub(super) struct WidgetRenderSettings {
     /// the update loop, renderers only read. None in contexts without a
     /// skin state.
     creature_art: Option<skin::SharedCreatureArt>,
+    /// Stage scene (backdrop + scenery props) for the creaturefield
+    /// renderer. None everywhere in the game today; the Studio Stage sets
+    /// it, and the client's future scenes feature will feed the same slot.
+    scene: Option<std::sync::Arc<crate::config::scenes::StageScene>>,
     /// Current command-input buffer, only for command-input windows. Render
     /// paths are `&self`; edits flow back via `CommandInputEcho`.
     command_input_seed: Option<String>,
@@ -159,7 +163,10 @@ pub(super) struct WidgetRenderSettings {
 impl WidgetRenderSettings {
     /// Studio Stage settings: the creature-field renderer reads only
     /// `creature_art`; the rest are the neutral defaults.
-    pub(super) fn for_creature_field(creature_art: skin::SharedCreatureArt) -> Self {
+    pub(super) fn for_creature_field(
+        creature_art: skin::SharedCreatureArt,
+        scene: Option<std::sync::Arc<crate::config::scenes::StageScene>>,
+    ) -> Self {
         Self {
             text_size: 14.0,
             map_zoom: None,
@@ -172,6 +179,7 @@ impl WidgetRenderSettings {
             background: None,
             skin_art: None,
             creature_art: Some(creature_art),
+            scene,
             command_input_seed: None,
             command_input_completion: None,
             command_input_drag_gutter: false,

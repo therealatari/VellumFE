@@ -317,6 +317,39 @@ impl CreatureField {
         (self.screen_x(wx, z), self.screen_y(z))
     }
 
+    /// The floor's world depth range: near edge .. far edge.
+    pub fn depth_range(&self) -> (f32, f32) {
+        (self.depth_at(0.0), self.depth_at(self.params.rows as f32))
+    }
+
+    /// Project an arbitrary ground point for scenery: `x` is stage-space
+    /// screen x (0..STAGE_W — props author their lateral position directly
+    /// on the stage, so the camera never reframes them), `z` is world depth
+    /// on the camera axis. Returns the foot point plus pixels-per-world-
+    /// unit at that depth — the same `mscale * f_eff / z` cards project
+    /// their size through, so a prop's world height stays in scale with the
+    /// cards around it.
+    pub fn project_ground(&self, x: f32, z: f32) -> ((f32, f32), f32) {
+        let z = z.max(0.4);
+        ((x, self.screen_y(z)), self.mscale() * self.f_eff() / z)
+    }
+
+    /// Invert the ground projection: a stage-space point back to the (x, z)
+    /// `project_ground` takes, clamped to the stage width and the floor's
+    /// depth range. Drag-to-place editors position props with this.
+    pub fn ground_from_screen(&self, sx: f32, sy: f32) -> (f32, f32) {
+        let (z_near, z_far) = self.depth_range();
+        let dy = sy - self.params.horizon;
+        // At or above the horizon the projection has no ground solution;
+        // clamp to the far edge instead of dividing toward infinity.
+        let z = if dy > 1e-3 {
+            (self.params.cam_h * self.f_eff()) / dy
+        } else {
+            z_far
+        };
+        (sx.clamp(0.0, STAGE_W), z.clamp(z_near, z_far))
+    }
+
     /// The card's screen rect (upright standee), used for occlusion,
     /// separation, and hit testing.
     pub fn rect(&self, u: &Unit) -> ScreenRect {
@@ -1032,6 +1065,29 @@ mod tests {
         for u in f.units() {
             assert!(u.ci > lo && u.ci < hi);
         }
+    }
+
+    /// Scenery projection: ground_from_screen inverts project_ground for
+    /// any point inside the floor's depth range, and clamps outside it.
+    #[test]
+    fn ground_projection_roundtrips_and_clamps() {
+        let f = CreatureField::default();
+        let (z_near, z_far) = f.depth_range();
+        for z in [z_near, (z_near + z_far) / 2.0, z_far] {
+            for x in [0.0, 220.0, STAGE_W] {
+                let ((sx, sy), scale) = f.project_ground(x, z);
+                assert!(scale > 0.0);
+                let (rx, rz) = f.ground_from_screen(sx, sy);
+                assert!((rx - x).abs() < 1e-3, "x {x} -> {rx}");
+                assert!((rz - z).abs() < 1e-3, "z {z} -> {rz}");
+            }
+        }
+        // Above the horizon: clamps to the far edge instead of exploding.
+        let (_, z) = f.ground_from_screen(100.0, f.params.horizon - 50.0);
+        assert_eq!(z, z_far);
+        // Off-stage x clamps into the stage.
+        let (x, _) = f.ground_from_screen(-40.0, STAGE_H - 10.0);
+        assert_eq!(x, 0.0);
     }
 
     #[test]

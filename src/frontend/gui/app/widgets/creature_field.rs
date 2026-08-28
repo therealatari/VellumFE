@@ -39,6 +39,28 @@ impl StageMap {
     fn rect(&self, r: &ScreenRect) -> egui::Rect {
         egui::Rect::from_min_max(self.pt(r.x0, r.y0), self.pt(r.x1, r.y1))
     }
+
+    /// Widget-space point back to virtual-stage coordinates (the inverse
+    /// of `pt`), for editors dragging things on the stage.
+    fn stage_pos(&self, p: egui::Pos2) -> (f32, f32) {
+        (
+            (p.x - self.origin.x) / self.scale,
+            (p.y - self.origin.y) / self.scale,
+        )
+    }
+}
+
+/// A scene's "#rrggbb" background color, or None for anything malformed
+/// (a bad hand-edited scene degrades to the default fill, never errors).
+fn parse_hex_rgb(text: &str) -> Option<Color32> {
+    let hex = text.trim().strip_prefix('#').unwrap_or(text.trim());
+    if hex.len() != 6 {
+        return None;
+    }
+    let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+    Some(Color32::from_rgb(r, g, b))
 }
 
 /// Stable placeholder body color from the creature's noun, muted so status
@@ -102,7 +124,45 @@ impl VellumGuiApp {
         let map = StageMap::fit(rect);
         let field = &app_core.creature_field;
 
-        if field.units().is_empty() {
+        // Skin creature art (and scene art), prepared in the update loop;
+        // render only reads.
+        let art_cache = settings
+            .creature_art
+            .as_ref()
+            .map(|a| a.lock().expect("creature art lock"));
+        let art_cache = art_cache.as_deref();
+
+        // Scene backdrop under everything: color fill first, then the
+        // background image cover-fit over the widget rect (the painter
+        // clips the overflow).
+        let scene = settings.scene.as_deref();
+        if let Some(scene) = scene {
+            if let Some(color) = scene.background_color.as_deref().and_then(parse_hex_rgb) {
+                painter.rect_filled(rect, 0.0, color);
+            }
+            if let Some(texture) = scene
+                .background
+                .as_deref()
+                .and_then(|bg| art_cache.and_then(|c| c.scene_background(bg)))
+            {
+                let ts = texture.size_vec2();
+                if ts.x > 0.0 && ts.y > 0.0 {
+                    let cover = (rect.width() / ts.x).max(rect.height() / ts.y);
+                    painter.image(
+                        texture.id(),
+                        egui::Rect::from_center_size(rect.center(), ts * cover),
+                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                        Color32::WHITE,
+                    );
+                }
+            }
+        }
+        let props: &[crate::config::scenes::SceneProp] =
+            scene.map(|s| s.props.as_slice()).unwrap_or_default();
+
+        // A scene keeps painting with nobody home; the game (scene = None)
+        // keeps its placeholder text.
+        if field.units().is_empty() && scene.is_none() {
             painter.text(
                 rect.center(),
                 egui::Align2::CENTER_CENTER,
@@ -125,15 +185,31 @@ impl VellumGuiApp {
         let gameobj = app_core.gameobj_data_cached();
         let mut any_animated = false;
 
-        // Skin creature art, prepared in the update loop; render only reads.
-        let art_cache = settings
-            .creature_art
-            .as_ref()
-            .map(|a| a.lock().expect("creature art lock"));
-        let art_cache = art_cache.as_deref();
-
         // Far -> near (painter's algorithm), ground-z keyed in the solver.
-        for &i in &field.draw_order() {
+        // Scenery props carry their own z and slot into the same sequence,
+        // so a rock can stand in front of one creature and behind another.
+        enum DrawItem {
+            Unit(usize),
+            Prop(usize),
+        }
+        let mut items: Vec<(f32, DrawItem)> = field
+            .draw_order()
+            .iter()
+            .map(|&i| (field.ground_z(&field.units()[i]), DrawItem::Unit(i)))
+            .collect();
+        for (k, prop) in props.iter().enumerate() {
+            items.push((prop.z.max(0.4), DrawItem::Prop(k)));
+        }
+        // Stable: units keep the solver's order on equal depth.
+        items.sort_by(|a, b| b.0.total_cmp(&a.0));
+        for (_, item) in &items {
+            let i = match item {
+                DrawItem::Prop(k) => {
+                    Self::paint_scene_prop(&painter, &map, field, &props[*k], art_cache);
+                    continue;
+                }
+                DrawItem::Unit(i) => *i,
+            };
             let unit = &field.units()[i];
             for member in &unit.members {
                 let Some(creature) = app_core
@@ -237,6 +313,81 @@ impl VellumGuiApp {
         } else {
             None
         }
+    }
+
+    /// Widget-space point back to virtual-stage coordinates for a field
+    /// drawn into `rect` — the Studio's drag-to-place inverts through this
+    /// so it can never drift from the renderer's own stage mapping.
+    pub(in crate::frontend::gui) fn creature_field_stage_pos(
+        rect: egui::Rect,
+        pos: egui::Pos2,
+    ) -> (f32, f32) {
+        StageMap::fit(rect).stage_pos(pos)
+    }
+
+    /// One scenery prop, painted exactly like a creature card's base:
+    /// feet-anchored at the ground projection of (x, z), world height from
+    /// the sidecar (or the 1.0 default) times the prop's scale, through
+    /// the same perspective scaling the cards use, with the sidecar
+    /// footprint (or generic ellipse) as its contact shadow. Missing art
+    /// draws a muted placeholder block — a placed prop is never invisible.
+    fn paint_scene_prop(
+        painter: &egui::Painter,
+        map: &StageMap,
+        field: &crate::core::creature_cards::solver::CreatureField,
+        prop: &crate::config::scenes::SceneProp,
+        art_cache: Option<&crate::frontend::gui::skin::CreatureArtCache>,
+    ) {
+        let ((fx, fy), px_per_unit) = field.project_ground(prop.x, prop.z);
+        let foot = map.pt(fx, fy);
+        let art = art_cache.and_then(|c| c.scenery(&prop.image));
+        let world_h = art.and_then(|a| a.size).unwrap_or(1.0) * prop.scale.max(0.01);
+        let draw_h = world_h * px_per_unit * map.scale;
+        let Some(art) = art else {
+            let w = draw_h * 0.8;
+            let body = egui::Rect::from_min_max(
+                egui::pos2(foot.x - w / 2.0, foot.y - draw_h),
+                egui::pos2(foot.x + w / 2.0, foot.y),
+            );
+            painter.rect_filled(body, w * 0.15, Color32::from_rgba_unmultiplied(120, 120, 120, 90));
+            return;
+        };
+        let ts = art.texture.size_vec2();
+        let draw_w = draw_h * ts.x / ts.y.max(1.0);
+        let dest = egui::Rect::from_min_size(
+            egui::pos2(foot.x - art.feet[0] * draw_w, foot.y - art.feet[1] * draw_h),
+            egui::vec2(draw_w, draw_h),
+        );
+        // Contact shadow on the ground line, sized by the sidecar footprint
+        // when authored, the generic standee ellipse otherwise.
+        let (shadow_c, shadow_rx, shadow_ry) = match art.footprint {
+            Some(fp) => {
+                let cx = fp
+                    .center
+                    .map(|c| dest.left() + c[0] * dest.width())
+                    .unwrap_or(foot.x);
+                (
+                    egui::pos2(cx, foot.y),
+                    dest.width() * fp.rx,
+                    dest.width() * fp.effective_ry(),
+                )
+            }
+            None => {
+                let w = dest.width() * 0.55;
+                (foot, w, w * 0.24)
+            }
+        };
+        painter.add(egui::epaint::PathShape::convex_polygon(
+            ellipse_points(shadow_c, shadow_rx, shadow_ry),
+            Color32::from_black_alpha(60),
+            Stroke::NONE,
+        ));
+        painter.image(
+            art.texture.id(),
+            dest,
+            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+            Color32::WHITE,
+        );
     }
 
     fn paint_field_floor(

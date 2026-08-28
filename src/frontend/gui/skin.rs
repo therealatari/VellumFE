@@ -640,6 +640,12 @@ pub struct CreatureArtCache {
     pub variant_bases: HashMap<String, Option<CreatureArt>>,
     /// Overlay manifest path -> texture (None = load failed).
     pub overlays: HashMap<String, Option<egui::TextureHandle>>,
+    /// Scenery-prop pool path ("scenery/rock.png") -> full art. Props load
+    /// through the creature loader so each carries its own feet anchor,
+    /// footprint, and world size (sidecar or alpha-derived).
+    pub scenery: HashMap<String, Option<CreatureArt>>,
+    /// Scene background pool path ("scenes/desert.png") -> texture.
+    pub scene_backgrounds: HashMap<String, Option<egui::TextureHandle>>,
     /// The `[creature_card]` template: the built-in default (pool resolve
     /// cascade + convention status overlays) — creature art never requires
     /// a skin.
@@ -678,6 +684,18 @@ impl CreatureArtCache {
     /// Variant pose art for a base-override path, if prepared.
     pub fn variant_base(&self, path: &str) -> Option<&CreatureArt> {
         self.variant_bases.get(path).and_then(|art| art.as_ref())
+    }
+
+    /// Scenery-prop art for a pool path, if prepared.
+    pub fn scenery(&self, pool_path: &str) -> Option<&CreatureArt> {
+        self.scenery.get(pool_path).and_then(|art| art.as_ref())
+    }
+
+    /// Scene background texture for a pool path, if prepared.
+    pub fn scene_background(&self, pool_path: &str) -> Option<&egui::TextureHandle> {
+        self.scene_backgrounds
+            .get(pool_path)
+            .and_then(|tex| tex.as_ref())
     }
 }
 
@@ -972,6 +990,41 @@ impl SkinState {
                 &cache.skin_name,
             );
             cache.overlays.insert(path, tex);
+        }
+    }
+
+    /// Load a scene's art (background texture + prop art) into the
+    /// creature-art cache, misses included, so a settled scene costs hash
+    /// lookups only. Called per frame by whoever renders with a scene (the
+    /// Studio Stage today; the game passes no scene and never calls this).
+    pub fn prepare_scene_art(&mut self, ctx: &egui::Context, scene: &crate::config::scenes::StageScene) {
+        let cache = self.creature_art.clone();
+        let mut cache = cache.lock().expect("creature art lock");
+        if let Some(bg) = &scene.background {
+            if !cache.scene_backgrounds.contains_key(bg) {
+                let abs = skins::resolve_image_path(&cache.root, bg);
+                let tex = super::image_store::load_texture_file(
+                    ctx,
+                    &abs,
+                    &format!("scene-bg:{bg}"),
+                    "scene",
+                );
+                cache.scene_backgrounds.insert(bg.clone(), tex);
+            }
+        }
+        for prop in &scene.props {
+            if cache.scenery.contains_key(&prop.image) {
+                continue;
+            }
+            let abs = skins::resolve_image_path(&cache.root, &prop.image);
+            let art = abs
+                .is_file()
+                .then(|| load_creature_art(ctx, &abs, "scene"))
+                .flatten();
+            if art.is_none() {
+                tracing::warn!("scene prop '{}' missing or unloadable", prop.image);
+            }
+            cache.scenery.insert(prop.image.clone(), art);
         }
     }
 

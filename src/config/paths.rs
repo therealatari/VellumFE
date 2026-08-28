@@ -177,7 +177,16 @@ impl Config {
         "backgrounds",
         "statusicons",
         "hands",
+        "scenes",
+        "scenery",
     ];
+
+    /// Get the shared stage-scene store: one `<name>.toml` per authored
+    /// scene (background + scenery props; see `config::scenes`).
+    /// Returns: ~/.vellum-fe/global/scenes/
+    pub fn scenes_dir() -> Result<PathBuf> {
+        Ok(Self::global_dir()?.join("scenes"))
+    }
 
     /// Get the shared image pool: one subfolder per category
     /// (see IMAGE_CATEGORIES). Skin manifests resolve relative image paths

@@ -31,6 +31,7 @@ mod presets;
 pub mod profiles;
 pub mod registry;
 pub mod room_images;
+pub mod scenes;
 mod settings;
 pub mod skin_pack;
 pub mod skins;

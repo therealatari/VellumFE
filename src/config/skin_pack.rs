@@ -44,14 +44,14 @@ const SET_CATEGORIES: &[&str] = &["compass", "statusicons", "hands", "edges"];
 /// Categories resolved by convention (name/token lookup), never by an
 /// assignment slot. Colliding files here are skipped on install — renaming
 /// would break the token match that makes them work at all.
-const CONVENTION_CATEGORIES: &[&str] = &["creatures", "scenes"];
+const CONVENTION_CATEGORIES: &[&str] = &["creatures", "scenes", "scenery"];
 
 /// Every top-level folder a pack may ship art under. Anything else is a
 /// warning (forward compatibility: newer packs may know categories this
 /// build doesn't).
 fn known_categories() -> Vec<&'static str> {
     let mut all: Vec<&'static str> = Config::IMAGE_CATEGORIES.to_vec();
-    all.extend(["edges", "creatures", "scenes"]);
+    all.extend(["edges", "creatures"]);
     all
 }
 
@@ -457,7 +457,9 @@ fn check_metadata(category: &str, text: &str) -> Result<(), String> {
     match category {
         "dolls" => typed::<DollSidecar>(text),
         "frames" => typed::<FrameSidecar>(text),
-        "creatures" => typed::<CreatureSidecar>(text),
+        // Scenery props anchor and ground exactly like creature sprites
+        // (feet anchor + footprint + world size), so they share the schema.
+        "creatures" | "scenery" => typed::<CreatureSidecar>(text),
         "edges" => typed::<EdgeSidecar>(text),
         _ => toml::from_str::<toml::Value>(text)
             .map(|_| ())
