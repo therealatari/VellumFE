@@ -511,16 +511,26 @@ impl VellumGuiApp {
                 .and_then(|r| r.authored_anchor("feet"))
                 .unwrap_or(a.feet);
             let ts = a.texture.size_vec2();
-            // Scale by the art's CONTENT (alpha bbox), not the raw texture:
+            // Scale by art CONTENT (alpha bbox), not the raw texture:
             // transparent padding must not shrink the creature, and wide art
             // (quadrupeds, prone poses) must not be width-crushed by the
-            // narrow card box. The content's drawn height equals the card's
-            // world height on screen; a sidecar `size` (world units, e.g. a
-            // prone pose whose content height is body thickness) overrides.
-            let content_h = ((a.bbox[3] - a.bbox[1]) * ts.y).max(1.0);
+            // narrow card box.
             let px_per_unit = card.height() / unit.size.h.max(0.01);
-            let world_h = a.size.filter(|s| *s > 0.0).unwrap_or(unit.size.h);
-            let scale = (world_h * px_per_unit) / content_h;
+            let scale = if let Some(s) = a.size.filter(|s| *s > 0.0) {
+                // Authored world size (sidecar) wins outright.
+                let content_h = ((a.bbox[3] - a.bbox[1]) * ts.y).max(1.0);
+                s * px_per_unit / content_h
+            } else {
+                // No authored size: the BASE art's content height maps to
+                // the card's world height, and pose/variant art inherits
+                // that same pixel scale — art sets are drawn at one scale,
+                // so a prone image (content height = body thickness) isn't
+                // stretched to standing height.
+                let r = art.unwrap_or(a);
+                let rts = r.texture.size_vec2();
+                let content_h = ((r.bbox[3] - r.bbox[1]) * rts.y).max(1.0);
+                card.height() / content_h
+            };
             let (draw_w, draw_h) = (ts.x * scale, ts.y * scale);
             let dest = egui::Rect::from_min_size(
                 egui::pos2(
