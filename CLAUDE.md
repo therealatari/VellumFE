@@ -43,7 +43,10 @@ cargo test -- --test-threads=1
 src/
 ├── main.rs           # CLI entry point (clap)
 ├── config.rs         # Configuration loading (TOML files)
-├── parser.rs         # Wrayth XML protocol parser
+├── parser.rs         # Wrayth XML protocol parser (facade; ≤1100 lines, enforced)
+├── parser/           # Parser internals: text.rs (entities/tags/streams glue),
+│                     # handlers.rs (tag handlers), dialogs.rs, links.rs,
+│                     # builders.rs (in-flight multi-line captures), tests.rs
 ├── network.rs        # TCP/TLS connections (Lich proxy or direct eAccess)
 │
 ├── core/             # Business logic layer (NO frontend imports)
@@ -135,6 +138,39 @@ Defaults embedded from `defaults/` directory via `include_dir` crate.
 | Keyboard input | `frontend/tui/input.rs`, `input_handlers.rs` |
 | Dot-commands | `core/app_core/commands.rs` |
 | Color parsing | `frontend/tui/colors.rs` (`parse_color_to_ratatui`) |
+
+## Parser Invariants
+
+The Wrayth XML parser (`src/parser.rs` + `src/parser/`) has behavior contracts
+pinned by a golden snapshot; know them before touching it:
+
+- **Golden snapshot workflow**: `tests/parser_characterization.rs` runs every
+  fixture through the parser and compares against
+  `tests/data/parser_golden.snap`. ANY behavior change must show up as a
+  reviewed diff: regenerate with `UPDATE_PARSER_GOLDEN=1 cargo test --test
+  parser_characterization`, review, commit the diff with the change.
+  (Window templates have the same workflow: `UPDATE_GOLDEN=1 cargo test
+  --test template_characterization`.)
+- **Nothing is silently dropped**: unknown tag names render as literal text
+  with a `warn!`; known-but-unhandled tags (sorted `KNOWN_WIRE_TAGS` set in
+  `parser/text.rs`) swallow with a debug log. New wire tags must be added to
+  the set.
+- **Streams are a stack**: `pushStream` nests; a pop restores the enclosing
+  stream via `ParsedElement::StreamResume` (re-route WITHOUT arrival side
+  effects). `<prompt>` force-closes any stream still open (warn = eaten
+  popStream upstream) and resets all style/bold/mono state.
+- **Multi-line captures**: dialogData/openDialog/component/compDef/
+  worldEvent/compass may close on a later line (`PairedCapture` in
+  `parser/builders.rs`); prompt mid-capture discards with a warn; 256KiB cap.
+  prompt/left/right/spell/inv are same-line-only by policy.
+- **Mangled markup**: a `<` preceded by `$` is broken server escaping —
+  rendered as literal text, never interpreted.
+- **Entities**: 5 named + numeric (`&#nnn;`/`&#xhh;`), decoded exactly once
+  (`decode_entities_stable` is for double-encoded display titles ONLY).
+- **Facade limit**: `parser.rs` must stay ≤1100 lines (architecture test);
+  new code goes in the `parser/` submodules.
+- **Live instrumentation**: `grep -a "\[parser\]" ~/.vellum-fe/vellum-fe.log`
+  after a session shows unknown tags, eaten popStreams, and torn captures.
 
 ## Direct eAccess Authentication
 
