@@ -320,6 +320,16 @@ fn main() -> Result<()> {
     // Parse CLI arguments
     let mut cli = Cli::parse();
 
+    // Custom data directory FIRST — subcommands (studio, validate-skin,
+    // migrate-skin, …) read the pool/config through the same resolver, so
+    // --data-dir must land in the env var before any of them dispatch.
+    if let Some(data_dir) = &cli.data_dir {
+        std::env::set_var("VELLUM_FE_DIR", data_dir);
+        tracing::info!("Using custom data directory: {:?}", data_dir);
+    } else if let Ok(env_dir) = std::env::var("VELLUM_FE_DIR") {
+        tracing::info!("Using data directory from VELLUM_FE_DIR: {}", env_dir);
+    }
+
     // Handle subcommands
     if let Some(command) = cli.command {
         match command {
@@ -720,13 +730,7 @@ fn main() -> Result<()> {
         }
     }
 
-    // Set custom data directory if specified (via CLI or environment variable)
-    if let Some(data_dir) = &cli.data_dir {
-        std::env::set_var("VELLUM_FE_DIR", data_dir);
-        tracing::info!("Using custom data directory: {:?}", data_dir);
-    } else if let Ok(env_dir) = std::env::var("VELLUM_FE_DIR") {
-        tracing::info!("Using data directory from VELLUM_FE_DIR: {}", env_dir);
-    }
+    // (custom data directory was applied before subcommand dispatch)
 
     // Launcher mode: explicit --launcher, or a bare double-click/no-args
     // start. Sessions are spawned from there as separate processes.
