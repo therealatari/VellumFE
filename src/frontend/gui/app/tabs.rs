@@ -97,6 +97,7 @@ impl VellumGuiApp {
             WidgetType::Map => TabKey::Map,
             WidgetType::Indicator => TabKey::Indicators,
             WidgetType::Targets => TabKey::Targets,
+            WidgetType::Quests => TabKey::Quests,
             WidgetType::Players => TabKey::Players,
             WidgetType::Room => TabKey::Room,
             WidgetType::Experience | WidgetType::GS4Experience => TabKey::Experience,

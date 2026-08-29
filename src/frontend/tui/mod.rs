@@ -45,6 +45,7 @@ pub mod pack_editor;
 mod perception;
 mod performance_stats;
 mod players;
+mod quests_window;
 mod popup_menu;
 mod progress_bar;
 mod quickbar;
@@ -408,6 +409,16 @@ impl TuiFrontend {
                 active_effects.scroll_up(lines as usize);
             } else if lines < 0 {
                 active_effects.scroll_down((-lines) as usize);
+            }
+            return;
+        }
+
+        // Try quests widget
+        if let Some(quests) = self.widget_manager.quests_widgets.get_mut(window_name) {
+            if lines > 0 {
+                quests.scroll_up(lines as usize);
+            } else if lines < 0 {
+                quests.scroll_down((-lines) as usize);
             }
             return;
         }

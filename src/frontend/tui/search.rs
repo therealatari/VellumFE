@@ -55,6 +55,11 @@ impl TuiFrontend {
             return targets.mouse_to_text_coords(mouse_col, mouse_row, window_rect);
         }
 
+        // Check quests windows
+        if let Some(quests) = self.widget_manager.quests_widgets.get(window_name) {
+            return quests.mouse_to_text_coords(mouse_col, mouse_row, window_rect);
+        }
+
         // Check players windows
         if let Some(players) = self.widget_manager.players_widgets.get(window_name) {
             return players.mouse_to_text_coords(mouse_col, mouse_row, window_rect);
@@ -140,6 +145,11 @@ impl TuiFrontend {
         // Check targets windows
         if let Some(targets) = self.widget_manager.targets_widgets.get(window_name) {
             return Some(targets.extract_selection_text(start_line, start_col, end_line, end_col));
+        }
+
+        // Check quests windows
+        if let Some(quests) = self.widget_manager.quests_widgets.get(window_name) {
+            return Some(quests.extract_selection_text(start_line, start_col, end_line, end_col));
         }
 
         // Check players windows

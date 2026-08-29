@@ -32,6 +32,8 @@ pub struct WidgetManager {
     pub indicator_widgets: HashMap<String, super::indicator::Indicator>,
     /// Cache of Targets widgets per window name (component-based from room objs)
     pub targets_widgets: HashMap<String, super::targets::Targets>,
+    /// Cache of Quests (objectives feed) widgets per window name
+    pub quests_widgets: HashMap<String, super::quests_window::QuestsWindow>,
     /// Cache of Players widgets per window name
     pub players_widgets: HashMap<String, super::players::Players>,
     /// Cache of MissingSpells widgets per window name
@@ -93,6 +95,7 @@ impl WidgetManager {
             spacer_widgets: HashMap::new(),
             indicator_widgets: HashMap::new(),
             targets_widgets: HashMap::new(),
+            quests_widgets: HashMap::new(),
             players_widgets: HashMap::new(),
             missing_spells_widgets: HashMap::new(),
             containers_widgets: HashMap::new(),
@@ -130,6 +133,7 @@ impl WidgetManager {
         self.spacer_widgets.clear();
         self.indicator_widgets.clear();
         self.targets_widgets.clear();
+        self.quests_widgets.clear();
         self.players_widgets.clear();
         self.missing_spells_widgets.clear();
         self.containers_widgets.clear();
@@ -167,6 +171,7 @@ impl WidgetManager {
         self.spacer_widgets.remove(name);
         self.indicator_widgets.remove(name);
         self.targets_widgets.remove(name);
+        self.quests_widgets.remove(name);
         self.players_widgets.remove(name);
         self.missing_spells_widgets.remove(name);
         self.containers_widgets.remove(name);

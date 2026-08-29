@@ -142,6 +142,13 @@ pub enum WindowDef {
         data: PerformanceWidgetData,
     },
 
+    /// Saga quest panel (objectives feed); reads GameState.objectives.
+    #[serde(rename = "quests")]
+    Quests {
+        #[serde(flatten)]
+        base: WindowBase,
+    },
+
     #[serde(rename = "targets")]
     Targets {
         #[serde(flatten)]
@@ -503,6 +510,7 @@ impl WindowDef {
                     sparklines: true,
                 },
             },
+            "quests" => WindowDef::Quests { base },
             "targets" => WindowDef::Targets {
                 base,
                 data: TargetsWidgetData {
@@ -635,6 +643,7 @@ impl WindowDef {
             WindowDef::Hand { base, .. } => &base.name,
             WindowDef::ActiveEffects { base, .. } => &base.name,
             WindowDef::Performance { base, .. } => &base.name,
+            WindowDef::Quests { base, .. } => &base.name,
             WindowDef::Targets { base, .. } => &base.name,
             WindowDef::CreatureField { base, .. } => &base.name,
             WindowDef::Players { base, .. } => &base.name,
@@ -678,6 +687,7 @@ impl WindowDef {
             WindowDef::Hand { .. } => "hand",
             WindowDef::ActiveEffects { .. } => "active_effects",
             WindowDef::Performance { .. } => "performance",
+            WindowDef::Quests { .. } => "quests",
             WindowDef::Targets { .. } => "targets",
             WindowDef::CreatureField { .. } => "creaturefield",
             WindowDef::Players { .. } => "players",
@@ -721,6 +731,7 @@ impl WindowDef {
             WindowDef::Hand { base, .. } => base,
             WindowDef::ActiveEffects { base, .. } => base,
             WindowDef::Performance { base, .. } => base,
+            WindowDef::Quests { base, .. } => base,
             WindowDef::Targets { base, .. } => base,
             WindowDef::CreatureField { base, .. } => base,
             WindowDef::Players { base, .. } => base,
@@ -764,6 +775,7 @@ impl WindowDef {
             WindowDef::Hand { base, .. } => base,
             WindowDef::ActiveEffects { base, .. } => base,
             WindowDef::Performance { base, .. } => base,
+            WindowDef::Quests { base, .. } => base,
             WindowDef::Targets { base, .. } => base,
             WindowDef::CreatureField { base, .. } => base,
             WindowDef::Players { base, .. } => base,

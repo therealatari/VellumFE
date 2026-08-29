@@ -140,6 +140,7 @@ encum
 minivitals
 betrayer
 multiaccount
+quests
 
 [template_list.dr]
 health
@@ -287,6 +288,7 @@ encum = None
 minivitals = Some(GS4)
 betrayer = Some(GS4)
 multiaccount = None
+quests = Some(GS4)
 
 [id_maps]
 "inv": dialog="inv" stream="inventory" has_widget=false
@@ -330,7 +332,7 @@ multiaccount = None
 
 [templates_by_category]
 ActiveEffects: buffs, debuffs, cooldowns, active_spells, alert_timers, active_effects_custom
-Character: inventory, reserve, spells, missingspells, containers, injuries, perception, experience, gs4_experience, encum, multiaccount
+Character: inventory, reserve, spells, missingspells, containers, injuries, perception, experience, gs4_experience, encum, multiaccount, quests
 Countdown: roundtime, casttime, stuntime, aimtime, pulse, countdown_custom
 Dialog: betrayer
 Entity: targets, creaturefield, players, items, entity_custom
@@ -357,7 +359,7 @@ TextWindow: main, thoughts, speech, bestiary, announcements, loot, death, logons
 
 [addable_on_empty_layout.gs4]
 ActiveEffects: buffs, debuffs, cooldowns, active_spells, alert_timers, active_effects_custom
-Character: inventory, reserve, spells, missingspells, containers, injuries, gs4_experience, encum, multiaccount
+Character: inventory, reserve, spells, missingspells, containers, injuries, gs4_experience, encum, multiaccount, quests
 Countdown: roundtime, casttime, stuntime, aimtime, pulse, countdown_custom
 Dialog: betrayer
 Entity: targets, creaturefield, players, items, entity_custom
@@ -2159,3 +2161,23 @@ TextWindow: main, thoughts, speech, bestiary, announcements, loot, death, logons
   card_width = 150.0
   
   [card_row_columns]
+
+[template.quests]
+  widget_type = "quests"
+  name = "quests"
+  row = 0
+  col = 0
+  rows = 14
+  cols = 45
+  show_border = true
+  border_style = "single"
+  border_sides = ["top", "bottom", "left", "right"]
+  show_title = true
+  title = "Quests"
+  title_position = "top-left"
+  transparent_background = false
+  locked = false
+  min_rows = 4
+  min_cols = 20
+  visibility = "shown"
+  tts_speak = false

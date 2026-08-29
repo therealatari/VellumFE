@@ -423,6 +423,8 @@ pub enum RemoteDelta {
     /// Active effects changed (spells/buffs/debuffs/cooldowns), in fixed
     /// category order.
     Effects(Vec<crate::data::ActiveEffectsContent>),
+    /// Quest objectives (Saga quest panel feed).
+    Objectives(crate::data::ObjectivesContent),
     /// The full spellbook ("Spells" stream) changed, as styled lines.
     Spells(Vec<crate::data::widget::StyledLine>),
     /// Body-part injuries changed: id -> level (1-3 wounds, 4-6 scars);
@@ -820,6 +822,8 @@ pub struct RemoteStateSnapshot {
     pub server_time: i64,
     /// Active effects in fixed category order (empty categories omitted).
     pub effects: Vec<crate::data::ActiveEffectsContent>,
+    /// Quest objectives (Saga quest panel feed).
+    pub objectives: crate::data::ObjectivesContent,
     /// Full spellbook (the "Spells" stream) as styled lines (spell colors +
     /// links), so remote clients get the whole active-spell list without a
     /// Spells window.
@@ -1203,6 +1207,7 @@ impl RemoteStateSnapshot {
                 .cloned()
                 .collect(),
             spellbook: game_state.spellbook.clone(),
+            objectives: game_state.objectives.clone(),
             injuries: game_state.injuries.clone(),
             targets: {
                 // Lich Creature.targets, matching the TUI/GUI widgets: a room
@@ -1814,6 +1819,11 @@ impl RemoteSink {
             let _ = self
                 .delta_tx
                 .send(RemoteDelta::Effects(snap.effects.clone()));
+        }
+        if snap.objectives != self.last.objectives {
+            let _ = self
+                .delta_tx
+                .send(RemoteDelta::Objectives(snap.objectives.clone()));
         }
         if snap.spellbook != self.last.spellbook {
             let _ = self

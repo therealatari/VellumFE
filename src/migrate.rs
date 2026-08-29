@@ -778,6 +778,7 @@ impl BaseMut for WindowDef {
             WindowDef::Hand { base, .. } => Some(base),
             WindowDef::ActiveEffects { base, .. } => Some(base),
             WindowDef::Performance { base, .. } => Some(base),
+            WindowDef::Quests { base, .. } => Some(base),
             WindowDef::Targets { base, .. } => Some(base),
             WindowDef::CreatureField { base, .. } => Some(base),
             WindowDef::Players { base, .. } => Some(base),

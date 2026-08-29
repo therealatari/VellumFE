@@ -176,6 +176,8 @@ impl WindowEditor {
             WindowDef::MultiAccount { .. } => {}
             // Creature field is GUI-only; base fields suffice in the TUI.
             WindowDef::CreatureField { .. } => {}
+            // Quest panel has no extra config; base fields suffice.
+            WindowDef::Quests { .. } => {}
             WindowDef::CommandInput { .. } => {
                 fields.push(FieldRef::PromptIcon);
                 fields.push(FieldRef::PromptIconColor);

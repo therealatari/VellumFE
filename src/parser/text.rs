@@ -172,7 +172,7 @@ impl XmlParser {
     /// are passed through as visible text (never silently dropped) so
     /// protocol changes announce themselves. MUST stay sorted: binary search.
     pub(super) const KNOWN_WIRE_TAGS: &'static [&'static str] = &[
-        "FEVersion", "LaunchURL", "LichWebUI", "PantheonStatus", "a", "annotate", "app", "b",
+        "FEVersion", "LaunchURL", "LichWebUI", "PantheonStatus", "a", "action", "annotate", "app", "b",
         "br", "castTime", "celebration", "checkBox", "clearContainer", "clearDynaStream",
         "clearStream", "cli", "closeButton", "closeDialog", "closedialog", "cmdButton",
         "cmdlist", "cmdtimestamp", "compDef", "compass", "component", "container",
@@ -185,7 +185,7 @@ impl XmlParser {
         "nomenu", "noverbupdates", "objective", "objectives", "openDialog", "opendialog",
         "output", "palette", "playerID", "players", "popBold", "popInputState", "popStream",
         "popup", "preset", "presets", "progressBar", "prompt", "pulse", "pushBold",
-        "pushInputState", "pushStream", "radio", "resource", "result", "right", "roomDesc",
+        "pushInputState", "pushStream", "radio", "resource", "result", "reward", "right", "roomDesc",
         "roommeta", "roundTime", "sentSettings", "sep", "settings", "settingsInfo", "skin",
         "spell", "stream", "streamId", "streamWindow", "string", "switchQuickBar", "timer",
         "tipInfo", "upDownEditBox", "updateverbs", "vScrollBar", "worldEvent",

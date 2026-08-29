@@ -204,7 +204,7 @@ impl WidgetCategory {
             "targets" | "players" | "items" | "creaturefield" => Self::Entity,
             "inventory" | "spells" | "missingspells" | "containers" | "injury_doll"
             | "experience" | "gs4_experience" | "encum" | "reserve" | "perception"
-            | "multiaccount" => Self::Character,
+            | "multiaccount" | "quests" => Self::Character,
             "room" | "compass" | "map" => Self::Navigation,
             "quickbar" | "hotkeybar" => Self::Hotbars,
             "container" => Self::Container,

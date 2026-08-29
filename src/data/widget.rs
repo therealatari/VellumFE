@@ -497,6 +497,45 @@ impl ActiveEffectsContent {
     }
 }
 
+/// One reward line on a quest objective (`<reward type='experience' amount='5000'/>`)
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ObjectiveReward {
+    pub reward_type: String, // "experience", "fame", ...
+    pub amount: u64,
+}
+
+/// An action the player can take on an objective
+/// (`<action type='accept' cmd='QUEST ACCEPT s24352'/>`)
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ObjectiveAction {
+    pub action_type: String, // "accept", ...
+    pub cmd: String,         // Verbatim game command to send
+}
+
+/// One entry from the `<objectives>` quest panel feed
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Objective {
+    pub id: String,
+    pub kind: String,  // type attribute: "QUEST"
+    pub state: String, // "available", ...
+    pub name: String,
+    pub description: String, // May contain embedded newlines (multi-step lists)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cadence: Option<String>, // "weekly", "monthly"
+    pub rewards: Vec<ObjectiveReward>,
+    pub actions: Vec<ObjectiveAction>,
+}
+
+/// Quest objectives content (Saga quest panel feed)
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ObjectivesContent {
+    pub objectives: Vec<Objective>,
+    /// Bumped on every change; sync skips unchanged rebuilds
+    pub generation: u64,
+}
+
 /// Tab definition for tabbed text window
 #[derive(Clone, Debug)]
 pub struct TabDefinition {

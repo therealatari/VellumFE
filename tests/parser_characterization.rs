@@ -42,6 +42,7 @@ const CORPUS: &[(&str, &str)] = &[
     ("icon_dialogdata", include_str!("fixtures/icon_dialogdata.xml")),
     ("uberbar_frame", include_str!("fixtures/uberbar_frame.xml")),
     ("parser_edge_cases", include_str!("fixtures/parser_edge_cases.xml")),
+    ("objectives", include_str!("fixtures/objectives.xml")),
 ];
 
 const GOLDEN_PATH: &str = "tests/data/parser_golden.snap";

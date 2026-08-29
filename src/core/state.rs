@@ -99,6 +99,10 @@ pub struct GameState {
     /// widgets' source of truth.
     pub effects: HashMap<String, crate::data::ActiveEffectsContent>,
 
+    /// Quest objectives (Saga quest panel feed). Lives here rather than on a
+    /// window so remote/web clients and windows added mid-session see it.
+    pub objectives: crate::data::ObjectivesContent,
+
     /// Compass directions
     pub compass_dirs: Vec<String>,
 
@@ -2027,6 +2031,7 @@ impl GameState {
             right_hand: None,
             active_effects: Vec::new(),
             effects: HashMap::new(),
+            objectives: crate::data::ObjectivesContent::default(),
             compass_dirs: Vec::new(),
             injuries: HashMap::new(),
             last_prompt: String::from(">"), // Default prompt

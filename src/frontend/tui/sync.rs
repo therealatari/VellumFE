@@ -1345,6 +1345,66 @@ impl TuiFrontend {
         }
     }
 
+    /// Sync quest panel widget data from GameState.objectives
+    pub(crate) fn sync_quests_widgets(
+        &mut self,
+        app_core: &crate::core::AppCore,
+        theme: &crate::theme::AppTheme,
+    ) {
+        let window_defs = window_def_map(&app_core.layout);
+        for (name, window) in &app_core.ui_state.windows {
+            if let crate::data::WindowContent::Quests = &window.content {
+                if !self.widget_manager.quests_widgets.contains_key(name) {
+                    let mut widget = super::quests_window::QuestsWindow::new(name);
+                    let highlights: Vec<_> = app_core.config.highlights.values().cloned().collect();
+                    widget.set_highlights(highlights);
+                    widget.set_replace_enabled(app_core.config.highlight_settings.replace_enabled);
+                    self.widget_manager
+                        .quests_widgets
+                        .insert(name.clone(), widget);
+                }
+
+                if let Some(widget) = self.widget_manager.quests_widgets.get_mut(name) {
+                    let data_gen = app_core.game_state.objectives.generation;
+                    if self.widget_manager.widget_data_generation.get(name) != Some(&data_gen) {
+                        widget.update_from_state(&app_core.game_state.objectives);
+                        self.widget_manager
+                            .widget_data_generation
+                            .insert(name.clone(), data_gen);
+                    }
+
+                    if let Some(window_def) = window_defs.get(name.as_str()).copied() {
+                        let colors = resolve_window_colors(
+                            window_def.base(),
+                            &app_core.config.colors.ui,
+                            theme,
+                        );
+                        widget.set_border_config(
+                            window_def.base().show_border,
+                            Some(window_def.base().border_style.clone()),
+                            colors.border.clone(),
+                        );
+                        widget.set_border_sides(window_def.base().border_sides.clone());
+                        widget.set_background_color(colors.background.clone());
+                        widget.set_text_color(colors.text.clone());
+                        widget.set_transparent_background(window_def.base().transparent_background);
+
+                        let base_title = window_def
+                            .base()
+                            .title
+                            .clone()
+                            .unwrap_or_else(|| name.clone());
+                        if window_def.base().show_title {
+                            widget.set_title(&base_title);
+                        } else {
+                            widget.set_title("");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// Sync container window widget data from GameState.container_cache
     /// Looks up containers by title (case-insensitive), since container IDs change each session
     pub(crate) fn sync_container_widgets(

@@ -82,6 +82,8 @@ pub enum TabKey {
 
     /// Target list (creatures in room)
     Targets,
+    /// Quest panel (objectives feed)
+    Quests,
 
     /// Players in room
     Players,
@@ -151,6 +153,7 @@ impl TabKey {
             TabKey::SpellHand => "Spell".to_string(),
             TabKey::Indicators => "Status".to_string(),
             TabKey::Targets => "Targets".to_string(),
+            TabKey::Quests => "Quests".to_string(),
             TabKey::Players => "Players".to_string(),
             TabKey::Room => "Room".to_string(),
             TabKey::Experience => "Experience".to_string(),
@@ -184,6 +187,7 @@ impl TabKey {
             TabKey::SpellHand => "spell_hand".to_string(),
             TabKey::Indicators => "indicators".to_string(),
             TabKey::Targets => "targets".to_string(),
+            TabKey::Quests => "quests".to_string(),
             TabKey::Players => "players".to_string(),
             TabKey::Room => "room".to_string(),
             TabKey::Experience => "experience".to_string(),
@@ -399,6 +403,7 @@ mod tests {
             TabKey::SpellHand,
             TabKey::Indicators,
             TabKey::Targets,
+            TabKey::Quests,
             TabKey::Players,
             TabKey::Room,
             TabKey::Experience,

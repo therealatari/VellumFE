@@ -4312,3 +4312,82 @@ fn spectate_familiar_push_keeps_familiar_stream() {
         .collect();
     assert_eq!(ids, vec!["familiar"]);
 }
+
+// ===========================================
+// Objectives (Saga quest panel feed)
+// ===========================================
+
+#[test]
+fn test_objectives_full_refresh() {
+    let mut parser = XmlParser::new();
+    let line = r#"<objectives action='full-refresh'><objective id='24352' type='QUEST' state='available' name="Into the Rift" description="A mysterious adventurer requests assistance in the Rift." location="The Rift" cadence='monthly'><reward type='experience' amount='5000'/><reward type='fame' amount='10000'/><action type='accept' cmd='QUEST ACCEPT s24352'/></objective><objective id='24330' type='QUEST' state='available' name="Shadow's Descent" description="Line one.&#10;Line two."><reward type='experience' amount='10000'/><action type='accept' cmd='QUEST ACCEPT s24330'/></objective></objectives>"#;
+    let elements = parser.parse_line(line);
+
+    let Some(ParsedElement::ObjectivesUpdate { action, entries }) = elements
+        .iter()
+        .find(|e| matches!(e, ParsedElement::ObjectivesUpdate { .. }))
+    else {
+        panic!("no ObjectivesUpdate emitted: {:?}", elements);
+    };
+    assert_eq!(action, "full-refresh");
+    assert_eq!(entries.len(), 2);
+
+    let q = &entries[0];
+    assert_eq!(q.id, "24352");
+    assert_eq!(q.kind, "QUEST");
+    assert_eq!(q.state, "available");
+    assert_eq!(q.name, "Into the Rift");
+    assert_eq!(q.location.as_deref(), Some("The Rift"));
+    assert_eq!(q.cadence.as_deref(), Some("monthly"));
+    assert_eq!(q.rewards.len(), 2);
+    assert_eq!(q.rewards[0].reward_type, "experience");
+    assert_eq!(q.rewards[0].amount, 5000);
+    assert_eq!(q.actions.len(), 1);
+    assert_eq!(q.actions[0].action_type, "accept");
+    assert_eq!(q.actions[0].cmd, "QUEST ACCEPT s24352");
+
+    // &#10; in the description decodes to a real newline; no location/cadence
+    let q2 = &entries[1];
+    assert_eq!(q2.description, "Line one.\nLine two.");
+    assert_eq!(q2.location, None);
+    assert_eq!(q2.cadence, None);
+}
+
+#[test]
+fn test_objectives_multi_line_capture() {
+    let mut parser = XmlParser::new();
+    let first = parser.parse_line(
+        r#"<objectives action='full-refresh'><objective id='1' type='QUEST' state='available' name="Split" description="Torn across lines.">"#,
+    );
+    assert!(
+        !first
+            .iter()
+            .any(|e| matches!(e, ParsedElement::ObjectivesUpdate { .. })),
+        "capture must not emit before the close tag"
+    );
+    let second =
+        parser.parse_line(r#"<action type='accept' cmd='QUEST ACCEPT s1'/></objective></objectives>"#);
+    let Some(ParsedElement::ObjectivesUpdate { entries, .. }) = second
+        .iter()
+        .find(|e| matches!(e, ParsedElement::ObjectivesUpdate { .. }))
+    else {
+        panic!("no ObjectivesUpdate after close: {:?}", second);
+    };
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].name, "Split");
+    assert_eq!(entries[0].actions[0].cmd, "QUEST ACCEPT s1");
+}
+
+#[test]
+fn test_objectives_empty_refresh_clears() {
+    let mut parser = XmlParser::new();
+    let elements = parser.parse_line("<objectives action='full-refresh'></objectives>");
+    let Some(ParsedElement::ObjectivesUpdate { action, entries }) = elements
+        .iter()
+        .find(|e| matches!(e, ParsedElement::ObjectivesUpdate { .. }))
+    else {
+        panic!("empty refresh must still emit: {:?}", elements);
+    };
+    assert_eq!(action, "full-refresh");
+    assert!(entries.is_empty());
+}

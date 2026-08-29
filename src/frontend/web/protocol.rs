@@ -126,6 +126,8 @@ struct SnapshotPayload {
     group: crate::core::group::GroupState,
     rt: RtPayload,
     effects: Vec<ActiveEffectsContent>,
+    #[serde(default, skip_serializing_if = "objectives_is_empty")]
+    objectives: crate::data::ObjectivesContent,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     spellbook: Vec<crate::data::widget::StyledLine>,
     injuries: std::collections::HashMap<String, u8>,
@@ -159,6 +161,12 @@ struct SnapshotPayload {
 /// not read it (the phone) see an unchanged wire.
 fn group_is_empty(group: &crate::core::group::GroupState) -> bool {
     !group.is_grouped()
+}
+
+/// A character with no quest feed ships no objectives object at all, so
+/// clients that do not read it see an unchanged wire.
+fn objectives_is_empty(objectives: &crate::data::ObjectivesContent) -> bool {
+    objectives.objectives.is_empty()
 }
 
 /// First message on every connection.
@@ -224,6 +232,7 @@ pub fn snapshot_for(
             server_time: state.server_time,
         },
         effects: state.effects.clone(),
+        objectives: state.objectives.clone(),
         spellbook: state.spellbook.clone(),
         injuries: state.injuries.clone(),
         doll_variant: state.doll_variant.clone(),
@@ -350,6 +359,7 @@ pub fn delta(delta: &RemoteDelta, last_seq: u64) -> String {
         RemoteDelta::Macros(m) => macros(m, last_seq),
         RemoteDelta::Wheels(w) => wheels(w, last_seq),
         RemoteDelta::Effects(effects) => encode("effects", last_seq, effects),
+        RemoteDelta::Objectives(objectives) => encode("objectives", last_seq, objectives),
         RemoteDelta::Spells(lines) => encode("spells", last_seq, lines),
         RemoteDelta::Session(info) => encode("session", last_seq, info),
         RemoteDelta::Injuries(injuries) => encode("injuries", last_seq, injuries),
@@ -670,6 +680,7 @@ impl SubscribeMode {
                     | D::Injuries(_)
                     | D::CharInfo(_)
                     | D::Effects(_)
+                    | D::Objectives(_)
                     | D::Hands { .. }
                     | D::Doll { .. }
                     | D::Field(_)

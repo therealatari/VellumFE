@@ -287,6 +287,7 @@ impl VellumGuiApp {
                 Self::render_webui_content(ui, content);
                 None
             }
+            WindowContent::Quests => Self::render_quests_content(app_core, ui),
             WindowContent::Targets => Self::render_targets_content(app_core, ui, &tab.window_name),
             WindowContent::CreatureField => {
                 Self::render_creature_field_content(app_core, ui, &tab.window_name, &settings)

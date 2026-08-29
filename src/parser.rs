@@ -10,7 +10,11 @@ mod handlers;
 
 pub(crate) use builders::{InvManagerBuilder, InvViewItemBuilder, PairedCapture};
 mod links;
+mod numbers;
 mod text;
+pub(crate) use numbers::parse_progress_numbers;
+#[cfg(test)]
+pub(crate) use numbers::{first_number, last_number};
 
 use crate::config::EventAction;
 use crate::data::{DialogButton, DialogDropDown, LinkData, QuickbarEntry};
@@ -26,60 +30,6 @@ pub enum SpanType {
     Monsterbold, // <preset id="monsterbold"> from parser
     Spell,       // <spell> tag from parser
     Speech,      // <preset id="speech"> from parser
-}
-
-/// Parse numeric current/max out of a progress bar text string.
-/// Supports:
-/// - "label 324/326" -> (324, 326)
-/// - "324/326" -> (324, 326)
-/// - "label (100%)" or "label 100%" -> (100, 100)
-/// - "label" -> (percentage, 100)
-fn parse_progress_numbers(text: &str, percentage: u32) -> (u32, u32) {
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        return (percentage, 100);
-    }
-
-    // Slash form: current/max
-    if let Some(slash_pos) = trimmed.rfind('/') {
-        let before_slash = &trimmed[..slash_pos];
-        let after_slash = &trimmed[slash_pos + 1..];
-
-        let current = last_number(before_slash).unwrap_or(percentage);
-        let maximum = first_number(after_slash).unwrap_or(100);
-        return (current, maximum);
-    }
-
-    // Percent or single number form: treat as current, max = 100
-    if let Some(num) = first_number(trimmed) {
-        return (num, 100);
-    }
-
-    // Label-only: fall back to percentage/max
-    (percentage, 100)
-}
-
-fn first_number(input: &str) -> Option<u32> {
-    input
-        .split(|c: char| c.is_whitespace() || c == '(' || c == ')' || c == '%')
-        .find_map(|token| {
-            token
-                .trim_matches(|c: char| !c.is_ascii_digit())
-                .parse()
-                .ok()
-        })
-}
-
-fn last_number(input: &str) -> Option<u32> {
-    input
-        .split(|c: char| c.is_whitespace() || c == '(' || c == ')' || c == '%')
-        .rev()
-        .find_map(|token| {
-            token
-                .trim_matches(|c: char| !c.is_ascii_digit())
-                .parse()
-                .ok()
-        })
 }
 
 /// Top-level representation of any XML fragment we care about.
@@ -291,6 +241,12 @@ pub enum ParsedElement {
     },
     ClearActiveEffects {
         category: String, // Which category to clear
+    },
+    /// Quest/objectives feed: `<objectives action='full-refresh'>` with
+    /// nested `<objective>` entries (Saga quest panel).
+    ObjectivesUpdate {
+        action: String, // "full-refresh" replaces; anything else upserts
+        entries: Vec<crate::data::Objective>,
     },
     MenuResponse {
         id: String,                            // Correlation ID (counter)
@@ -676,7 +632,8 @@ impl XmlParser {
 
             // Static start/end patterns - building these with format! allocated
             // 2 Strings x 10 tags per loop iteration in the hottest parse loop
-            const PAIRED_TAGS: [(&str, &str); 11] = [
+            const PAIRED_TAGS: [(&str, &str); 12] = [
+                ("<objectives", "</objectives>"),
                 ("<prompt", "</prompt>"),
                 ("<worldEvent", "</worldEvent>"),
                 ("<spell", "</spell>"),
@@ -935,6 +892,8 @@ impl XmlParser {
             self.handle_right_hand(tag, text_buffer, elements);
         } else if tag.starts_with("<compass") {
             self.handle_compass(tag, elements);
+        } else if tag.starts_with("<objectives") {
+            self.handle_objectives(tag, elements);
         } else if tag.starts_with("<dialogData ") {
             // A few dialogs key on name= instead of id= (bugDialogBox);
             // normalize so every downstream id extraction sees them.

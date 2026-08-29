@@ -205,6 +205,7 @@ pub const CATALOG: &[(&str, Option<GameType>)] = &[
     ("minivitals", Some(GameType::GS4)),
     ("betrayer", Some(GameType::GS4)),
     ("multiaccount", None),
+    ("quests", Some(GameType::GS4)),
 ];
 
 impl Config {
@@ -463,6 +464,19 @@ impl Config {
                     color: Some("#bd7b00".to_string()), // Orange
                     numbers_only: false,
                     current_only: false,
+                },
+            }),
+            "quests" => Some(WindowDef::Quests {
+                base: WindowBase {
+                    name: "quests".to_string(),
+                    title: Some("Quests".to_string()),
+                    row: Row::new(0),
+                    col: Col::new(0),
+                    rows: Height::new(14),
+                    cols: Width::new(45),
+                    min_rows: Some(4),
+                    min_cols: Some(20),
+                    ..base_defaults.clone()
                 },
             }),
             "targets" => Some(WindowDef::Targets {

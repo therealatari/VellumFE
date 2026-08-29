@@ -274,6 +274,7 @@ impl AppCore {
             crate::data::WidgetType::InjuryDoll => "injury_doll",
             crate::data::WidgetType::Hand => "hand",
             crate::data::WidgetType::ActiveEffects => "active_effects",
+            crate::data::WidgetType::Quests => "quests",
             crate::data::WidgetType::Targets => "targets",
             crate::data::WidgetType::Players => "players",
             crate::data::WidgetType::Spells => "spells",

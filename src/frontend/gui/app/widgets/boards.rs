@@ -1117,6 +1117,69 @@ impl VellumGuiApp {
         clicked_link
     }
 
+    /// Quest panel: GameState.objectives from the Saga `<objectives>` feed.
+    /// Action lines ([accept]) send the feed's verbatim command on click.
+    pub(super) fn render_quests_content(
+        app_core: &AppCore,
+        ui: &mut egui::Ui,
+    ) -> Option<GuiLinkClick> {
+        let mut clicked_link = None;
+        let max_height = ui.available_height().max(1.0);
+        egui::ScrollArea::vertical()
+            .id_salt("quests_scroll")
+            .auto_shrink([false, false])
+            .min_scrolled_height(max_height)
+            .max_height(max_height)
+            .show(ui, |ui| {
+                let objectives = &app_core.game_state.objectives.objectives;
+                if objectives.is_empty() {
+                    ui.weak("No quests available.");
+                    return;
+                }
+                for (idx, quest) in objectives.iter().enumerate() {
+                    if idx > 0 {
+                        ui.separator();
+                    }
+                    let mut header = quest.name.clone();
+                    if let Some(cadence) = &quest.cadence {
+                        header.push_str(&format!(" ({})", cadence));
+                    }
+                    ui.label(RichText::new(header).strong());
+                    if let Some(location) = &quest.location {
+                        ui.weak(location.clone());
+                    }
+                    if !quest.description.is_empty() {
+                        ui.label(quest.description.clone());
+                    }
+                    if !quest.rewards.is_empty() {
+                        let rewards: Vec<String> = quest
+                            .rewards
+                            .iter()
+                            .map(|r| format!("{} {}", r.amount, r.reward_type))
+                            .collect();
+                        ui.weak(format!("Rewards: {}", rewards.join(", ")));
+                    }
+                    for action in &quest.actions {
+                        let label = if action.action_type.is_empty() {
+                            "action".to_string()
+                        } else {
+                            action.action_type.clone()
+                        };
+                        let response = ui.button(label);
+                        if response.clicked() && clicked_link.is_none() {
+                            clicked_link = Some(Self::gui_link_click_from_response(
+                                &response,
+                                ui,
+                                Self::direct_command_link(action.cmd.clone()),
+                            ));
+                        }
+                    }
+                }
+            });
+
+        clicked_link
+    }
+
     pub(super) fn render_players_content(
         app_core: &AppCore,
         ui: &mut egui::Ui,

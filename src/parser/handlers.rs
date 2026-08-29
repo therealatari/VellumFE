@@ -130,7 +130,13 @@ impl XmlParser {
     pub(super) fn multi_line_paired(start_pattern: &str) -> bool {
         matches!(
             start_pattern,
-            "<dialogData" | "<openDialog" | "<component" | "<compDef" | "<worldEvent" | "<compass"
+            "<dialogData"
+                | "<openDialog"
+                | "<component"
+                | "<compDef"
+                | "<worldEvent"
+                | "<compass"
+                | "<objectives"
         )
     }
 
@@ -1090,6 +1096,77 @@ impl XmlParser {
                 });
             }
             // Other dropdowns (dDBStance, etc.) are silently ignored
+        }
+    }
+
+    /// Parse the Saga quest panel feed: `<objectives action='...'>` wrapping
+    /// `<objective>` entries with nested `<reward/>` and `<action/>` children.
+    /// An empty entry list on a full-refresh is meaningful (no quests).
+    pub(super) fn handle_objectives(&mut self, tag: &str, elements: &mut Vec<ParsedElement>) {
+        let head = &tag[..tag.find('>').map(|p| p + 1).unwrap_or(tag.len())];
+        let action =
+            Self::extract_attribute(head, "action").unwrap_or_else(|| "full-refresh".to_string());
+        let mut entries = Vec::new();
+        let mut remaining = tag;
+        while let Some(start) = remaining.find("<objective ") {
+            let rest = &remaining[start..];
+            let Some(open_end) = rest.find('>') else { break };
+            let (block, advance) = if rest[..open_end].ends_with('/') {
+                (&rest[..=open_end], start + open_end + 1)
+            } else if let Some(close) = rest.find("</objective>") {
+                (&rest[..close], start + close + "</objective>".len())
+            } else {
+                tracing::warn!("[parser] torn <objective> entry inside objectives block");
+                break;
+            };
+            entries.push(Self::parse_objective(block));
+            remaining = &remaining[advance..];
+        }
+        elements.push(ParsedElement::ObjectivesUpdate { action, entries });
+    }
+
+    /// Parse one `<objective ...>...` block (close tag already stripped).
+    fn parse_objective(block: &str) -> crate::data::Objective {
+        // Objective attributes come off the declaring head only, so a child
+        // <action type=...> can't satisfy a lookup for the head's type=.
+        let head = &block[..block.find('>').map(|p| p + 1).unwrap_or(block.len())];
+        let attr = |name: &str| Self::extract_attribute(head, name).unwrap_or_default();
+
+        let mut rewards = Vec::new();
+        let mut actions = Vec::new();
+        let mut remaining = block;
+        while let Some(start) = remaining.find('<') {
+            let rest = &remaining[start..];
+            let Some(end) = rest.find('>') else { break };
+            let child = &rest[..=end];
+            if child.starts_with("<reward ") {
+                rewards.push(crate::data::ObjectiveReward {
+                    reward_type: Self::extract_attribute(child, "type").unwrap_or_default(),
+                    amount: Self::extract_attribute(child, "amount")
+                        .and_then(|a| a.parse().ok())
+                        .unwrap_or(0),
+                });
+            } else if child.starts_with("<action ") {
+                if let Some(cmd) = Self::extract_attribute(child, "cmd") {
+                    actions.push(crate::data::ObjectiveAction {
+                        action_type: Self::extract_attribute(child, "type").unwrap_or_default(),
+                        cmd,
+                    });
+                }
+            }
+            remaining = &rest[end + 1..];
+        }
+
+        crate::data::Objective {
+            id: attr("id"),
+            kind: attr("type"),
+            state: attr("state"),
+            name: attr("name"),
+            description: attr("description"),
+            location: Self::extract_attribute(head, "location"),
+            cadence: Self::extract_attribute(head, "cadence"),
+            rewards,
+            actions,
         }
     }
 }

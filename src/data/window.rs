@@ -35,6 +35,8 @@ pub enum WidgetType {
     InjuryDoll,
     Hand,
     ActiveEffects,
+    /// Saga quest panel (objectives feed). Reads from GameState.objectives.
+    Quests,
     Targets, // New component-based (default)
     Players,
     Items, // Room objects (non-creatures)
@@ -105,6 +107,7 @@ impl WidgetType {
             "dashboard" => Some(WidgetType::Dashboard),
             "hand" => Some(WidgetType::Hand),
             "active_effects" => Some(WidgetType::ActiveEffects),
+            "quests" => Some(WidgetType::Quests),
             "targets" => Some(WidgetType::Targets), // Component-based (default)
             "players" => Some(WidgetType::Players),
             "missingspells" => Some(WidgetType::MissingSpells),
@@ -148,6 +151,7 @@ impl WidgetType {
         "dashboard",
         "hand",
         "active_effects",
+        "quests",
         "targets",
         "players",
         "spells",
@@ -201,6 +205,9 @@ pub enum WindowContent {
     },
     Spells(TextContent), // Spells window - similar to Inventory but with link caching
     ActiveEffects(ActiveEffectsContent), // Active effects (buffs, debuffs, cooldowns, active spells)
+    /// Saga quest panel (objectives feed)
+    /// Reads from GameState.objectives
+    Quests,
     /// Component-based target list (room objs)
     /// Reads from GameState.room_creatures
     Targets,

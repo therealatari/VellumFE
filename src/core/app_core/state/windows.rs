@@ -310,6 +310,7 @@ impl AppCore {
                         generation: 0,
                     })
                 }
+                WidgetType::Quests => WindowContent::Quests,
                 WidgetType::Targets => WindowContent::Targets,
                 WidgetType::CreatureField => WindowContent::CreatureField,
                 WidgetType::Players => WindowContent::Players,
@@ -714,6 +715,7 @@ impl AppCore {
                     generation: 0,
                 })
             }
+            WidgetType::Quests => WindowContent::Quests,
             WidgetType::Targets => WindowContent::Targets,
             WidgetType::CreatureField => WindowContent::CreatureField,
             WidgetType::Players => WindowContent::Players,

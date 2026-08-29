@@ -564,6 +564,18 @@ impl TuiFrontend {
             }
         }
 
+        // Try quests widget (action lines carry the feed's verbatim command)
+        if let Some(quests_widget) = self.widget_manager.quests_widgets.get(window_name) {
+            if let Some(command) = quests_widget.handle_click(mouse_row, window_rect) {
+                return Some(crate::data::LinkData {
+                    exist_id: "_direct_".to_string(),
+                    noun: command, // e.g. "QUEST ACCEPT s24352"
+                    text: String::new(),
+                    coord: None,
+                });
+            }
+        }
+
         // Try tabbed text window
         if let Some(tabbed_window) = self.widget_manager.tabbed_text_windows.get(window_name) {
             let border_offset = if tabbed_window.has_border() { 1 } else { 0 };

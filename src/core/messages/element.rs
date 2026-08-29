@@ -1923,6 +1923,40 @@ impl MessageProcessor {
                     }
                 }
             }
+            ParsedElement::ObjectivesUpdate { action, entries } => {
+                self.chunk_has_silent_updates = true; // Mark as silent update
+
+                let store = &mut game_state.objectives;
+                let changed = if action == "full-refresh" {
+                    if store.objectives != *entries {
+                        store.objectives = entries.clone();
+                        true
+                    } else {
+                        false // Feed re-sends the full list on login; don't churn
+                    }
+                } else {
+                    // Unknown incremental action: upsert by id so a future
+                    // partial-update variant degrades gracefully.
+                    let mut any = false;
+                    for entry in entries {
+                        match store.objectives.iter_mut().find(|o| o.id == entry.id) {
+                            Some(slot) if *slot != *entry => {
+                                *slot = entry.clone();
+                                any = true;
+                            }
+                            Some(_) => {}
+                            None => {
+                                store.objectives.push(entry.clone());
+                                any = true;
+                            }
+                        }
+                    }
+                    any
+                };
+                if changed {
+                    store.generation += 1;
+                }
+            }
             ParsedElement::TargetList {
                 current_target,
                 target_ids, // Store IDs to filter room_creatures

@@ -117,6 +117,7 @@ impl Frontend for TuiFrontend {
         self.sync_hotkey_bars(app_core, &theme);
         self.sync_indicator_widgets(app_core, &theme);
         self.sync_targets_widgets(app_core, &theme); // New component-based
+        self.sync_quests_widgets(app_core, &theme);
         self.sync_players_widgets(app_core, &theme);
         self.sync_missing_spells_widgets(app_core);
         self.sync_containers_widgets(app_core);
@@ -150,6 +151,7 @@ impl Frontend for TuiFrontend {
         let mut hotkey_bar_widgets = std::mem::take(&mut self.widget_manager.hotkey_bar_widgets);
         let mut indicator_widgets = std::mem::take(&mut self.widget_manager.indicator_widgets);
         let mut targets_widgets = std::mem::take(&mut self.widget_manager.targets_widgets);
+        let mut quests_widgets = std::mem::take(&mut self.widget_manager.quests_widgets);
         let mut players_widgets = std::mem::take(&mut self.widget_manager.players_widgets);
         let mut missing_spells_widgets =
             std::mem::take(&mut self.widget_manager.missing_spells_widgets);
@@ -373,6 +375,12 @@ impl Frontend for TuiFrontend {
                         // Use the SpellsWindow widget for proper link rendering
                         if let Some(spells_window) = spells_windows.get_mut(name) {
                             spells_window.render(area, f.buffer_mut());
+                        }
+                    }
+                    WindowContent::Quests => {
+                        // Quest panel (reads from GameState.objectives)
+                        if let Some(quests_widget) = quests_widgets.get_mut(name) {
+                            quests_widget.render(area, f.buffer_mut());
                         }
                     }
                     WindowContent::Targets => {
@@ -802,6 +810,7 @@ impl Frontend for TuiFrontend {
         self.widget_manager.hotkey_bar_widgets = hotkey_bar_widgets;
         self.widget_manager.indicator_widgets = indicator_widgets;
         self.widget_manager.targets_widgets = targets_widgets;
+        self.widget_manager.quests_widgets = quests_widgets;
         self.widget_manager.players_widgets = players_widgets;
         self.widget_manager.missing_spells_widgets = missing_spells_widgets;
         self.widget_manager.containers_widgets = containers_widgets;
