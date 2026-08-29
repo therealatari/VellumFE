@@ -239,7 +239,7 @@ fn resolve_connect(req: &SessionRequest) -> Result<ResolvedConnect, String> {
         if saved.mode == crate::config::profiles::LaunchMode::Lich {
             return Ok(ResolvedConnect::Lich {
                 target: LichTarget {
-                    host: saved.host.clone(),
+                    host: crate::network::normalize_lich_host(&saved.host)?,
                     port: saved.port,
                 },
                 character: Some(saved.character.clone()).filter(|c| !c.is_empty()),
@@ -263,6 +263,7 @@ fn resolve_connect(req: &SessionRequest) -> Result<ResolvedConnect, String> {
 
     // Inline Lich target path: host+port, no credentials involved.
     if let (Some(host), Some(port)) = (lich_host.clone(), *lich_port) {
+        let host = crate::network::normalize_lich_host(&host)?;
         // An empty custom-launch string means "no launch" (the web form sends
         // "" when the box is blank); normalize to None.
         let launch = custom_launch

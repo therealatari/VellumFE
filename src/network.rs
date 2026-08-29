@@ -301,6 +301,43 @@ impl DirectConnectConfig {
 /// Direct connector that authenticates via eAccess and establishes the game socket.
 pub struct DirectConnection;
 
+/// Normalize a user-entered Lich host and reject values that can never be
+/// dialed. Users copy hosts out of launch lines and browser bars, so this
+/// accepts the common contaminations (scheme prefix, trailing slash,
+/// whitespace) and turns the unfixable ones (listen addresses, an embedded
+/// port) into instructions instead of a cryptic instant connect failure.
+pub fn normalize_lich_host(raw: &str) -> Result<String, String> {
+    let mut host = raw.trim();
+    for scheme in ["http://", "https://", "telnet://", "tcp://"] {
+        if host.len() >= scheme.len() && host[..scheme.len()].eq_ignore_ascii_case(scheme) {
+            host = &host[scheme.len()..];
+        }
+    }
+    let host = host.trim_end_matches('/').trim();
+    if host.is_empty() {
+        return Err("Enter the Lich machine's IP address or hostname".to_string());
+    }
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        if ip.is_unspecified() {
+            return Err(format!(
+                "{host} is a listen address, not a destination - enter the Lich machine's \
+                 actual IP (e.g. 192.168.1.50)"
+            ));
+        }
+        return Ok(host.to_string());
+    }
+    // "192.168.1.50:8000" pasted into the host field: exactly one colon with a
+    // numeric tail. IPv6 literals have multiple colons and parsed above.
+    if let Some((name, port)) = host.split_once(':') {
+        if !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) && !name.contains(':') {
+            return Err(format!(
+                "The host field contains a port - enter {name} as the host and {port} as the port"
+            ));
+        }
+    }
+    Ok(host.to_string())
+}
+
 impl LichConnection {
     /// Connect to Lich, spawn read loop, and forward commands supplied via the provided channel.
     ///
@@ -315,6 +352,7 @@ impl LichConnection {
         command_rx: mpsc::UnboundedReceiver<String>,
         raw_logger: Option<RawLogger>,
     ) -> Result<()> {
+        let host = normalize_lich_host(host).map_err(anyhow::Error::msg)?;
         info!("Connecting to Lich at {}:{}...", host, port);
 
         let mut stream = TcpStream::connect(format!("{}:{}", host, port))
@@ -1350,6 +1388,43 @@ mod tests {
         let (host, port) = fix_game_host_port("gs3.simutronics.net", 9999);
         assert_eq!(host, "gs3.simutronics.net");
         assert_eq!(port, 9999);
+    }
+
+    // ========== normalize_lich_host tests ==========
+
+    #[test]
+    fn test_normalize_host_passthrough() {
+        assert_eq!(normalize_lich_host("192.168.1.50").unwrap(), "192.168.1.50");
+        assert_eq!(normalize_lich_host("my-vm.local").unwrap(), "my-vm.local");
+        assert_eq!(normalize_lich_host("fe80::1").unwrap(), "fe80::1");
+    }
+
+    #[test]
+    fn test_normalize_host_cleans_contamination() {
+        assert_eq!(normalize_lich_host("  192.168.1.50 ").unwrap(), "192.168.1.50");
+        assert_eq!(normalize_lich_host("http://192.168.1.50").unwrap(), "192.168.1.50");
+        assert_eq!(normalize_lich_host("HTTPS://192.168.1.50/").unwrap(), "192.168.1.50");
+    }
+
+    #[test]
+    fn test_normalize_host_rejects_listen_addresses() {
+        assert!(normalize_lich_host("0.0.0.0").unwrap_err().contains("listen address"));
+        assert!(normalize_lich_host("::").unwrap_err().contains("listen address"));
+        assert!(normalize_lich_host("http://0.0.0.0/").is_err());
+    }
+
+    #[test]
+    fn test_normalize_host_rejects_embedded_port() {
+        let err = normalize_lich_host("192.168.1.50:8000").unwrap_err();
+        assert!(err.contains("192.168.1.50"), "{err}");
+        assert!(err.contains("8000"), "{err}");
+    }
+
+    #[test]
+    fn test_normalize_host_rejects_empty() {
+        assert!(normalize_lich_host("").is_err());
+        assert!(normalize_lich_host("   ").is_err());
+        assert!(normalize_lich_host("http://").is_err());
     }
 
     // ========== ServerMessage tests ==========
