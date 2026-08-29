@@ -543,6 +543,10 @@ pub async fn async_run(
                             true
                         } else {
                             tracing::warn!("Connection error: {e:#}");
+                            // Surface the real failure in the game window: a
+                            // phone user has no log access, and "refused" vs
+                            // "reset mid-stream" points at opposite culprits.
+                            app_core.add_system_message(&format!("Connection error: {e:#}"));
                             error_text = Some(format!("{e:#}"));
                             !supervisor.can_reconnect()
                         }
