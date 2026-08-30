@@ -225,15 +225,18 @@ pub fn resolve_tier_art(
 
     let noun_token = noun.map(naming::slug).filter(|t| !t.is_empty());
     let family_token = family.map(naming::slug).filter(|t| !t.is_empty());
-    let name_token = name.map(naming::name_token).filter(|t| !t.is_empty());
+    let name_tokens = name.map(naming::name_token_variants).unwrap_or_default();
 
-    // (folder-relative dir, token) per tier, in lock order. The variant
-    // tier lives INSIDE its noun folder, so it needs both tokens.
+    // (folder-relative dir, token) per tier, in lock order. Full-name art
+    // is the primary tier (`creatures/<name>/<name>.png` — multiple
+    // creatures share a noun, so the full name is the identity); noun and
+    // family are the fallbacks.
     let mut tiers: Vec<(String, String)> = Vec::new();
-    if let (Some(name), Some(noun)) = (&name_token, &noun_token) {
-        if name != noun {
-            tiers.push((format!("creatures/{noun}/{name}"), name.clone()));
+    for name in &name_tokens {
+        if noun_token.as_ref() == Some(name) {
+            continue;
         }
+        tiers.push((format!("creatures/{name}"), name.clone()));
     }
     if let Some(noun) = &noun_token {
         tiers.push((format!("creatures/{noun}"), noun.clone()));
@@ -813,6 +816,39 @@ mod card_tests {
         // Unknown noun: falls through the cascade to default.png.
         let hit = resolve_base_image(&dir, &skin, Some("bandersnatch"), None).unwrap();
         assert!(hit.ends_with(Path::new("creatures/default.png")));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Tier order pin: full-name art (`creatures/<name>/<name>.png`)
+    /// beats noun art — multiple creatures share a noun, so the full name
+    /// is the identity. A hyphenated on-disk name resolves too.
+    #[test]
+    fn resolve_tier_art_prefers_full_name_over_noun() {
+        let dir = std::env::temp_dir().join(format!("vellum_tier_test_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(dir.join("creatures/boar"));
+        let _ = std::fs::create_dir_all(dir.join("creatures/gold-bristled_hinterboar"));
+        std::fs::write(dir.join("creatures/boar/boar.png"), b"png").unwrap();
+        let skin = CreatureCardSkin::default();
+
+        // Only noun art: noun tier locks.
+        let art =
+            resolve_tier_art(&dir, &skin, Some("a gold-bristled hinterboar"), Some("boar"), None)
+                .unwrap();
+        assert!(art.base.ends_with(Path::new("creatures/boar/boar.png")));
+        assert_eq!(art.token, "boar");
+
+        // Full-name folder (hyphen-preserving spelling): beats noun.
+        std::fs::write(
+            dir.join("creatures/gold-bristled_hinterboar/gold-bristled_hinterboar.png"),
+            b"png",
+        )
+        .unwrap();
+        let art =
+            resolve_tier_art(&dir, &skin, Some("a gold-bristled hinterboar"), Some("boar"), None)
+                .unwrap();
+        assert_eq!(art.token, "gold-bristled_hinterboar");
+        assert!(art.dir.ends_with(Path::new("creatures/gold-bristled_hinterboar")));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

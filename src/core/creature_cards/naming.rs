@@ -137,6 +137,38 @@ pub fn name_token(name: &str) -> String {
     slug(&canonical_name(name))
 }
 
+/// Like [`slug`] but hyphens survive as hyphens ("shield-maiden" →
+/// `shield-maiden`). Art folders in the wild are named both ways, so the
+/// resolver probes this form alongside the canonical underscore slug.
+pub fn slug_keeping_hyphens(canonical: &str) -> String {
+    let mut out = String::with_capacity(canonical.len());
+    for ch in canonical.chars() {
+        match ch {
+            ' ' => out.push('_'),
+            '-' | '_' => out.push(ch),
+            ch if ch.is_ascii_alphanumeric() => out.push(ch.to_ascii_lowercase()),
+            _ => {}
+        }
+    }
+    while out.contains("__") {
+        out = out.replace("__", "_");
+    }
+    out.trim_matches('_').to_string()
+}
+
+/// All accepted art tokens for a live creature name, canonical
+/// (underscores) first, hyphen-preserving second when they differ.
+pub fn name_token_variants(name: &str) -> Vec<String> {
+    let canonical = canonical_name(name);
+    let mut out = vec![slug(&canonical)];
+    let hyphenated = slug_keeping_hyphens(&canonical);
+    if hyphenated != out[0] {
+        out.push(hyphenated);
+    }
+    out.retain(|t| !t.is_empty());
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
