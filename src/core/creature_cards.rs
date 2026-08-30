@@ -838,6 +838,18 @@ mod card_tests {
         assert!(art.base.ends_with(Path::new("creatures/boar/boar.png")));
         assert_eq!(art.token, "boar");
 
+        // A name starting with a boon adjective still finds its own art:
+        // the unstripped full name probes before the boon-stripped form.
+        let _ = std::fs::create_dir_all(dir.join("creatures/shining_winged_disir"));
+        std::fs::write(
+            dir.join("creatures/shining_winged_disir/shining_winged_disir.png"),
+            b"png",
+        )
+        .unwrap();
+        let art = resolve_tier_art(&dir, &skin, Some("a shining winged disir"), Some("disir"), None)
+            .unwrap();
+        assert_eq!(art.token, "shining_winged_disir");
+
         // Full-name folder (hyphen-preserving spelling): beats noun.
         std::fs::write(
             dir.join("creatures/gold-bristled_hinterboar/gold-bristled_hinterboar.png"),

@@ -156,16 +156,29 @@ pub fn slug_keeping_hyphens(canonical: &str) -> String {
     out.trim_matches('_').to_string()
 }
 
-/// All accepted art tokens for a live creature name, canonical
-/// (underscores) first, hyphen-preserving second when they differ.
+/// All accepted art tokens for a live creature name. The article-dropped
+/// full name comes first: a creature whose real name starts with a boon
+/// word ("a shining winged disir") must find its own art before the boon
+/// strip guesses `winged_disir`. The boon-stripped form follows so
+/// boon-decorated spawns still fold onto their base art. Each form in
+/// canonical (underscore) and hyphen-preserving spelling, deduped.
 pub fn name_token_variants(name: &str) -> Vec<String> {
-    let canonical = canonical_name(name);
-    let mut out = vec![slug(&canonical)];
-    let hyphenated = slug_keeping_hyphens(&canonical);
-    if hyphenated != out[0] {
-        out.push(hyphenated);
+    let mut name = name.trim().to_ascii_lowercase();
+    for article in ["a ", "an ", "some ", "the "] {
+        if let Some(rest) = name.strip_prefix(article) {
+            name = rest.to_string();
+            break;
+        }
     }
-    out.retain(|t| !t.is_empty());
+    let stripped = canonical_name(&name);
+    let mut out: Vec<String> = Vec::new();
+    for form in [&name, &stripped] {
+        for token in [slug(form), slug_keeping_hyphens(form)] {
+            if !token.is_empty() && !out.contains(&token) {
+                out.push(token);
+            }
+        }
+    }
     out
 }
 
