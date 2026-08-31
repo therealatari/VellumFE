@@ -574,6 +574,8 @@ pub struct VellumGuiApp {
     doll_calibration: Option<editors::DollCalibrationState>,
     frame_calibration: Option<editors::FrameCalibrationState>,
     creature_calibration: Option<editors::CreatureCalibrationState>,
+    scenery_calibration: Option<editors::SceneryCalibrationState>,
+    creature_field_editor: Option<editors::CreatureFieldEditorState>,
     pack_editor: Option<editors::PackEditorState>,
     alertpacks_editor: Option<editors::AlertPacksEditorState>,
     /// Editor window Id to raise to the top on the next frame. Set when a
@@ -1115,6 +1117,8 @@ impl VellumGuiApp {
             doll_calibration: None,
             frame_calibration: None,
             creature_calibration: None,
+            scenery_calibration: None,
+            creature_field_editor: None,
             pack_editor: None,
             alertpacks_editor: None,
             pending_editor_raise: None,
@@ -1539,6 +1543,7 @@ impl VellumGuiApp {
             A::RoomImagesEdit => self.open_room_images_editor(),
             A::AlertPacks => self.open_alertpacks_editor(),
             A::SorterEdit => self.open_sorter_editor(),
+            A::CreatureFieldEdit => self.open_creature_field_editor(),
             A::TouchWheelEditor => self.open_touch_wheel_editor(),
             A::Reconnect => self.reconnect(),
             A::Launch(character) => self.start_launch(&character),
@@ -2352,6 +2357,11 @@ impl eframe::App for VellumGuiApp {
             if !wanted.is_empty() {
                 self.skin_state.prepare_creature_art(&ctx, &wanted);
             }
+        }
+        // Scene art for the room-bound stage scene (backdrop + props);
+        // per-frame like the Studio's call, settled scenes are hash hits.
+        if let Some(scene) = self.app_core.stage_scene.clone() {
+            self.skin_state.prepare_scene_art(&ctx, &scene);
         }
         self.apply_ui_sizing(&ctx);
         // Prime the item classifier while &mut self is available; render

@@ -2456,6 +2456,13 @@ impl AppCore {
                 }
             }
 
+            // Creature-field camera/solver overrides (blanket + per-scene,
+            // global/creature_field.toml) — the editor is the whole
+            // workflow, so the command just opens it.
+            "creaturefield" | "fieldcamera" => {
+                return Ok(CommandOutcome::Ui(UiAction::CreatureFieldEdit));
+            }
+
             "roomimages" | "roomimg" => {
                 return self.handle_room_images_command(&parts);
             }
@@ -4485,6 +4492,8 @@ mod tests {
             (".webui off", UiAction::WebUiOff),
             (".webui bigshot", UiAction::WebUiOpen("bigshot".into())),
             (".sorter edit", UiAction::SorterEdit),
+            (".creaturefield", UiAction::CreatureFieldEdit),
+            (".fieldcamera", UiAction::CreatureFieldEdit),
             (".reconnect", UiAction::Reconnect),
         ];
         for (command, expected) in cases {

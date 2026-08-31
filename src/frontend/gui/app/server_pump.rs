@@ -352,6 +352,12 @@ impl VellumGuiApp {
         // (containers whose offer the user has Shown, openDialog-templated
         // widgets like stance/inventory/experience).
         if received_text {
+            // Room facts (nav rm, title, subtitle) may have landed in this
+            // drain, but the scene tick in poll_map ran BEFORE it — re-pick
+            // now so a scene swap renders in the same frame as the room
+            // text instead of trailing it by a frame (a visible "lookup"
+            // beat). Compare-only when nothing changed.
+            self.app_core.tick_stage_scene();
             self.app_core.adjust_content_driven_windows();
             let (layout_width, layout_height) = self.core_layout_size;
             self.app_core

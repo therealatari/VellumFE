@@ -461,6 +461,133 @@ fn bestiary_height_units(name: &str, noun: Option<&str>) -> Option<f32> {
 /// creatures. Arrivals place (permanently), departures free their square.
 /// Cheap no-op while the roster generation is unchanged, so calling it
 /// once per frame costs one comparison.
+/// Resolve the creature field's params from the layered camera/solver
+/// sources: built-in defaults → the "default" scene (the global camera
+/// home) → the active scene's embedded camera+solver → the blanket
+/// override → that scene's own override. Field-by-field via
+/// `apply_camera`/`apply_solver`, so unset keys at any layer fall through
+/// (room scenes save sparse — only what differs from the default scene).
+///
+/// Pass `default_scene: None` when the active scene IS the default, so it
+/// isn't applied twice. `scene_name` keys the per-scene override lookup;
+/// disabled overrides keep their values but skip.
+pub fn resolve_field_params(
+    default_scene: Option<&crate::config::scenes::StageScene>,
+    scene: Option<&crate::config::scenes::StageScene>,
+    scene_name: Option<&str>,
+    overrides: &crate::config::creature_field::FieldOverrides,
+) -> solver::FieldParams {
+    let mut params = solver::FieldParams::default();
+    if let Some(scene) = default_scene {
+        params.apply_camera(&scene.camera);
+        params.apply_solver(&scene.solver);
+    }
+    if let Some(scene) = scene {
+        params.apply_camera(&scene.camera);
+        params.apply_solver(&scene.solver);
+    }
+    if overrides.blanket.enabled {
+        params.apply_camera(&overrides.blanket.camera);
+        params.apply_solver(&overrides.blanket.solver);
+    }
+    if let Some(entry) = scene_name.and_then(|name| overrides.scenes.get(name)) {
+        if entry.enabled {
+            params.apply_camera(&entry.camera);
+            params.apply_solver(&entry.solver);
+        }
+    }
+    params
+}
+
+/// Zero-config GLOBAL wound overlays, mirroring the status convention:
+/// any image at `creatures/wounds/<part><rank>.png` (`chest2.png`,
+/// `leftarm1.png`, ranks 1-3, doll part vocabulary) becomes the wound art
+/// for every creature whose locked tier ships no wound extras of its own.
+/// Per-creature tier art (`{token}_{part}{rank}`) always wins — a tier
+/// with ANY wound art suppresses this layer wholesale (tier locking), and
+/// creatures with neither fall through to the procedural rank dot, so
+/// wounds are never invisible. Authored part-table entries are never
+/// overwritten — the convention only fills empty slots.
+pub fn convention_wound_parts(
+    parts: &mut std::collections::HashMap<String, crate::config::skins::DollPartSpec>,
+) {
+    for image in crate::config::pool::list_category("creatures") {
+        if !image
+            .set
+            .as_deref()
+            .is_some_and(|set| set.eq_ignore_ascii_case("wounds"))
+        {
+            continue;
+        }
+        let stem = image.stem().to_ascii_lowercase();
+        let Some(rank) = stem.chars().last().filter(|c| ('1'..='3').contains(c)) else {
+            continue;
+        };
+        let part_key = &stem[..stem.len() - 1];
+        // Canonical part casing (leftarm -> leftArm) so the lookup in
+        // `part_overlay` (case-insensitive on canonical keys) matches.
+        let Some(part) = crate::config::INJURY_AREAS
+            .iter()
+            .find(|part| part.to_ascii_lowercase() == part_key)
+        else {
+            tracing::debug!(
+                "creatures/wounds/{} does not name a body part + rank; ignored",
+                image.stem()
+            );
+            continue;
+        };
+        parts
+            .entry((*part).to_string())
+            .or_default()
+            .overlays
+            .entry(format!("injury{rank}"))
+            .or_insert_with(|| image.pool_path.clone());
+    }
+}
+
+/// Exclusion spans for a scene's props, from each prop image's sidecar:
+/// calibrated `exclude` edges + recorded `aspect` size the span through
+/// the same ground projection the renderer draws the prop with. Props
+/// without calibration (or without a sidecar at all) exclude nothing —
+/// the calibrator IS the data. Call AFTER the field's params are set:
+/// the projection depends on the camera.
+pub fn scene_obstacles(
+    scene: Option<&crate::config::scenes::StageScene>,
+    field: &solver::CreatureField,
+) -> Vec<solver::Obstacle> {
+    let Some(scene) = scene else {
+        return Vec::new();
+    };
+    let Ok(pool_root) = crate::config::Config::global_images_dir() else {
+        return Vec::new();
+    };
+    scene
+        .props
+        .iter()
+        .filter_map(|prop| {
+            let abs = pool_root.join(&prop.image);
+            let sidecar: crate::config::pool::CreatureSidecar =
+                crate::config::pool::read_sidecar(&abs)?;
+            let [left, right] = sidecar.exclude?;
+            let aspect = sidecar.aspect?;
+            let world_h = sidecar.size.unwrap_or(1.0) * prop.scale.max(0.01);
+            let ((fx, _), px_per_unit) = field.project_ground(prop.x, prop.z);
+            let draw_w = world_h * px_per_unit * aspect.max(0.01);
+            let feet_x = sidecar
+                .anchors
+                .get("feet")
+                .map(|anchor| anchor[0])
+                .unwrap_or(0.5);
+            let image_left = fx - feet_x * draw_w;
+            Some(solver::Obstacle {
+                x0: image_left + left.min(right).clamp(0.0, 1.0) * draw_w,
+                x1: image_left + left.max(right).clamp(0.0, 1.0) * draw_w,
+                z: prop.z,
+            })
+        })
+        .collect()
+}
+
 pub fn sync_field(
     field: &mut solver::CreatureField,
     synced_gen: &mut u64,
@@ -889,6 +1016,180 @@ mod card_tests {
         assert!(resolve_card(&skin, &f, &gs, 0, None).overlays.is_empty());
         gs.status.set("hidden", true);
         assert_eq!(resolve_card(&skin, &f, &gs, 0, None).overlays.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod wound_convention_tests {
+    use super::*;
+
+    #[test]
+    fn wounds_folder_fills_part_tables_without_clobbering_authored_art() {
+        let _guard = crate::config::VELLUM_FE_DIR_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("VELLUM_FE_DIR", dir.path());
+        let wounds = crate::config::Config::global_images_dir()
+            .unwrap()
+            .join("creatures/wounds");
+        std::fs::create_dir_all(&wounds).unwrap();
+        // 1x1 PNG is enough for the lister.
+        let png: &[u8] = &[
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 0x0D, b'I', b'H', b'D',
+            b'R', 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 0x1F, 0x15, 0xC4, 0x89, 0, 0, 0, 0,
+            b'I', b'E', b'N', b'D', 0xAE, 0x42, 0x60, 0x82,
+        ];
+        for name in ["chest2.png", "leftarm1.png", "nsys3.png", "notapart2.png", "chest9.png"] {
+            std::fs::write(wounds.join(name), png).unwrap();
+        }
+        crate::config::pool::invalidate_cache();
+
+        let mut parts: std::collections::HashMap<String, crate::config::skins::DollPartSpec> =
+            Default::default();
+        // Authored entry survives the fill.
+        parts
+            .entry("chest".to_string())
+            .or_default()
+            .overlays
+            .insert("injury2".to_string(), "creatures/fx/custom.png".to_string());
+        convention_wound_parts(&mut parts);
+
+        assert_eq!(
+            parts["chest"].overlays["injury2"], "creatures/fx/custom.png",
+            "authored art never overwritten"
+        );
+        assert_eq!(
+            parts["leftArm"].overlays["injury1"], "creatures/wounds/leftarm1.png",
+            "lowercased stem maps to the canonical part key"
+        );
+        assert_eq!(parts["nsys"].overlays["injury3"], "creatures/wounds/nsys3.png");
+        assert!(!parts.contains_key("notapart"), "unknown parts ignored");
+        assert!(
+            !parts["chest"].overlays.contains_key("injury9"),
+            "ranks outside 1-3 ignored"
+        );
+
+        std::env::remove_var("VELLUM_FE_DIR");
+        crate::config::pool::invalidate_cache();
+    }
+}
+
+#[cfg(test)]
+mod resolve_params_tests {
+    use super::*;
+    use crate::config::creature_field::{FieldOverride, FieldOverrides};
+    use crate::config::scenes::StageScene;
+    use crate::config::skins::{CreatureFieldCamera, CreatureFieldSolver};
+
+    fn scene_with_camera() -> StageScene {
+        StageScene {
+            camera: CreatureFieldCamera {
+                focal: Some(500.0),
+                horizon: Some(160.0),
+                ..Default::default()
+            },
+            solver: CreatureFieldSolver {
+                zone: Some("grid".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn no_layers_is_default() {
+        let params = resolve_field_params(None, None, None, &FieldOverrides::default());
+        assert_eq!(params, solver::FieldParams::default());
+    }
+
+    #[test]
+    fn default_scene_layers_under_the_matched_scene() {
+        // Default scene = the global camera home; room scenes save sparse
+        // and inherit anything they didn't pin.
+        let default_scene = StageScene {
+            camera: CreatureFieldCamera {
+                focal: Some(480.0),
+                eye_height: Some(0.9),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let room = StageScene {
+            camera: CreatureFieldCamera {
+                focal: Some(520.0),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let params = resolve_field_params(
+            Some(&default_scene),
+            Some(&room),
+            Some("cave"),
+            &FieldOverrides::default(),
+        );
+        assert_eq!(params.focal, 520.0, "room scene pins focal");
+        assert_eq!(params.cam_h, 0.9, "unpinned eye_height inherits from the default scene");
+    }
+
+    #[test]
+    fn scene_layers_over_defaults_field_by_field() {
+        let scene = scene_with_camera();
+        let params =
+            resolve_field_params(None, Some(&scene), Some("cave"), &FieldOverrides::default());
+        assert_eq!(params.focal, 500.0);
+        assert_eq!(params.horizon, 160.0);
+        // Unset scene keys keep defaults.
+        assert_eq!(params.cam_h, solver::FieldParams::default().cam_h);
+        assert!(!params.solver.zone_on, "scene solver zone=grid applied");
+    }
+
+    #[test]
+    fn blanket_beats_scene_and_per_scene_beats_blanket() {
+        let scene = scene_with_camera();
+        let mut overrides = FieldOverrides::default();
+        overrides.blanket.camera.focal = Some(600.0);
+        overrides.scenes.insert(
+            "cave".to_string(),
+            FieldOverride {
+                camera: CreatureFieldCamera {
+                    focal: Some(700.0),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        let params = resolve_field_params(None, Some(&scene), Some("cave"), &overrides);
+        assert_eq!(params.focal, 700.0, "per-scene wins");
+        assert_eq!(params.horizon, 160.0, "unset override keys fall through to the scene");
+        // A different scene name only gets the blanket.
+        let params = resolve_field_params(None, Some(&scene), Some("desert"), &overrides);
+        assert_eq!(params.focal, 600.0, "blanket wins where no per-scene entry");
+    }
+
+    #[test]
+    fn disabled_overrides_are_skipped() {
+        let mut overrides = FieldOverrides::default();
+        overrides.blanket.camera.focal = Some(600.0);
+        overrides.blanket.enabled = false;
+        let params = resolve_field_params(None, None, None, &overrides);
+        assert_eq!(params.focal, solver::FieldParams::default().focal);
+    }
+
+    #[test]
+    fn camera_snapshot_roundtrips_through_apply() {
+        // Studio Save embeds to_camera()/to_solver_toml(); Load applies
+        // them onto defaults — the roundtrip must reproduce the params.
+        let mut tuned = solver::FieldParams::default();
+        tuned.focal = 450.0;
+        tuned.cam_h = 0.93;
+        tuned.horizon = 160.0;
+        tuned.solver.zone_on = false;
+        tuned.solver.relax_steps = 7;
+        let mut roundtripped = solver::FieldParams::default();
+        roundtripped.apply_camera(&tuned.to_camera());
+        roundtripped.apply_solver(&tuned.to_solver_toml());
+        assert_eq!(roundtripped, tuned);
     }
 }
 

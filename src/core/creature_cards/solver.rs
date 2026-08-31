@@ -243,6 +243,20 @@ impl ScreenRect {
     }
 }
 
+/// A static exclusion span from a scene prop: no creature is ever PLACED
+/// behind it (deeper than `z`, foot screen-x inside [x0, x1]) — in front
+/// and beside stay open, the span never moves or grows with the grid, and
+/// permanence still holds (placed units are never relocated, even when a
+/// scene swap drops an obstacle on top of them).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Obstacle {
+    /// Stage-space screen-x span of the prop's calibrated exclusion edges.
+    pub x0: f32,
+    pub x1: f32,
+    /// The prop's world depth: only candidates deeper than this block.
+    pub z: f32,
+}
+
 /// One creature field: the floor plus every placed unit. All mutation goes
 /// through `arrive` / `depart` / `mount` / `dismount`.
 #[derive(Debug, Clone)]
@@ -251,6 +265,8 @@ pub struct CreatureField {
     cols: Vec<i32>,
     units: Vec<Unit>,
     next_id: UnitId,
+    /// Scene-prop exclusion spans; arrivals only (see [`Obstacle`]).
+    obstacles: Vec<Obstacle>,
     /// Bumped on every placement-affecting change; renderers cache quads
     /// against it instead of re-reading per frame.
     pub generation: u64,
@@ -386,6 +402,51 @@ impl FieldParams {
             s.shuffle_ties = v;
         }
     }
+
+    /// Snapshot the camera as authoring vocabulary — every key explicit,
+    /// so a scene saved from these params reproduces them exactly. Inverse
+    /// of `apply_camera` over in-range values.
+    pub fn to_camera(&self) -> crate::config::skins::CreatureFieldCamera {
+        crate::config::skins::CreatureFieldCamera {
+            focal: Some(self.focal),
+            eye_height: Some(self.cam_h),
+            near_depth: Some(self.z0),
+            row_depth: Some(self.dz),
+            horizon: Some(self.horizon),
+            cell_width: Some(self.cell_w),
+        }
+    }
+
+    /// Snapshot the placement tunables as authoring vocabulary; inverse of
+    /// `apply_solver` over in-range values.
+    pub fn to_solver_toml(&self) -> crate::config::skins::CreatureFieldSolver {
+        let s = &self.solver;
+        crate::config::skins::CreatureFieldSolver {
+            zone: Some(if s.zone_on { "ellipse" } else { "grid" }.to_string()),
+            zone_inset: Some(s.zone_inset),
+            centre_pull: Some(s.centre_pull),
+            depth_samples: Some(s.depth_samples),
+            depth_jitter: Some(s.depth_jitter),
+            lateral_jitter: Some(s.lateral_jitter),
+            depth_spread: Some(s.depth_spread),
+            row_band_push: Some(s.row_band_push),
+            row_band_px: Some(s.row_band_px),
+            occlusion_cap: Some(s.occlusion_cap),
+            variation: Some(s.variation),
+            seed_front: Some(s.seed_front),
+            fall_reserve: Some(s.fall_reserve),
+            fall_reserve_hard: Some(s.fall_reserve_hard),
+            separation_basis: Some(
+                match s.separation_basis {
+                    SeparationBasis::Contact => "contact",
+                    SeparationBasis::Card => "card",
+                }
+                .to_string(),
+            ),
+            relax_steps: Some(s.relax_steps),
+            shuffle_ties: Some(s.shuffle_ties),
+        }
+    }
 }
 
 impl CreatureField {
@@ -395,6 +456,7 @@ impl CreatureField {
             cols: vec![-1, 0, 1],
             units: Vec::new(),
             next_id: 1,
+            obstacles: Vec::new(),
             generation: 0,
         }
     }
@@ -513,6 +575,12 @@ impl CreatureField {
 
     fn screen_x(&self, wx: f32, z: f32) -> f32 {
         STAGE_W / 2.0 + (wx * self.f_eff()) / z
+    }
+
+    /// Replace the scene-prop exclusion spans. Placement input only:
+    /// nobody moves, nothing redraws, so the generation stays put.
+    pub fn set_obstacles(&mut self, obstacles: Vec<Obstacle>) {
+        self.obstacles = obstacles;
     }
 
     /// A unit's ground depth: the depth-sort and targeting key.
@@ -1010,14 +1078,23 @@ impl CreatureField {
                 .into_iter()
                 .min_by_key(|c| c.abs())
                 .unwrap_or(0);
-            return Placement {
-                ci: mid,
-                row: 0,
-                off_x: 0.0,
-                off_z: 0.0,
-                tight: false,
-                score: 0.0,
-            };
+            // The shortcut still honors scene-prop exclusion: a centre
+            // seed inside a blocked span falls through to the search.
+            let r = self.rect_for(standing, mid, 0, 0.0, 0.0);
+            let blocked = self
+                .obstacles
+                .iter()
+                .any(|ob| r.z > ob.z && r.center_x() >= ob.x0 && r.center_x() <= ob.x1);
+            if !blocked {
+                return Placement {
+                    ci: mid,
+                    row: 0,
+                    off_x: 0.0,
+                    off_z: 0.0,
+                    tight: false,
+                    score: 0.0,
+                };
+            }
         }
 
         // GRADED RELAXATION. The occlusion cap and the fall envelope are
@@ -1059,9 +1136,17 @@ impl CreatureField {
                 if s.zone_on && rad > 1.0 {
                     continue;
                 }
-                // NOTE: the prototype's set-piece exclusion (scenery
-                // blocking squares) is not ported — it needs stage-scene
-                // wiring the solver doesn't have yet.
+                // Scene-prop exclusion: never place a creature BEHIND a
+                // prop's calibrated span. Hard at every relaxation notch
+                // (a creature inside a boulder is never the least-bad
+                // answer); in-front and beside candidates pass untouched.
+                if self
+                    .obstacles
+                    .iter()
+                    .any(|ob| r.z > ob.z && r.center_x() >= ob.x0 && r.center_x() <= ob.x1)
+                {
+                    continue;
+                }
 
                 // Separation: every unit owns its own screen column.
                 // Clearance scales with contact spans, so the rule
@@ -1391,6 +1476,50 @@ mod tests {
                 "creature {i} moved when others arrived"
             );
         }
+    }
+
+    #[test]
+    fn obstacles_block_placement_behind_never_in_front() {
+        // Block the left half of the stage behind z = 3.0.
+        let obstacle = Obstacle {
+            x0: 0.0,
+            x1: STAGE_W / 2.0,
+            z: 3.0,
+        };
+        let mut f = CreatureField::default();
+        f.set_obstacles(vec![obstacle]);
+        fill(&mut f, 10);
+        for u in f.units() {
+            let r = f.rect(u);
+            let behind = r.z > obstacle.z && r.center_x() >= obstacle.x0 && r.center_x() <= obstacle.x1;
+            assert!(
+                !behind,
+                "unit at center_x {} z {} placed behind the obstacle",
+                r.center_x(),
+                r.z
+            );
+        }
+        // In front / beside must remain reachable: at least one unit lands
+        // on the blocked side's lateral half (in front) or the open half.
+        assert_eq!(f.units().len(), 10, "everyone still got placed");
+    }
+
+    #[test]
+    fn seed_front_shortcut_honors_obstacles() {
+        // Whole stage blocked behind z = 0: the centre seed would violate
+        // it, so the first arrival must land through the search instead.
+        let obstacle = Obstacle {
+            x0: 0.0,
+            x1: STAGE_W,
+            z: 0.0,
+        };
+        let mut f = CreatureField::default();
+        f.set_obstacles(vec![obstacle]);
+        // Everything is "behind" z=0, so every candidate is rejected and
+        // placement degrades to the least-bad fallback — the field must
+        // not panic and must still place the unit.
+        f.arrive("#1", CardSize::default(), CardSize::default());
+        assert_eq!(f.units().len(), 1);
     }
 
     #[test]

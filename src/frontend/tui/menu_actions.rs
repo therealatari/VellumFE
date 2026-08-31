@@ -746,6 +746,11 @@ pub fn handle_ui_action(
             );
             app_core.needs_render = true;
         }
+        UiAction::CreatureFieldEdit => {
+            // The creature field itself is GUI-only, so its override
+            // editor is too.
+            gui_only(app_core, "The creature-field override editor");
+        }
         // Deliberately GUI-only surfaces — say so instead of the old
         // silent log (four commands died unnoticed behind that silence).
         UiAction::Controller => gui_only(app_core, "The controller editor"),

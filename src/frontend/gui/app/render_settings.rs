@@ -191,9 +191,9 @@ impl VellumGuiApp {
             }),
             skin_art: self.skin_state.widget_art(),
             creature_art: Some(self.skin_state.creature_art()),
-            // The game has no scenes feature yet; the Studio Stage is the
-            // only caller that supplies one.
-            scene: None,
+            // The scene core bound for the current room (scene_bindings);
+            // the Studio Stage supplies its own instead.
+            scene: self.app_core.stage_scene.clone(),
             command_input_seed: self
                 .available_tabs
                 .get(key)

@@ -19,6 +19,7 @@ mod focus;
 mod menus;
 mod persistence;
 mod remote;
+mod stage_scene;
 mod streams;
 mod travel_ticks;
 mod window_lifecycle;
@@ -102,6 +103,15 @@ pub struct AppCore {
     pub creature_field: crate::core::creature_cards::solver::CreatureField,
     /// Roster generation the field was last synced against.
     pub creature_field_synced_gen: u64,
+    /// Creature-field stage scene state; documented in `state/stage_scene.rs`.
+    pub stage_scene: Option<std::sync::Arc<crate::config::scenes::StageScene>>,
+    pub stage_scene_name: Option<String>,
+    pub default_stage_scene: Option<std::sync::Arc<crate::config::scenes::StageScene>>,
+    pub(crate) default_scene_name: Option<String>,
+    pub field_overrides: crate::config::creature_field::FieldOverrides,
+    pub(crate) scene_pick_inputs: Option<(Option<i64>, Option<String>, Option<String>)>,
+    #[allow(clippy::type_complexity)]
+    pub(crate) field_params_inputs: Option<(Option<String>, crate::config::creature_field::FieldOverrides)>,
     /// Game commands core logic queued outside the typed-command path (e.g.
     /// target cycling): the keybind-action dispatch returns no outcomes, so
     /// core-initiated sends ride the same per-frame `take_outbound` drain as
@@ -493,6 +503,12 @@ impl AppCore {
             last_link_click_pos: None,
             creature_field: Default::default(),
             creature_field_synced_gen: 0,
+            stage_scene: None,
+            stage_scene_name: None,
+            default_stage_scene: None,
+            default_scene_name: None,
+            field_overrides: crate::config::creature_field::FieldOverrides::load(),
+            scene_pick_inputs: None, field_params_inputs: None,
             queued_game_commands: Vec::new(),
             perf_stats: PerformanceStats::new(),
             show_perf_stats: false,
@@ -695,6 +711,12 @@ impl AppCore {
             last_link_click_pos: None,
             creature_field: Default::default(),
             creature_field_synced_gen: 0,
+            stage_scene: None,
+            stage_scene_name: None,
+            default_stage_scene: None,
+            default_scene_name: None,
+            field_overrides: crate::config::creature_field::FieldOverrides::load(),
+            scene_pick_inputs: None, field_params_inputs: None,
             queued_game_commands: Vec::new(),
             perf_stats: PerformanceStats::new(),
             show_perf_stats: false,
@@ -998,6 +1020,7 @@ impl AppCore {
                 chrono::Utc::now().timestamp() + self.message_processor.server_time_offset;
             self.game_state.tick_creature_effects(now_server);
         }
+        self.tick_stage_scene();
         // Creature-field roster diff (no-op while the generation matches).
         crate::core::creature_cards::sync_field(
             &mut self.creature_field,

@@ -7,6 +7,8 @@ mod colors;
 #[cfg(feature = "gamepad")]
 mod controller;
 mod creature_calibration;
+mod creature_field;
+mod scenery_calibration;
 mod custom_windows;
 mod dashboard;
 mod doll_calibration;
@@ -35,6 +37,8 @@ pub(super) use controller::ControllerEditorState;
 pub(super) use custom_windows::CustomWindowsEditorState;
 pub(super) use dashboard::DashboardEditorState;
 pub(crate) use creature_calibration::CreatureCalibrationState;
+pub(super) use creature_field::CreatureFieldEditorState;
+pub(crate) use scenery_calibration::SceneryCalibrationState;
 pub(super) use doll_calibration::DollCalibrationState;
 pub(crate) use frame_calibration::FrameCalibrationState;
 pub(super) use hand_icons::HandIconsEditorState;
@@ -117,6 +121,8 @@ impl VellumGuiApp {
         self.render_doll_calibration(ctx);
         self.render_frame_calibration(ctx);
         self.render_creature_calibration(ctx);
+        self.render_scenery_calibration(ctx);
+        self.render_creature_field_editor(ctx);
         self.render_pack_editor(ctx);
         self.render_alertpacks_editor(ctx);
     }

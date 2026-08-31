@@ -87,6 +87,13 @@ pub(super) enum GuiWindowMenuCommand {
     /// Open the creature calibrator (creature field windows): anchors,
     /// footprint, world size, lift — saved to each image's sidecar.
     CalibrateCreatures,
+    /// Launch Vellum Studio (separate process) on its Stage: the scene
+    /// editor — backdrop, props, camera, solver, bindings.
+    EditScenes,
+    /// Open the scenery calibrator (feet, world size, exclusion edges).
+    CalibrateScenery,
+    /// Open the creature-field override editor (.creaturefield).
+    EditFieldOverrides,
     /// Per-window named doll set binding (stored on the shared layout
     /// def): Some(name) renders `[injury_doll.sets.<name>]` art in this
     /// window; None reverts to the default doll with condition variants.
@@ -523,6 +530,9 @@ impl VellumGuiApp {
             | C::CalibrateDoll
             | C::CalibrateFrames
             | C::CalibrateCreatures
+            | C::CalibrateScenery
+            | C::EditScenes
+            | C::EditFieldOverrides
             | C::SetEdgeSet(_)
             | C::SetControlFrame { .. }
             | C::EditHandIcons
@@ -721,6 +731,9 @@ impl VellumGuiApp {
             | GuiWindowMenuCommand::CalibrateDoll
             | GuiWindowMenuCommand::CalibrateFrames
             | GuiWindowMenuCommand::CalibrateCreatures
+            | GuiWindowMenuCommand::CalibrateScenery
+            | GuiWindowMenuCommand::EditScenes
+            | GuiWindowMenuCommand::EditFieldOverrides
             | GuiWindowMenuCommand::SetEdgeSet(_)
             | GuiWindowMenuCommand::SetControlFrame { .. }
             | GuiWindowMenuCommand::SetDollGrayscale(_)
@@ -953,6 +966,15 @@ impl VellumGuiApp {
             }
             GuiWindowMenuCommand::CalibrateCreatures => {
                 self.open_creature_calibration();
+            }
+            GuiWindowMenuCommand::EditScenes => {
+                self.launch_studio();
+            }
+            GuiWindowMenuCommand::CalibrateScenery => {
+                self.open_scenery_calibration();
+            }
+            GuiWindowMenuCommand::EditFieldOverrides => {
+                self.open_creature_field_editor();
             }
             GuiWindowMenuCommand::SetEdgeSet(set) => {
                 self.ui_settings.edge_set = set;
@@ -2149,6 +2171,38 @@ impl VellumGuiApp {
                 .clicked()
         {
             command = Some(GuiWindowMenuCommand::CalibrateCreatures);
+        }
+        if view.is_creature_field {
+            if ui
+                .selectable_label(false, "Calibrate scenery…")
+                .on_hover_text(
+                    "Feet anchor, world size, and the exclusion edges the solver \
+                     blocks placement behind — saved to each image's sidecar",
+                )
+                .clicked()
+            {
+                command = Some(GuiWindowMenuCommand::CalibrateScenery);
+            }
+            if ui
+                .selectable_label(false, "Edit scenes…")
+                .on_hover_text(
+                    "Open Vellum Studio's Stage: backdrops, props, camera and \
+                     solver tuning, and which scene plays in which room",
+                )
+                .clicked()
+            {
+                command = Some(GuiWindowMenuCommand::EditScenes);
+            }
+            if ui
+                .selectable_label(false, "Field overrides…")
+                .on_hover_text(
+                    "Personal camera/solver overrides layered over the active \
+                     scene (.creaturefield)",
+                )
+                .clicked()
+            {
+                command = Some(GuiWindowMenuCommand::EditFieldOverrides);
+            }
         }
         if ui
             .selectable_label(false, "Calibrate frames…")

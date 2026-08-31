@@ -414,6 +414,11 @@ pub(crate) const COMMAND_HELP: &[CommandHelpSection] = &[
                 "Room art by room id (set/clear act on the room you are in)"
             ),
             entry!(
+                &["creaturefield", "fieldcamera"],
+                "",
+                "Creature-field camera/solver overrides over the active scene (GUI)"
+            ),
+            entry!(
                 &["saveskin"],
                 "<name>",
                 "Bake the current GUI appearance into a skin (GUI)"

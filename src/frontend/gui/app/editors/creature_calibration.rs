@@ -48,6 +48,10 @@ pub(crate) struct CreatureCalibrationState {
     size: f32,
     lift_on: bool,
     lift: f32,
+    /// Overlay art (creatures/wounds, creatures/status): drawn width as a
+    /// fraction of the wearing creature's drawn width.
+    overlay_scale_on: bool,
+    overlay_scale: f32,
     error: Option<String>,
 }
 
@@ -90,6 +94,8 @@ impl CreatureCalibrationState {
             size: 1.0,
             lift_on: false,
             lift: 0.1,
+            overlay_scale_on: false,
+            overlay_scale: 1.0,
             error: None,
         };
         if let Some(index) = selected {
@@ -169,12 +175,22 @@ impl CreatureCalibrationState {
                             } else {
                                 name.clone()
                             };
-                            if ui
-                                .selectable_label(state.selected_anchor == name, label)
-                                .clicked()
-                            {
-                                state.selected_anchor = name;
-                            }
+                            ui.horizontal(|ui| {
+                                if ui
+                                    .selectable_label(state.selected_anchor == name, label)
+                                    .clicked()
+                                {
+                                    state.selected_anchor = name.clone();
+                                }
+                                if placed
+                                    && ui
+                                        .small_button("\u{2715}")
+                                        .on_hover_text("Remove this anchor")
+                                        .clicked()
+                                {
+                                    state.anchors.remove(&name);
+                                }
+                            });
                         };
                         for name in names {
                             anchor_row(ui, state, name);
@@ -185,6 +201,27 @@ impl CreatureCalibrationState {
                         egui::CollapsingHeader::new("Wound parts")
                             .default_open(false)
                             .show(ui, |ui| {
+                                ui.weak(
+                                    "A part WITHOUT an anchor draws its wound art \
+                                     full-canvas over the base (author both at the \
+                                     same resolution for 1:1 alignment). An anchor \
+                                     switches that part to a small sprite centred \
+                                     on it.",
+                                );
+                                let any_wound_anchor = wound_anchor_names()
+                                    .any(|name| state.anchors.contains_key(name));
+                                if any_wound_anchor
+                                    && ui
+                                        .button("Clear all wound anchors")
+                                        .on_hover_text(
+                                            "Full-canvas wound art for every part",
+                                        )
+                                        .clicked()
+                                {
+                                    for name in wound_anchor_names() {
+                                        state.anchors.remove(name);
+                                    }
+                                }
                                 for name in wound_anchor_names() {
                                     anchor_row(ui, state, name.to_string());
                                 }
@@ -370,6 +407,21 @@ impl CreatureCalibrationState {
                         );
                     }
                 });
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut state.overlay_scale_on, "Overlay scale")
+                        .on_hover_text(
+                            "For shared overlay art (creatures/wounds, creatures/status): \
+                             drawn width as a fraction of the wearing creature's drawn \
+                             width — it scales with each creature's world size. Off = \
+                             1.0 (same width as the creature).",
+                        );
+                    if state.overlay_scale_on {
+                        ui.add(
+                            egui::Slider::new(&mut state.overlay_scale, 0.05..=2.0)
+                                .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
+                        );
+                    }
+                });
 
                 ui.separator();
                 ui.horizontal(|ui| {
@@ -405,6 +457,10 @@ impl CreatureCalibrationState {
         }
         if save_request {
             if let Some(index) = state.selected {
+                // Scenery calibration (exclusion edges + aspect) lives in
+                // the same sidecar; carry it through untouched.
+                let existing: CreatureSidecar =
+                    pool::read_sidecar(&state.choices[index].abs_path).unwrap_or_default();
                 let sidecar = CreatureSidecar {
                     kind: None, // the writer stamps it
                     anchors: state.anchors.clone(),
@@ -415,6 +471,9 @@ impl CreatureCalibrationState {
                     }),
                     size: state.size_on.then_some(state.size),
                     lift: state.lift_on.then_some(state.lift),
+                    overlay_scale: state.overlay_scale_on.then_some(state.overlay_scale),
+                    exclude: existing.exclude,
+                    aspect: existing.aspect,
                 };
                 match pool::write_creature_sidecar(&state.choices[index].abs_path, &sidecar) {
                     Ok(()) => {
@@ -491,6 +550,10 @@ fn load_creature_choice(state: &mut CreatureCalibrationState, index: usize) {
     state.lift_on = sidecar.lift.is_some();
     if let Some(lift) = sidecar.lift {
         state.lift = lift;
+    }
+    state.overlay_scale_on = sidecar.overlay_scale.is_some();
+    if let Some(scale) = sidecar.overlay_scale {
+        state.overlay_scale = scale;
     }
 }
 

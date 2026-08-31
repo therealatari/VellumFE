@@ -1193,13 +1193,37 @@ pub fn migrate_legacy(skin_name: &str) -> anyhow::Result<(SkinPack, Vec<String>)
                 ("ui", "the [ui] palette"),
                 ("sheets", "icon sprite sheets"),
                 ("creature_card", "the creature card template"),
-                ("creature_field", "creature field camera tuning"),
             ] {
                 if value.get(key).is_some() {
                     warnings.push(format!(
                         "{label} has no pack equivalent — that section stays with the legacy skin"
                     ));
                 }
+            }
+            // Camera/solver moved out of skins entirely: scenes carry the
+            // authored values, .creaturefield the personal overrides. Print
+            // the skin's values so they can be re-entered, not lost.
+            if value.get("creature_field").is_some() {
+                let mut note = String::from(
+                    "[creature_field] no longer rides skins — put the camera in a scene \
+                     (Vellum Studio) or in .creaturefield overrides.",
+                );
+                {
+                    let camera = &manifest.creature_field.camera;
+                    for (key, val) in [
+                        ("focal", camera.focal),
+                        ("eye_height", camera.eye_height),
+                        ("near_depth", camera.near_depth),
+                        ("row_depth", camera.row_depth),
+                        ("horizon", camera.horizon),
+                        ("cell_width", camera.cell_width),
+                    ] {
+                        if let Some(v) = val {
+                            note.push_str(&format!(" {key}={v}"));
+                        }
+                    }
+                }
+                warnings.push(note);
             }
             if let Some(doll) = value.get("injury_doll").and_then(|d| d.as_table()) {
                 if doll.keys().any(|k| {

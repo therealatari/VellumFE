@@ -103,6 +103,9 @@ pub enum UiAction {
     SetTheme(String),
     EditTheme,
     SorterEdit,
+    /// Open the creature-field camera/solver override editor
+    /// (global/creature_field.toml: blanket + per-scene overrides).
+    CreatureFieldEdit,
     /// Open the room-art editor (image -> rooms mappings).
     RoomImagesEdit,
     /// Open the alert-pack browser (installed packs, enable toggles,
@@ -353,6 +356,7 @@ impl UiAction {
             "themes" => UiAction::Themes,
             "edittheme" => UiAction::EditTheme,
             "sorteredit" => UiAction::SorterEdit,
+            "creaturefieldedit" => UiAction::CreatureFieldEdit,
             "roomimagesedit" => UiAction::RoomImagesEdit,
             "alertpacks" => UiAction::AlertPacks,
             "touchwheel" => UiAction::TouchWheelEditor,
@@ -420,6 +424,7 @@ impl std::fmt::Display for UiAction {
             UiAction::SetTheme(name) => write!(f, "action:settheme:{name}"),
             UiAction::EditTheme => write!(f, "action:edittheme"),
             UiAction::SorterEdit => write!(f, "action:sorteredit"),
+            UiAction::CreatureFieldEdit => write!(f, "action:creaturefieldedit"),
             UiAction::RoomImagesEdit => write!(f, "action:roomimagesedit"),
             UiAction::AlertPacks => write!(f, "action:alertpacks"),
             UiAction::TouchWheelEditor => write!(f, "action:touchwheel"),
@@ -535,6 +540,7 @@ mod tests {
             UiAction::SetTheme("gruvbox".into()),
             UiAction::EditTheme,
             UiAction::SorterEdit,
+            UiAction::CreatureFieldEdit,
             UiAction::RoomImagesEdit,
             UiAction::AlertPacks,
             UiAction::TouchWheelEditor,

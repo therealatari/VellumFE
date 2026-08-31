@@ -37,6 +37,7 @@ pub struct StudioApp {
     anchor_tab: AnchorTab,
     frame_calibration: Option<FrameCalibrationState>,
     creature_calibration: Option<CreatureCalibrationState>,
+    scenery_calibration: Option<super::app::editors::SceneryCalibrationState>,
     /// Auto-open happens once per tab; after the user closes a calibrator
     /// it stays closed until Refresh, so the X isn't fought every frame.
     frames_opened: bool,
@@ -72,12 +73,26 @@ struct StageState {
     scene: std::sync::Arc<crate::config::scenes::StageScene>,
     /// Scene name box (save target / last loaded).
     scene_name: String,
+    /// Load-list filter box.
+    scene_filter: String,
+    /// Solver tunables are testing-only UI; hidden unless asked for.
+    show_solver_tuning: bool,
     /// Scenery-pool filter box.
     prop_filter: String,
     /// Selected placed prop (index into scene.props); drag-to-place moves it.
     selected_prop: Option<usize>,
     /// Creature exist id being dragged on the stage (grabbed by its card).
     dragging_creature: Option<String>,
+    /// Scene Arc the solver obstacles were last built from (`make_mut`
+    /// re-points the Arc on every edit, so pointer identity is the dirty
+    /// bit — sidecars are only re-read when the scene actually changed).
+    obstacle_scene: Option<std::sync::Arc<crate::config::scenes::StageScene>>,
+    /// Params the obstacles were projected with (camera drags move the
+    /// spans too).
+    obstacle_params: Option<crate::core::creature_cards::solver::FieldParams>,
+    /// Props-section request to open the scenery calibrator (hosted by
+    /// StudioApp, which owns the calibrator states).
+    open_scenery_cal: bool,
     /// Status lines raised inside panel closures, drained by stage_ui.
     pending_status: Vec<String>,
 }
@@ -106,9 +121,14 @@ impl StageState {
             pair: None,
             scene: std::sync::Arc::new(crate::config::scenes::StageScene::default()),
             scene_name: String::new(),
+            scene_filter: String::new(),
+            show_solver_tuning: false,
             prop_filter: String::new(),
             selected_prop: None,
             dragging_creature: None,
+            obstacle_scene: None,
+            obstacle_params: None,
+            open_scenery_cal: false,
             pending_status: Vec::new(),
         })
     }
@@ -262,21 +282,87 @@ impl StageState {
         use std::sync::Arc;
 
         ui.heading("Scene");
-        ui.horizontal(|ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut self.scene_name)
-                    .hint_text("scene name")
-                    .desired_width(110.0),
-            );
-            if ui.button("Save").clicked() {
-                match self.scene.save(&self.scene_name) {
-                    Ok(()) => self
-                        .pending_status
-                        .push(format!("Scene '{}' saved", self.scene_name.trim())),
-                    Err(err) => self.pending_status.push(format!("Scene save failed: {err:#}")),
-                }
+        // The scene FILENAME is the binding: leading room uid binds that
+        // room, otherwise the stem matches room title -> location ->
+        // "default". NEW captures the current room's facts into a stem;
+        // there is no separate bindings store to manage.
+        ui.label(if self.scene_name.trim().is_empty() {
+            "Editing: (unsaved scene)".to_string()
+        } else {
+            format!("Editing: {}", scenes::display_name(self.scene_name.trim()))
+        });
+        ui.horizontal_wrapped(|ui| {
+            if !self.scene_name.trim().is_empty() && ui.button("Save").clicked() {
+                self.save_current_scene();
             }
-            if ui.button("New").clicked() {
+            ui.menu_button("New…", |ui| {
+                let uid = self
+                    .app_core
+                    .nav_room_id
+                    .as_deref()
+                    .and_then(|s| s.trim().parse::<i64>().ok())
+                    .filter(|&u| u != 0);
+                let title = self.app_core.current_room_title();
+                let location = self.app_core.current_room_scope().location;
+                let mut target: Option<String> = None;
+                match (uid, &title) {
+                    (Some(uid), Some(title)) => {
+                        let stem = scenes::filename_stem(&format!("{uid} - {title}"));
+                        if ui
+                            .button(format!("This room ({})", scenes::display_name(&stem)))
+                            .clicked()
+                        {
+                            target = Some(stem);
+                        }
+                    }
+                    (Some(uid), None) => {
+                        if ui.button(format!("This room ({uid})")).clicked() {
+                            target = Some(uid.to_string());
+                        }
+                    }
+                    _ => {
+                        ui.weak("(no room id yet — connect and move once)");
+                    }
+                }
+                match &title {
+                    Some(title) => {
+                        let stem = scenes::filename_stem(title);
+                        if ui
+                            .button(format!("Room name ({})", scenes::display_name(&stem)))
+                            .clicked()
+                        {
+                            target = Some(stem);
+                        }
+                    }
+                    None => {
+                        ui.weak("(no room title yet)");
+                    }
+                }
+                match &location {
+                    Some(location) if !location.trim().is_empty() => {
+                        let stem = scenes::filename_stem(location);
+                        if ui
+                            .button(format!("Location ({})", scenes::display_name(&stem)))
+                            .clicked()
+                        {
+                            target = Some(stem);
+                        }
+                    }
+                    _ => {
+                        ui.weak("(room not in the mapdb — no location)");
+                    }
+                }
+                if ui.button("Default (fallback scene)").clicked() {
+                    target = Some("default".to_string());
+                }
+                if let Some(stem) = target {
+                    // Save-as semantics: the stage contents carry over so a
+                    // tuned stage can be captured for the room you're in.
+                    self.scene_name = stem;
+                    ui.close();
+                }
+            });
+            if ui.button("Clear stage scene").clicked() {
                 self.scene = Arc::new(StageScene::default());
                 self.scene_name.clear();
                 self.selected_prop = None;
@@ -284,24 +370,38 @@ impl StageState {
         });
         let saved = scenes::list_scenes();
         if !saved.is_empty() {
-            egui::ComboBox::from_id_salt("scene_load")
-                .selected_text("Load…")
-                .show_ui(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Load");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.scene_filter)
+                        .hint_text("filter (number, title, location)")
+                        .desired_width(160.0),
+                );
+            });
+            let filter = self.scene_filter.to_ascii_lowercase();
+            let mut load_request: Option<String> = None;
+            egui::ScrollArea::vertical()
+                .id_salt("scene_load_list")
+                .max_height(110.0)
+                .show(ui, |ui| {
                     for name in &saved {
-                        if ui.selectable_label(false, name).clicked() {
-                            match StageScene::load(name) {
-                                Ok(scene) => {
-                                    self.scene = Arc::new(scene);
-                                    self.scene_name = name.clone();
-                                    self.selected_prop = None;
-                                }
-                                Err(err) => self
-                                    .pending_status
-                                    .push(format!("Scene load failed: {err:#}")),
-                            }
+                        // Menus render `_` as spaces; filter against the
+                        // rendered form so users type what they see.
+                        let display = scenes::display_name(name);
+                        if !filter.is_empty() && !display.to_ascii_lowercase().contains(&filter) {
+                            continue;
+                        }
+                        if ui
+                            .selectable_label(self.scene_name == *name, display)
+                            .clicked()
+                        {
+                            load_request = Some(name.clone());
                         }
                     }
                 });
+            if let Some(name) = load_request {
+                self.load_scene_by_name(&name);
+            }
         }
 
         let backgrounds = crate::config::pool::list_category("scenes");
@@ -349,7 +449,15 @@ impl StageState {
             }
         });
 
-        ui.label("Props");
+        ui.separator();
+        ui.heading("Props");
+        if ui
+            .button("Calibrate scenery…")
+            .on_hover_text("Feet anchor, world size, exclusion edges — per image")
+            .clicked()
+        {
+            self.open_scenery_cal = true;
+        }
         let pool = crate::config::pool::list_category("scenery");
         if backgrounds.is_empty() && pool.is_empty() {
             ui.weak(
@@ -391,6 +499,7 @@ impl StageState {
                 x: crate::core::creature_cards::solver::STAGE_W / 2.0,
                 z: (z_near + z_far) / 2.0,
                 scale: 1.0,
+                shadow: false,
             });
             self.selected_prop = Some(scene.props.len() - 1);
         }
@@ -436,8 +545,80 @@ impl StageState {
                     .clamp(0.0, crate::core::creature_cards::solver::STAGE_W);
                 prop.z = prop.z.clamp(z_near, z_far);
                 ui.add(egui::Slider::new(&mut prop.scale, 0.1..=5.0).text("scale"));
+                ui.checkbox(&mut prop.shadow, "Contact shadow")
+                    .on_hover_text("Off by default — most scenery paints its own grounding");
                 ui.weak("Drag on the stage to move the selected prop");
             }
+        }
+
+    }
+
+    /// Save the on-stage scene under its stem, embedding the live camera/
+    /// solver tuning SPARSELY: only what differs from the layer underneath
+    /// (the default scene for room/location scenes, the built-in defaults
+    /// for the default scene itself). Unset keys inherit live — retune the
+    /// default and every scene that didn't pin a value follows.
+    fn save_current_scene(&mut self) {
+        use crate::core::creature_cards::solver::FieldParams;
+        let name = self.scene_name.trim().to_string();
+        if name.is_empty() {
+            return;
+        }
+        let params = self.app_core.creature_field.params.clone();
+        let mut base = FieldParams::default();
+        if crate::config::scenes::matchable(&name) != "default" {
+            if let Some(default_scene) = load_default_scene(Some(&name)) {
+                base.apply_camera(&default_scene.camera);
+                base.apply_solver(&default_scene.solver);
+            }
+        }
+        {
+            let scene = std::sync::Arc::make_mut(&mut self.scene);
+            scene.camera = sparse_camera(&params, &base);
+            scene.solver = sparse_solver(&params, &base);
+        }
+        match self.scene.save(&name) {
+            Ok(()) => {
+                self.pending_status
+                    .push(format!("Scene '{name}' saved (camera/solver embedded sparse)"));
+                // The game may have this scene bound; re-read it.
+                self.app_core.reload_creature_field_files();
+            }
+            Err(err) => self
+                .pending_status
+                .push(format!("Scene save failed: {err:#}")),
+        }
+    }
+
+    /// Load a scene onto the stage, adopting its effective camera/solver
+    /// (default-scene layer included, so a sparse room scene shows as it
+    /// will in game).
+    fn load_scene_by_name(&mut self, name: &str) {
+        match crate::config::scenes::StageScene::load(name) {
+            Ok(scene) => {
+                let default_scene = if crate::config::scenes::matchable(name) == "default" {
+                    None
+                } else {
+                    load_default_scene(Some(name))
+                };
+                let params = crate::core::creature_cards::resolve_field_params(
+                    default_scene.as_ref(),
+                    Some(&scene),
+                    None,
+                    &crate::config::creature_field::FieldOverrides::default(),
+                );
+                let field = &mut self.app_core.creature_field;
+                if field.params != params {
+                    field.params = params;
+                    field.generation = field.generation.wrapping_add(1);
+                }
+                self.scene = std::sync::Arc::new(scene);
+                self.scene_name = name.to_string();
+                self.selected_prop = None;
+            }
+            Err(err) => self
+                .pending_status
+                .push(format!("Scene load failed: {err:#}")),
         }
     }
 
@@ -537,6 +718,9 @@ impl StageState {
                 ui.label("horizon");
                 ui.add(egui::DragValue::new(&mut params.horizon).speed(1.0));
                 ui.end_row();
+                ui.label("cell_w");
+                ui.add(egui::DragValue::new(&mut params.cell_w).speed(0.01));
+                ui.end_row();
             });
             if ui.button("Reset camera").clicked() {
                 let default = crate::core::creature_cards::solver::FieldParams::default();
@@ -545,6 +729,69 @@ impl StageState {
                 params.z0 = default.z0;
                 params.dz = default.dz;
                 params.horizon = default.horizon;
+                params.cell_w = default.cell_w;
+            }
+
+            ui.separator();
+            ui.checkbox(&mut self.show_solver_tuning, "Show solver tuning (testing)");
+            if !self.show_solver_tuning {
+                return;
+            }
+            ui.heading("Solver");
+            ui.weak("Placement tunables. Only future arrivals move — permanence.");
+            let solver = &mut params.solver;
+            ui.checkbox(&mut solver.zone_on, "Spawn ellipse (off = grid)");
+            egui::Grid::new("stage_solver").num_columns(2).show(ui, |ui| {
+                ui.label("zone_inset");
+                ui.add(egui::DragValue::new(&mut solver.zone_inset).speed(0.005).range(0.0..=0.45));
+                ui.end_row();
+                ui.label("centre_pull");
+                ui.add(egui::DragValue::new(&mut solver.centre_pull).speed(0.01).range(0.0..=5.0));
+                ui.end_row();
+                ui.label("depth_samples");
+                ui.add(egui::DragValue::new(&mut solver.depth_samples).range(1..=41));
+                ui.end_row();
+                ui.label("depth_jitter");
+                ui.add(egui::DragValue::new(&mut solver.depth_jitter).speed(0.01).range(0.0..=1.0));
+                ui.end_row();
+                ui.label("lateral_jitter");
+                ui.add(egui::DragValue::new(&mut solver.lateral_jitter).speed(0.01).range(0.0..=1.0));
+                ui.end_row();
+                ui.label("depth_spread");
+                ui.add(egui::DragValue::new(&mut solver.depth_spread).speed(0.01).range(0.0..=5.0));
+                ui.end_row();
+                ui.label("row_band_push");
+                ui.add(egui::DragValue::new(&mut solver.row_band_push).speed(0.02).range(0.0..=10.0));
+                ui.end_row();
+                ui.label("row_band_px");
+                ui.add(egui::DragValue::new(&mut solver.row_band_px).speed(0.5).range(1.0..=200.0));
+                ui.end_row();
+                ui.label("occlusion_cap");
+                ui.add(egui::DragValue::new(&mut solver.occlusion_cap).speed(0.005).range(0.0..=0.95));
+                ui.end_row();
+                ui.label("variation");
+                ui.add(egui::DragValue::new(&mut solver.variation).speed(0.01).range(0.0..=2.0));
+                ui.end_row();
+                ui.label("fall_reserve");
+                ui.add(egui::DragValue::new(&mut solver.fall_reserve).speed(0.01).range(0.0..=5.0));
+                ui.end_row();
+                ui.label("relax_steps");
+                ui.add(egui::DragValue::new(&mut solver.relax_steps).range(0..=10));
+                ui.end_row();
+            });
+            ui.checkbox(&mut solver.seed_front, "First arrival front + centre");
+            ui.checkbox(&mut solver.fall_reserve_hard, "Fall envelope is a hard bound");
+            ui.checkbox(&mut solver.shuffle_ties, "Shuffle tie candidates");
+            {
+                use crate::core::creature_cards::solver::SeparationBasis;
+                ui.horizontal(|ui| {
+                    ui.label("separation");
+                    ui.selectable_value(&mut solver.separation_basis, SeparationBasis::Contact, "contact");
+                    ui.selectable_value(&mut solver.separation_basis, SeparationBasis::Card, "card");
+                });
+            }
+            if ui.button("Reset solver").clicked() {
+                *solver = Default::default();
             }
         });
     }
@@ -819,6 +1066,7 @@ impl Default for StudioApp {
             anchor_tab: AnchorTab::Frames,
             frame_calibration: None,
             creature_calibration: None,
+            scenery_calibration: None,
             frames_opened: false,
             creatures_opened: false,
             status: Vec::new(),
@@ -955,6 +1203,23 @@ impl StudioApp {
             });
             return;
         };
+        // Scene edits re-point the Arc (make_mut); rebuild the solver's
+        // prop exclusion spans only then.
+        let scene_changed = stage
+            .obstacle_scene
+            .as_ref()
+            .is_none_or(|prev| !std::sync::Arc::ptr_eq(prev, &stage.scene));
+        let params_changed = stage.obstacle_params.as_ref()
+            != Some(&stage.app_core.creature_field.params);
+        if scene_changed || params_changed {
+            let obstacles = crate::core::creature_cards::scene_obstacles(
+                Some(&stage.scene),
+                &stage.app_core.creature_field,
+            );
+            stage.app_core.creature_field.set_obstacles(obstacles);
+            stage.obstacle_scene = Some(stage.scene.clone());
+            stage.obstacle_params = Some(stage.app_core.creature_field.params.clone());
+        }
         // Roster sync is generation-gated (cheap when unchanged); art prep
         // is cached, so a settled stage costs a few hash lookups.
         crate::core::creature_cards::sync_field(
@@ -976,6 +1241,33 @@ impl StudioApp {
         let pending: Vec<String> = stage.pending_status.drain(..).collect();
         for message in pending {
             self.push_status(message);
+        }
+        // Scenery calibrator, hosted here so the Stage's Props section can
+        // request it.
+        if self.stage.as_ref().is_some_and(|s| s.open_scenery_cal) {
+            if let Some(stage) = self.stage.as_mut() {
+                stage.open_scenery_cal = false;
+            }
+            if self.scenery_calibration.is_none() {
+                let (state, outcome) =
+                    super::app::editors::SceneryCalibrationState::open();
+                self.scenery_calibration = state;
+                self.drain_outcome(outcome);
+            }
+        }
+        if let Some(state) = self.scenery_calibration.as_mut() {
+            let outcome = state.ui(ctx);
+            if outcome.closed {
+                self.scenery_calibration = None;
+            }
+            if outcome.reload_art {
+                // Sidecar changed: exclusion spans and art are both stale.
+                self.skin_state.force_reload();
+                if let Some(stage) = self.stage.as_mut() {
+                    stage.obstacle_scene = None;
+                }
+            }
+            self.drain_outcome(outcome);
         }
     }
 }
@@ -1025,6 +1317,74 @@ impl eframe::App for StudioApp {
             }
             StudioMode::Stage => self.stage_ui(root, ctx),
         }
+    }
+}
+
+/// The "default" scene for layering under a room/location scene, unless
+/// `excluding` IS the default (saving/loading the default itself).
+fn load_default_scene(excluding: Option<&str>) -> Option<crate::config::scenes::StageScene> {
+    let names = crate::config::scenes::list_scenes();
+    let default = names
+        .iter()
+        .find(|name| crate::config::scenes::matchable(name) == "default")?;
+    if excluding.is_some_and(|name| name == default.as_str()) {
+        return None;
+    }
+    crate::config::scenes::StageScene::load(default).ok()
+}
+
+/// Camera keys that differ from `base` — the sparse embed Save writes so
+/// unpinned values inherit from the default scene live.
+fn sparse_camera(
+    params: &crate::core::creature_cards::solver::FieldParams,
+    base: &crate::core::creature_cards::solver::FieldParams,
+) -> crate::config::skins::CreatureFieldCamera {
+    let diff = |value: f32, base: f32| (value != base).then_some(value);
+    crate::config::skins::CreatureFieldCamera {
+        focal: diff(params.focal, base.focal),
+        eye_height: diff(params.cam_h, base.cam_h),
+        near_depth: diff(params.z0, base.z0),
+        row_depth: diff(params.dz, base.dz),
+        horizon: diff(params.horizon, base.horizon),
+        cell_width: diff(params.cell_w, base.cell_w),
+    }
+}
+
+/// Solver keys that differ from `base`; same sparse discipline.
+fn sparse_solver(
+    params: &crate::core::creature_cards::solver::FieldParams,
+    base: &crate::core::creature_cards::solver::FieldParams,
+) -> crate::config::skins::CreatureFieldSolver {
+    use crate::core::creature_cards::solver::SeparationBasis;
+    let s = &params.solver;
+    let b = &base.solver;
+    let diff = |value: f32, base: f32| (value != base).then_some(value);
+    crate::config::skins::CreatureFieldSolver {
+        zone: (s.zone_on != b.zone_on)
+            .then(|| if s.zone_on { "ellipse" } else { "grid" }.to_string()),
+        zone_inset: diff(s.zone_inset, b.zone_inset),
+        centre_pull: diff(s.centre_pull, b.centre_pull),
+        depth_samples: (s.depth_samples != b.depth_samples).then_some(s.depth_samples),
+        depth_jitter: diff(s.depth_jitter, b.depth_jitter),
+        lateral_jitter: diff(s.lateral_jitter, b.lateral_jitter),
+        depth_spread: diff(s.depth_spread, b.depth_spread),
+        row_band_push: diff(s.row_band_push, b.row_band_push),
+        row_band_px: diff(s.row_band_px, b.row_band_px),
+        occlusion_cap: diff(s.occlusion_cap, b.occlusion_cap),
+        variation: diff(s.variation, b.variation),
+        seed_front: (s.seed_front != b.seed_front).then_some(s.seed_front),
+        fall_reserve: diff(s.fall_reserve, b.fall_reserve),
+        fall_reserve_hard: (s.fall_reserve_hard != b.fall_reserve_hard)
+            .then_some(s.fall_reserve_hard),
+        separation_basis: (s.separation_basis != b.separation_basis).then(|| {
+            match s.separation_basis {
+                SeparationBasis::Contact => "contact",
+                SeparationBasis::Card => "card",
+            }
+            .to_string()
+        }),
+        relax_steps: (s.relax_steps != b.relax_steps).then_some(s.relax_steps),
+        shuffle_ties: (s.shuffle_ties != b.shuffle_ties).then_some(s.shuffle_ties),
     }
 }
 

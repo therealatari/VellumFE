@@ -1207,6 +1207,7 @@ fn dispatch_ui_action(app_core: &mut AppCore, action: crate::data::UiAction) -> 
         | A::WebUiOff
         | A::WebUiOpen(_)
         | A::LauncherEditor
+        | A::CreatureFieldEdit
         | A::SnapDebug => desktop_only(app_core),
     }
 }

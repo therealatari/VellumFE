@@ -646,6 +646,10 @@ pub struct CreatureArtCache {
     pub variant_bases: HashMap<String, Option<CreatureArt>>,
     /// Overlay manifest path -> texture (None = load failed).
     pub overlays: HashMap<String, Option<egui::TextureHandle>>,
+    /// Shared overlay path -> calibrated `overlay_scale` (fraction of the
+    /// wearing creature's drawn width; sidecar-authored). Only paths whose
+    /// sidecar set one appear — renderers fall back to per-role defaults.
+    pub overlay_scales: HashMap<String, f32>,
     /// Scenery-prop pool path ("scenery/rock.png") -> full art. Props load
     /// through the creature loader so each carries its own feet anchor,
     /// footprint, and world size (sidecar or alpha-derived).
@@ -695,6 +699,11 @@ impl CreatureArtCache {
     /// Scenery-prop art for a pool path, if prepared.
     pub fn scenery(&self, pool_path: &str) -> Option<&CreatureArt> {
         self.scenery.get(pool_path).and_then(|art| art.as_ref())
+    }
+
+    /// Calibrated overlay scale for a shared overlay path, if authored.
+    pub fn overlay_scale(&self, pool_path: &str) -> Option<f32> {
+        self.overlay_scales.get(pool_path).copied()
     }
 
     /// Scene background texture for a pool path, if prepared.
@@ -857,6 +866,10 @@ impl SkinState {
                 .extend(crate::core::creature_cards::convention_status_overlays(
                     &card.overlays,
                 ));
+            // Global wound art (creatures/wounds/<part><rank>.png) fills
+            // the part tables; tiers with their own wound extras ignore
+            // them (tier locking).
+            crate::core::creature_cards::convention_wound_parts(&mut card.parts);
             let mut cache = self.creature_art.lock().expect("creature art lock");
             *cache = CreatureArtCache {
                 card,
@@ -930,6 +943,15 @@ impl SkinState {
                 let key = path.to_string_lossy().into_owned();
                 if !cache.overlays.contains_key(&key) {
                     let name = cache.skin_name.clone();
+                    // Anchored tier wounds size by the art's calibrated
+                    // overlay_scale, exactly like the shared wounds pool.
+                    if let Some(scale) = crate::config::pool::read_sidecar::<
+                        crate::config::pool::CreatureSidecar,
+                    >(&path)
+                    .and_then(|sidecar| sidecar.overlay_scale)
+                    {
+                        cache.overlay_scales.insert(key.clone(), scale);
+                    }
                     let tex = super::image_store::load_texture_file(
                         ctx,
                         &path,
@@ -970,9 +992,26 @@ impl SkinState {
             }
             cache.variant_bases.insert(path, art);
         }
+        // Part-table wound art (the global creatures/wounds convention and
+        // any authored tables): small fixed set, preloaded with the shared
+        // overlays below so `part_overlay` hits are texture lookups.
+        let part_paths: Vec<String> = cache
+            .card
+            .parts
+            .values()
+            .chain(
+                cache
+                    .card
+                    .variants
+                    .iter()
+                    .flat_map(|v| v.skin.parts.values()),
+            )
+            .flat_map(|spec| spec.overlays.values().cloned())
+            .filter(|path| !path.contains('{'))
+            .collect();
         // Shared overlay textures: small set, loaded once. Placeholder
         // paths ({severity}) expand 1-3.
-        let overlay_paths: Vec<String> = cache.card.overlays.iter().flat_map(|o| {
+        let overlay_paths: Vec<String> = part_paths.into_iter().chain(cache.card.overlays.iter().flat_map(|o| {
                 if o.image.contains("{severity}") {
                     (1..=3)
                         .map(|s| o.image.replace("{severity}", &s.to_string()))
@@ -989,13 +1028,22 @@ impl SkinState {
                 } else {
                     vec![o.image.clone()]
                 }
-            })
+            }))
             .collect();
         for path in overlay_paths {
             if cache.overlays.contains_key(&path) {
                 continue;
             }
             let abs = skins::resolve_image_path(&cache.root, &path);
+            // Calibrated size rides the art's sidecar, like everything
+            // else about an image's physical reality.
+            if let Some(scale) = crate::config::pool::read_sidecar::<
+                crate::config::pool::CreatureSidecar,
+            >(&abs)
+            .and_then(|sidecar| sidecar.overlay_scale)
+            {
+                cache.overlay_scales.insert(path.clone(), scale);
+            }
             let tex = super::image_store::load_texture_file(
                 ctx,
                 &abs,

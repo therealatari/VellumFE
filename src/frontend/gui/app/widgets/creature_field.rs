@@ -358,30 +358,34 @@ impl VellumGuiApp {
             egui::pos2(foot.x - art.feet[0] * draw_w, foot.y - art.feet[1] * draw_h),
             egui::vec2(draw_w, draw_h),
         );
-        // Contact shadow on the ground line, sized by the sidecar footprint
-        // when authored, the generic standee ellipse otherwise.
-        let (shadow_c, shadow_rx, shadow_ry) = match art.footprint {
-            Some(fp) => {
-                let cx = fp
-                    .center
-                    .map(|c| dest.left() + c[0] * dest.width())
-                    .unwrap_or(foot.x);
-                (
-                    egui::pos2(cx, foot.y),
-                    dest.width() * fp.rx,
-                    dest.width() * fp.effective_ry(),
-                )
-            }
-            None => {
-                let w = dest.width() * 0.55;
-                (foot, w, w * 0.24)
-            }
-        };
-        painter.add(egui::epaint::PathShape::convex_polygon(
-            ellipse_points(shadow_c, shadow_rx, shadow_ry),
-            Color32::from_black_alpha(60),
-            Stroke::NONE,
-        ));
+        // Contact shadow only when the prop opts in (scene `shadow = true`
+        // — scenery defaults shadowless, most of it paints its own
+        // grounding). Sized by the sidecar footprint when authored, the
+        // generic standee ellipse otherwise.
+        if prop.shadow {
+            let (shadow_c, shadow_rx, shadow_ry) = match art.footprint {
+                Some(fp) => {
+                    let cx = fp
+                        .center
+                        .map(|c| dest.left() + c[0] * dest.width())
+                        .unwrap_or(foot.x);
+                    (
+                        egui::pos2(cx, foot.y),
+                        dest.width() * fp.rx,
+                        dest.width() * fp.effective_ry(),
+                    )
+                }
+                None => {
+                    let w = dest.width() * 0.55;
+                    (foot, w, w * 0.24)
+                }
+            };
+            painter.add(egui::epaint::PathShape::convex_polygon(
+                ellipse_points(shadow_c, shadow_rx, shadow_ry),
+                Color32::from_black_alpha(60),
+                Stroke::NONE,
+            ));
+        }
         painter.image(
             art.texture.id(),
             dest,
@@ -884,11 +888,14 @@ impl VellumGuiApp {
                         // Body-wrap: stretched over the sprite's alpha bbox.
                         None => bbox,
                         Some(name) => {
-                            // Anchored: sized to half the card width,
-                            // aspect-preserving, centred on the anchor.
+                            // Anchored: the calibrated overlay_scale (or
+                            // the 1.0 identity) times the creature's drawn
+                            // width — world-size scaling inherent, no
+                            // built-in shrink factors.
                             let pt = anchor_pt(name);
                             let ts = texture.size_vec2();
-                            let w = dest.width() * 0.5;
+                            let w = dest.width()
+                                * cache.overlay_scale(&overlay.image).unwrap_or(1.0);
                             let h = w * ts.y / ts.x.max(1.0);
                             egui::Rect::from_center_size(pt, egui::vec2(w, h))
                         }
@@ -938,9 +945,11 @@ impl VellumGuiApp {
                         }
                         _ => {
                             // Static screen layer: sits just above the
-                            // anchor, sized like an anchored quad layer.
+                            // anchor, sized like an anchored quad layer
+                            // (calibrated overlay_scale, identity default).
                             let ts = texture.size_vec2();
-                            let w = dest.width() * 0.4;
+                            let w = dest.width()
+                                * cache.overlay_scale(&overlay.image).unwrap_or(1.0);
                             let h = w * ts.y / ts.x.max(1.0);
                             painter.image(
                                 texture.id(),
@@ -974,13 +983,22 @@ impl VellumGuiApp {
     ) {
         let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
         for (part, rank) in injuries {
-            // Anchor precedence: the skin's calibrated point, the image's
-            // sidecar part anchors, the art's own head, then the HUMANOID
-            // doll defaults — without that last step every limb wound
-            // collapsed onto the card centre.
-            let frac = resolved
+            // The AUTHORED anchor (calibrator/sidecar/skin) is the mode
+            // switch — the tale is the anchor:
+            //   no anchor  -> the art is canvas-matched to the base:
+            //                 stretched 1:1 over the drawn base (perfect
+            //                 alignment, world scaling inherited);
+            //   anchor     -> the art is artist-cropped sprite art and
+            //                 behaves exactly like the shared wounds pool:
+            //                 calibrated overlay_scale (1.0 identity) times
+            //                 the creature's drawn width, centred there.
+            // Global/manifest art always draws anchored (it can't be
+            // canvas-matched to any one creature), falling through to the
+            // built-in default anchors.
+            let authored = resolved
                 .authored_anchor(part)
-                .or_else(|| art.anchor(part))
+                .or_else(|| art.anchor(part));
+            let frac = authored
                 .or_else(|| crate::config::skins::default_creature_anchor(part))
                 .or(match part.as_str() {
                     "head" => Some(art.head),
@@ -998,27 +1016,56 @@ impl VellumGuiApp {
             // tables serve only tiers with no wound art of their own;
             // the procedural rank marker covers everything else, so
             // wounds stay visible on every skin.
-            let tier_texture = art
+            let tier_key = art
                 .extra(&format!("{}{rank}", part.to_ascii_lowercase()))
-                .and_then(|path| {
+                .map(|path| path.to_string_lossy().into_owned());
+            let tier_texture = tier_key
+                .as_deref()
+                .and_then(|key| cache.overlays.get(key).cloned().flatten());
+            if let Some(texture) = tier_texture {
+                match authored {
+                    // Canvas-matched: full overlay over the drawn base.
+                    None => {
+                        painter.image(texture.id(), dest, uv, Color32::WHITE);
+                    }
+                    // Artist-cropped sprite: calibrated scale × creature.
+                    Some(_) => {
+                        let scale = tier_key
+                            .as_deref()
+                            .and_then(|key| cache.overlay_scale(key))
+                            .unwrap_or(1.0);
+                        let ts = texture.size_vec2();
+                        let w = dest.width() * scale;
+                        let h = w * ts.y / ts.x.max(1.0);
+                        painter.image(
+                            texture.id(),
+                            egui::Rect::from_center_size(pt, egui::vec2(w, h)),
+                            uv,
+                            Color32::WHITE,
+                        );
+                    }
+                }
+                continue;
+            }
+            let global = if art.has_wound_extras() {
+                None
+            } else {
+                resolved.part_overlay(part, *rank).and_then(|image| {
                     cache
                         .overlays
-                        .get(path.to_string_lossy().as_ref())
+                        .get(image)
                         .cloned()
                         .flatten()
-                });
-            let texture = tier_texture.or_else(|| {
-                if art.has_wound_extras() {
-                    return None;
-                }
-                resolved
-                    .part_overlay(part, *rank)
-                    .and_then(|image| cache.overlays.get(image).cloned().flatten())
-            });
-            match texture {
-                Some(texture) => {
+                        .map(|texture| (image, texture))
+                })
+            };
+            match global {
+                Some((image, texture)) => {
+                    // No invented sizes: the calibrated overlay_scale (or
+                    // the 1.0 identity) times the creature's drawn width,
+                    // so world-size scaling is inherent.
                     let ts = texture.size_vec2();
-                    let w = dest.width() * 0.35;
+                    let w = dest.width() * cache.overlay_scale(image).unwrap_or(1.0);
                     let h = w * ts.y / ts.x.max(1.0);
                     painter.image(
                         texture.id(),

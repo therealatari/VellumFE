@@ -16,6 +16,7 @@ mod alertpacks;
 pub mod appearance;
 mod colors;
 mod conditions;
+pub mod creature_field;
 mod defaults_refresh;
 mod highlights;
 mod hotbars;

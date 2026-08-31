@@ -501,6 +501,23 @@ pub struct CreatureSidecar {
     /// as a fraction of the drawn sprite height. Absent = grounded.
     #[serde(default)]
     pub lift: Option<f32>,
+    /// Overlay art only (creatures/wounds, creatures/status): drawn width
+    /// as a fraction of the wearing creature's drawn width — sized
+    /// relative to the creature so world-size scaling is inherent, with
+    /// the fraction itself user-calibrated instead of hardcoded. Absent =
+    /// the renderer's per-role default.
+    #[serde(default)]
+    pub overlay_scale: Option<f32>,
+    /// Scenery-only: exclusion edges as [left, right] fractions of the
+    /// image width. Present = a placed prop blocks creature placement
+    /// BEHIND that lateral span (never in front or beside). Written by the
+    /// scenery calibrator.
+    #[serde(default)]
+    pub exclude: Option<[f32; 2]>,
+    /// Scenery-only: image aspect (width/height), recorded at calibration
+    /// so core can size the exclusion span without decoding the image.
+    #[serde(default)]
+    pub aspect: Option<f32>,
 }
 
 impl SidecarKind for CreatureSidecar {
@@ -799,7 +816,12 @@ pub fn write_creature_sidecar(
                 doc.remove("footprint");
             }
         }
-        for (key, field) in [("size", sidecar.size), ("lift", sidecar.lift)] {
+        for (key, field) in [
+            ("size", sidecar.size),
+            ("lift", sidecar.lift),
+            ("aspect", sidecar.aspect),
+            ("overlay_scale", sidecar.overlay_scale),
+        ] {
             match field {
                 Some(v) => {
                     doc.insert(key, value(toml_rounded(v, 10_000.0)));
@@ -807,6 +829,17 @@ pub fn write_creature_sidecar(
                 None => {
                     doc.remove(key);
                 }
+            }
+        }
+        match sidecar.exclude {
+            Some([left, right]) => {
+                let mut pair = toml_edit::Array::new();
+                pair.push(toml_rounded(left, 10_000.0));
+                pair.push(toml_rounded(right, 10_000.0));
+                doc.insert("exclude", value(pair));
+            }
+            None => {
+                doc.remove("exclude");
             }
         }
         Ok(())

@@ -36,7 +36,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// Parsed skin.toml.
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -335,90 +335,109 @@ pub struct CreatureFieldSkin {
 /// optional; `None` keeps the solver's built-in default. Names here are
 /// the authoring vocabulary and deliberately read plainer than the
 /// solver's short field names (`eye_height` → `cam_h`, etc.).
-#[derive(Debug, Clone, Default, Deserialize)]
+///
+/// Serializes too: scenes embed a camera (`StageScene::camera`) and the
+/// appearance store carries a per-character override, both written by
+/// editors. Unset keys are omitted so a partial override stays partial.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct CreatureFieldCamera {
     /// Lens; larger = flatter, less convergence. Default 420.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub focal: Option<f32>,
     /// Camera height in card-heights above the plane. Default 1.6.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub eye_height: Option<f32>,
     /// Distance to the front row. Default 2.4.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub near_depth: Option<f32>,
     /// Spacing between rows. Default 1.5.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub row_depth: Option<f32>,
     /// Vanishing line, px from stage top. Default 96.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub horizon: Option<f32>,
     /// Lateral column spacing. Default 1.15. Note this one is not purely a
     /// camera value — it also feeds placement scoring, so changing it
     /// affects how future arrivals fit, never where placed units stand.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cell_width: Option<f32>,
+}
+
+impl CreatureFieldCamera {
+    /// No key set — serde skip helper and "nothing to apply" check.
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 /// `[creature_field.solver]` — placement tunables for the creature-field
 /// solver. All optional; `None` keeps the solver's built-in default. Same
 /// authoring-vocabulary discipline as the camera table: names read plainer
 /// than the solver's field names, and bad values clamp with a warning in
-/// `FieldParams::apply_solver`.
-#[derive(Debug, Clone, Default, Deserialize)]
+/// `FieldParams::apply_solver`. Serializes for the same reason the camera
+/// does: scenes embed one, the appearance store can override it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct CreatureFieldSolver {
     /// Spawn zone shape: "ellipse" (inscribed spawn ellipse, default) or
     /// "grid" (margin columns, no ellipse).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub zone: Option<String>,
     /// Ellipse shrink from the floor edge. Default 0.10.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub zone_inset: Option<f32>,
     /// Radial centre pull (squared falloff). Default 0.45.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub centre_pull: Option<f32>,
     /// Depth bases sampled per square. Default 9.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub depth_samples: Option<u32>,
     /// Depth jitter amplitude, in row depths. Default 0.22.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub depth_jitter: Option<f32>,
     /// Lateral jitter amplitude, in cell widths. Default 0.12.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lateral_jitter: Option<f32>,
     /// Repulsion from neighbours' world depth. Default 0.70.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub depth_spread: Option<f32>,
     /// Repulsion from neighbours' foot screen y. Default 1.60.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub row_band_push: Option<f32>,
     /// Row-band kernel width in stage pixels. Default 28.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub row_band_px: Option<f32>,
     /// Max identity-region coverage a candidate may cause. Default 0.18.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub occlusion_cap: Option<f32>,
     /// Soft score noise. Default 0.35.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub variation: Option<f32>,
     /// First arrival into an empty field goes front and centre. Default
     /// true.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seed_front: Option<bool>,
     /// Fall-envelope overlap cost weight. Default 0.9.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fall_reserve: Option<f32>,
     /// Whether the worst envelope overlap is a hard bound. Default true.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fall_reserve_hard: Option<bool>,
     /// Separation width basis: "contact" (default) or "card".
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub separation_basis: Option<String>,
     /// Constraint-loosening notches at the column cap. Default 4.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub relax_steps: Option<u32>,
     /// Shuffle the candidate list so ties don't bias. Default true.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shuffle_ties: Option<bool>,
+}
+
+impl CreatureFieldSolver {
+    /// No key set — serde skip helper and "nothing to apply" check.
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 /// One status/effect layer on the card.
@@ -1088,19 +1107,9 @@ description = ""
 # [creature_card.variants.skin]
 # lift = { offset_y = -0.22, shadow_scale = 0.55, shadow_opacity = 0.4 }
 
-# Creature field ground plane — the camera the floor is projected with.
-# Every key is optional and falls back to the value shown; out-of-range
-# values clamp with a warning rather than dropping the widget. Edits
-# hot-reload with the rest of the skin, so tuning is live.
-#
-# [creature_field.camera]
-# focal      = 420    # lens; larger = flatter, less convergence
-# eye_height = 1.6    # camera height in card-heights above the plane
-# near_depth = 2.4    # distance to the front row
-# row_depth  = 1.5    # spacing between rows
-# horizon    = 96     # vanishing line, px from stage top
-# cell_width = 1.15   # lateral column spacing (also affects how future
-#                     # arrivals fit; placed creatures never move)
+# Creature field camera/solver tuning no longer rides skins: authored
+# values live in scenes (Vellum Studio's Stage, saved to global/scenes/),
+# personal overrides in .creaturefield (global/creature_field.toml).
 "##;
 
 /// Create `skins/<name>/` with the commented starter skin.toml. Refuses to
