@@ -731,6 +731,9 @@ pub enum ClientMessage {
         color: Option<String>,
         confirm: bool,
         insert: bool,
+        /// Client-side action (wheel-slice vocabulary); wins over
+        /// `command` and never resolves server-side.
+        client: Option<String>,
         options: Vec<crate::config::MacroOption>,
         original: Option<(Option<String>, String)>,
     },
@@ -995,9 +998,12 @@ pub fn parse_client_message(raw: &str) -> Option<ClientMessage> {
                         .collect()
                 })
                 .unwrap_or_default();
-            // A button needs a label and either a direct command or at
-            // least one option (menu button).
-            if label.is_empty() || (command.is_empty() && options.is_empty()) {
+            let client = opt_str(msg.d.get("client"));
+            // A button needs a label and either a direct command, a
+            // client action, or at least one option (menu button).
+            if label.is_empty()
+                || (command.is_empty() && client.is_none() && options.is_empty())
+            {
                 return None;
             }
             let original = msg
@@ -1021,6 +1027,7 @@ pub fn parse_client_message(raw: &str) -> Option<ClientMessage> {
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false),
                 insert,
+                client,
                 options,
                 original,
             })

@@ -842,6 +842,7 @@ async fn macro_save_and_delete_arrive_as_events() {
         color,
         confirm,
         insert,
+        client: client_action,
         options,
         original,
     } = event
@@ -854,6 +855,7 @@ async fn macro_save_and_delete_arrive_as_events() {
     assert_eq!(color.as_deref(), Some("#d9b44f"));
     assert!(confirm);
     assert!(!insert);
+    assert_eq!(client_action, None);
     assert!(options.is_empty());
     assert_eq!(original, Some((None, "Old nap".to_string())));
 
@@ -902,6 +904,29 @@ async fn macro_save_and_delete_arrive_as_events() {
     assert_eq!(options[1].command, ";go2 gate");
     assert!(options[1].confirm);
     assert!(options[2].insert, "per-option insert flag forwarded");
+
+    // A client-action button: no command, the action ships instead.
+    client
+        .send_text(
+            r#"{"t":"macro_save","d":{"group":null,"label":"Chars","command":"","client":"shell:characters"}}"#,
+        )
+        .await;
+    let event = tokio::time::timeout(std::time::Duration::from_secs(5), event_rx.recv())
+        .await
+        .expect("timed out")
+        .expect("channel open");
+    let RemoteEvent::MacroSave {
+        label,
+        command,
+        client: client_action,
+        ..
+    } = event
+    else {
+        panic!("expected MacroSave");
+    };
+    assert_eq!(label, "Chars");
+    assert!(command.is_empty());
+    assert_eq!(client_action.as_deref(), Some("shell:characters"));
 
     // Empty label/command is rejected at parse time, not forwarded.
     client

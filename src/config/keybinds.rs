@@ -928,6 +928,9 @@ pub const TOUCH_WHEEL_CLIENT_ACTIONS: &[(&str, &str)] = &[
     ("open:inv", "Open Inventory"),
     ("open:map", "Open Map"),
     ("focus:input", "Focus command input"),
+    // In the phone app this slice becomes a folder listing the shell's
+    // saved characters (plus "This phone"); in a plain browser it toasts.
+    ("shell:characters", "Characters (switch session)"),
 ];
 
 /// The touch-wheel action catalog as wire JSON for the editor UIs:

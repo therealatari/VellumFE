@@ -151,10 +151,26 @@ final class BootModel: ObservableObject {
         // in-page Remote login tab is hidden (a plain browser, lacking both,
         // keeps its Remote tab).
         var url = "http://127.0.0.1:\(port)/play#token=\(token)&app=1&nativepicker=1"
+        if let chars = Self.charsFragment() {
+            url += "&\(chars)"
+        }
         if let lich = lichFragment {
             url += "&\(lich)"
         }
         return URL(string: url)!
+    }
+
+    /// The saved characters as a `chars=` fragment for the web client's
+    /// switch-character wheel: `name@host:port` entries (name and host
+    /// percent-encoded), comma-separated. Names only — pairing tokens stay
+    /// in the Keychain; a wheel pick round-trips through
+    /// vellum://remote/connect?name=… and this shell connects with its own
+    /// stored token. Nil when nothing is saved.
+    private static func charsFragment() -> String? {
+        let entries = RemoteStore.list().map { target in
+            "\(encode(target.name))@\(encode(target.host)):\(target.port)"
+        }
+        return entries.isEmpty ? nil : "chars=" + entries.joined(separator: ",")
     }
 
     /// Republish the local boot URL (the container reloads on change).
@@ -180,6 +196,9 @@ final class BootModel: ObservableObject {
         var url = "http://\(host):\(target.port)/#app=1&nativepicker=1"
         if !target.token.isEmpty {
             url += "&token=\(target.token)"
+        }
+        if let chars = Self.charsFragment() {
+            url += "&\(chars)"
         }
         guard let parsed = URL(string: url) else { return }
         phase = .ready(parsed)
@@ -226,6 +245,17 @@ final class BootModel: ObservableObject {
             case "/picker":
                 // Return to the native character picker.
                 showPicker()
+            case "/connect":
+                // Switch-character wheel pick: connect to a saved server by
+                // name (the token comes from the Keychain entry, never the
+                // page). An unknown or missing name lands on the picker.
+                guard let name = Self.queryValue(url, "name"), !name.isEmpty,
+                      let target = RemoteStore.list().first(where: { $0.name == name })
+                else {
+                    showPicker()
+                    return
+                }
+                showRemote(target)
             default:
                 break
             }

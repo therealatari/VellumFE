@@ -172,8 +172,22 @@ class MainActivity : Activity() {
         // native character picker owns remote-server management, so the
         // in-page Remote login tab is hidden.
         var url = "http://127.0.0.1:$port/play#token=$token&app=1&nativepicker=1"
+        charsFragment()?.let { url += "&$it" }
         lichFragment?.let { url += "&$it" }
         return url
+    }
+
+    /** The saved characters as a `chars=` fragment for the web client's
+     * switch-character wheel: `name@host:port` entries (name and host
+     * percent-encoded), comma-separated. Names only — pairing tokens stay in
+     * native storage; a wheel pick round-trips through
+     * vellum://remote/connect?name=… and this shell connects with its own
+     * stored token. Null when nothing is saved. */
+    private fun charsFragment(): String? {
+        val entries = RemoteStore.list(this).map { target ->
+            "${Uri.encode(target.name)}@${Uri.encode(target.host)}:${target.port}"
+        }
+        return if (entries.isEmpty()) null else "chars=" + entries.joinToString(",")
     }
 
     /** Reload the local boot URL (embedded login page); no-op while boot
@@ -211,11 +225,12 @@ class MainActivity : Activity() {
         }
         // nativepicker=1: hide the web client's in-page Remote tab; the native
         // picker (reachable via "Switch character") owns switching servers.
-        val fragment = if (target.token.isEmpty()) {
+        var fragment = if (target.token.isEmpty()) {
             "app=1&nativepicker=1"
         } else {
             "token=${target.token}&app=1&nativepicker=1"
         }
+        charsFragment()?.let { fragment += "&$it" }
         runOnUiThread {
             showWebView()
             webView.loadUrl("http://$host:${target.port}/#$fragment")
@@ -278,6 +293,18 @@ class MainActivity : Activity() {
                 // "Switch character" in the web settings sheet → back to the
                 // native picker (which the shell owns).
                 "/picker" -> showPicker()
+                // Switch-character wheel pick: connect to a saved server by
+                // name (the token comes from native storage, never the
+                // page). An unknown or missing name lands on the picker.
+                "/connect" -> {
+                    val name = uri.getQueryParameter("name")?.trim().orEmpty()
+                    val target = RemoteStore.list(this).find { it.name == name }
+                    if (target != null) {
+                        startCoreThen { showRemote(target) }
+                    } else {
+                        showPicker()
+                    }
+                }
             }
         }
     }

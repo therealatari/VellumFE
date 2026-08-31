@@ -229,9 +229,12 @@ impl AppCore {
         original: Option<(Option<String>, String)>,
     ) {
         let has_command = !button.command.as_deref().unwrap_or("").trim().is_empty();
-        if button.label.trim().is_empty() || (!has_command && button.options.is_empty()) {
+        let has_client = !button.client.as_deref().unwrap_or("").trim().is_empty();
+        if button.label.trim().is_empty()
+            || (!has_command && !has_client && button.options.is_empty())
+        {
             self.add_system_message(
-                "Macro not saved: a label plus a command (or menu options) are required",
+                "Macro not saved: a label plus a command, app action, or menu options are required",
             );
             return;
         }

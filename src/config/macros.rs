@@ -45,6 +45,13 @@ pub struct MacroButton {
     pub label: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
+    /// Client-side action instead of a game command (`open:map`,
+    /// `shell:characters`, … — the same TOUCH_WHEEL_CLIENT_ACTIONS
+    /// vocabulary as wheel slices). Ships to the phone, which runs it
+    /// locally; the server never resolves or executes it. Wins over
+    /// `command` when both are set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client: Option<String>,
     /// Hex color for the button face (e.g. "#d9b44f").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
@@ -233,7 +240,10 @@ impl MacrosConfig {
         // that now points at one — refuse rather than execute input text.
         match rest {
             [] => {
-                if button.insert {
+                // Type-in (insert) and client-action buttons are handled
+                // entirely client-side; the server must never execute them,
+                // even for a stale client's tap.
+                if button.insert || button.client.is_some() {
                     return None;
                 }
                 button.command.as_deref()
@@ -409,6 +419,22 @@ mod tests {
         assert_eq!(macros.resolve("g:0:b:0"), None);
         assert_eq!(macros.resolve("g:0:b:1:o:0"), None);
         assert_eq!(macros.resolve("g:0:b:1:o:1"), Some("look"));
+    }
+
+    #[test]
+    fn client_action_buttons_never_resolve() {
+        let macros: MacrosConfig = toml::from_str(
+            r#"
+            [[floating]]
+            label = "Chars"
+            client = "shell:characters"
+            "#,
+        )
+        .expect("client-action macro parses");
+        assert_eq!(macros.floating[0].client.as_deref(), Some("shell:characters"));
+        // Client actions run on the phone; a (stale) tap id must not
+        // execute anything server-side.
+        assert_eq!(macros.resolve("f:0"), None);
     }
 
     #[test]

@@ -1671,8 +1671,106 @@ const TOUCH_WHEEL_DEFAULT = [
   { label: "Inventory", client: "open:inv" },
   { label: "Map", client: "open:map" },
   { label: "Commands", slices: "@default" },
+  // In the app shell the Characters slice is a folder of the native
+  // picker's saved sessions; a plain browser has no shell to switch with,
+  // so the default ring omits it there (a host-pushed wheel may still
+  // include it — it degrades to a toast).
+  ...(inShell && nativePicker
+    ? [{ label: "Characters", client: "shell:characters" }]
+    : []),
   { label: "Type", client: "focus:input" },
 ];
+
+// ---- Character switching (app shell) ---------------------------------------
+// The native shell appends `chars=` to the boot fragment: the saved remote
+// sessions from its picker, `name@host:port` entries (name and host
+// percent-encoded), comma-separated. Names only identify picker entries —
+// pairing tokens never leave native storage; a pick round-trips through
+// vellum://remote/connect?name=… and the shell connects with its own token.
+const shellChars = (() => {
+  const m = location.hash.match(/(?:^#|&)chars=([^&]+)/);
+  if (!m) return [];
+  const out = [];
+  for (const entry of m[1].split(",")) {
+    const at = entry.indexOf("@");
+    const colon = entry.lastIndexOf(":");
+    if (at <= 0 || colon <= at) continue;
+    const port = Number(entry.slice(colon + 1));
+    let host;
+    let name;
+    try {
+      name = decodeURIComponent(entry.slice(0, at));
+      host = decodeURIComponent(entry.slice(at + 1, colon));
+    } catch {
+      continue;
+    }
+    if (!name || !host || !Number.isInteger(port) || port <= 0) continue;
+    // Bracket bare IPv6 so hostPort matches location.host and parses in URLs.
+    if (host.includes(":") && !host.startsWith("[")) host = `[${host}]`;
+    out.push({ name, hostPort: `${host}:${port}` });
+  }
+  return out;
+})();
+
+// Liveness per character name: "online" | "offline"; absent = unknown (drawn
+// normally — the wheel never hides an unprobed character).
+const shellCharStatus = {};
+let shellCharProbeAt = 0;
+
+// Probe each sibling session's /health (CORS-open) with a short timeout.
+// Fired when the touch wheel opens; throttled so re-opens don't spam. The
+// ring re-renders as verdicts land, dimming unreachable characters.
+function probeShellChars() {
+  const now = Date.now();
+  if (!shellChars.length || now - shellCharProbeAt < 5000) return;
+  shellCharProbeAt = now;
+  for (const c of shellChars) {
+    if (c.hostPort === location.host) continue;
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 1200);
+    fetch(`http://${c.hostPort}/health`, {
+      mode: "no-cors", cache: "no-store", signal: ctrl.signal,
+    })
+      .then(() => { shellCharStatus[c.name] = "online"; })
+      .catch(() => { shellCharStatus[c.name] = "offline"; })
+      .finally(() => {
+        clearTimeout(timer);
+        if (gpWheel && gpWheel.key === "touch") renderWheel();
+      });
+  }
+}
+
+// The generated Characters ring: every saved session except the one this
+// page is attached to (matched by host:port), offline ones dimmed, plus
+// "This phone" (local play) when we're on a remote session. Slices carry
+// shell:* client actions so fireTouchLeaf runs them like any other leaf.
+const SHELL_CHAR_OFFLINE_COLOR = "#6b7280";
+function characterRingSlices() {
+  const ring = [];
+  for (const c of shellChars) {
+    if (c.hostPort === location.host) continue;
+    const slice = { label: c.name, client: `shell:connect:${c.name}` };
+    if (shellCharStatus[c.name] === "offline") slice.color = SHELL_CHAR_OFFLINE_COLOR;
+    ring.push(slice);
+  }
+  if (location.hostname !== "127.0.0.1") {
+    ring.push({ label: "This phone", client: "shell:local" });
+  }
+  return ring;
+}
+
+// Swap a shell:characters leaf for a folder that opens the generated ring
+// (the "@characters" sentinel, resolved in wheelLevelSlices like
+// "@default"). Only in the app shell — a plain browser keeps the leaf,
+// which toasts on fire. Returns a copy; host-pushed config is never mutated.
+function touchRing(slices) {
+  if (!inShell || !nativePicker) return slices;
+  return slices.map((s) =>
+    s && s.client === "shell:characters" && !(s.slices || []).length
+      ? { ...s, slices: "@characters" }
+      : s
+  );
+}
 
 // The touch wheel's top-level ring: the host override if pushed, else the
 // built-in default. A slice whose `slices` is the "@default" sentinel is a
@@ -1705,18 +1803,25 @@ function wheelLevelSlices(key, path) {
     }));
   }
   if (key === "touch") {
-    let level = touchWheelTop();
+    let level = touchRing(touchWheelTop());
     // A "@default" folder descends into the host's default wheel; deeper
-    // levels then resolve within that wheel.
+    // levels then resolve within that wheel. "@characters" descends into
+    // the generated character-switch ring (app shell only).
     let intoDefault = false;
     for (let i = 0; i < path.length; i++) {
-      if (!intoDefault && level[path[i]] && level[path[i]].slices === "@default") {
+      const s = level[path[i]];
+      if (!intoDefault && s && s.slices === "@default") {
         level = wheels.default;
         intoDefault = true;
         continue;
       }
-      level = (level[path[i]] || {}).slices;
+      if (!intoDefault && s && s.slices === "@characters") {
+        level = characterRingSlices();
+        continue;
+      }
+      level = (s || {}).slices;
       if (!Array.isArray(level)) return null;
+      if (!intoDefault) level = touchRing(level);
     }
     return Array.isArray(level) ? level : null;
   }
@@ -1766,7 +1871,66 @@ function runWheelClientAction(action) {
   }
   if (verb === "cmd") { sendCommand(arg); return true; }
   if (verb === "focus") { if (arg === "input") cmdInput.focus(); return true; }
+  if (verb === "shell") {
+    // Character switching — handled past the 2-part split because
+    // shell:connect:<name> carries the name in the third segment.
+    runShellWheelAction(action.slice("shell:".length));
+    return true;
+  }
   return false;
+}
+
+// Character-switch wheel actions (the shell:* vocabulary). Every branch
+// ends the gesture locally; navigation hands off to the native shell via
+// the vellum:// routes it already intercepts.
+function runShellWheelAction(rest) {
+  if (!inShell || !nativePicker) {
+    shellToast("Character switching needs the phone app.");
+    return;
+  }
+  if (rest === "characters") {
+    // Leaf fallback (no saved characters to build a ring from yet).
+    location.href = "vellum://remote/picker";
+    return;
+  }
+  if (rest === "local") {
+    if (location.hostname === "127.0.0.1") {
+      shellToast("Already playing on this phone.");
+      return;
+    }
+    location.href = "vellum://local";
+    return;
+  }
+  if (rest.startsWith("connect:")) {
+    const name = rest.slice("connect:".length);
+    if (shellCharStatus[name] === "offline") {
+      // Refuse gracefully instead of reloading into a dead session.
+      shellToast(`${name} isn't reachable right now.`);
+      return;
+    }
+    location.href = `vellum://remote/connect?name=${encodeURIComponent(name)}`;
+  }
+}
+
+// A small transient notice above the input bar (the wheel has no other
+// feedback channel for a refused action).
+let shellToastTimer = 0;
+function shellToast(text) {
+  let el = document.getElementById("shell-toast");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "shell-toast";
+    el.style.cssText =
+      "position:fixed;left:50%;bottom:72px;transform:translateX(-50%);" +
+      "background:#1c1f26;color:#d6d6d6;border:1px solid #3a3f4a;" +
+      "border-radius:8px;padding:8px 14px;font-size:14px;z-index:1000;" +
+      "pointer-events:none;max-width:80vw;text-align:center;";
+    document.body.appendChild(el);
+  }
+  el.textContent = text;
+  el.hidden = false;
+  clearTimeout(shellToastTimer);
+  shellToastTimer = setTimeout(() => { el.hidden = true; }, 2500);
 }
 
 // Scroll a status-drawer section title into view by its arg ("room" ->
@@ -1861,6 +2025,9 @@ function openTouchWheel(clientX, clientY) {
   };
   touchLastDepth = 0;
   touchLastPoint = { x: clientX, y: clientY };
+  // Start liveness probes now so the Characters ring is already dimming
+  // unreachable sessions by the time the thumb reaches it (throttled).
+  probeShellChars();
   renderWheel();
   // Measure the real on-screen deflection radius from the rendered SVG
   // (outer wedge is 104/110 of the SVG half-size).
@@ -4218,7 +4385,10 @@ function insertMacroText(text) {
 // A button or menu option, post-confirm: type-in entries stay local,
 // everything else round-trips by id.
 function fireMacro(entry) {
-  if (entry.insert) insertMacroText(entry.command || "");
+  // Client-action buttons (wheel-slice vocabulary: open a panel, switch
+  // character, …) run locally — the id never round-trips.
+  if (entry.client) runWheelClientAction(entry.client);
+  else if (entry.insert) insertMacroText(entry.command || "");
   else sendMacro(entry.id);
 }
 
@@ -4494,15 +4664,20 @@ const TAP_MODES = [
   ["insert", "Type into input"],
   ["insert-send", "Type, then send"],
 ];
+// Button-only fourth mode: run a client action (open a panel, switch
+// character, …) instead of a game command. Menu options stay commands.
+const TAP_MODE_CLIENT = ["client", "App action"];
 
 function tapModeOf(entry) {
+  if (entry && entry.client) return "client";
   if (!entry || !entry.insert) return "send";
   return (entry.command || "").endsWith("\r") ? "insert-send" : "insert";
 }
 
-function tapSelect(mode) {
+function tapSelect(mode, allowClient) {
   const select = document.createElement("select");
   for (const [value, label] of TAP_MODES) select.append(new Option(label, value));
+  if (allowClient) select.append(new Option(TAP_MODE_CLIENT[1], TAP_MODE_CLIENT[0]));
   select.value = mode;
   return select;
 }
@@ -4537,10 +4712,27 @@ function openMacroEditor(existing) {
   cmdWrap.append("Command (leave empty for a menu button)", cmdInputEl);
 
   // Tap behavior: send now, type into the input (composable word
-  // buttons), or type and submit the whole composed line.
-  const tapModeIn = tapSelect(tapModeOf(existing?.btn));
+  // buttons), type and submit the whole composed line, or run a client
+  // action locally (App action).
+  const tapModeIn = tapSelect(tapModeOf(existing?.btn), true);
   const tapWrap = document.createElement("label");
   tapWrap.append("On tap", tapModeIn);
+
+  // App-action picker, shown instead of the command field in client mode.
+  // Vocabulary rides the macros message so it can't drift from the host.
+  const clientSelect = document.createElement("select");
+  for (const a of (macros && macros.client_actions) || []) {
+    clientSelect.append(new Option(a.label, a.action));
+  }
+  if (existing?.btn.client) clientSelect.value = existing.btn.client;
+  const clientWrap = document.createElement("label");
+  clientWrap.append("App action", clientSelect);
+  const syncTapMode = () => {
+    const isClient = tapModeIn.value === "client";
+    clientWrap.hidden = !isClient;
+    cmdWrap.hidden = isClient;
+  };
+  tapModeIn.addEventListener("change", syncTapMode);
 
   // Menu options: with any options, tapping the button opens a picker
   // sheet instead of firing a command — "a button that is a category".
@@ -4671,11 +4863,14 @@ function openMacroEditor(existing) {
     actions.appendChild(deleteBtn);
   }
 
-  form.append(labelWrap, cmdWrap, tapWrap, optionsLabel, placeWrap, colorRow, confirmRow, actions);
+  form.append(labelWrap, cmdWrap, clientWrap, tapWrap, optionsLabel, placeWrap, colorRow, confirmRow, actions);
+  syncTapMode();
   form.addEventListener("submit", (ev) => {
     ev.preventDefault();
     const label = labelInput.value.trim();
-    const command = encodeTapMode(cmdInputEl.value.trim(), tapModeIn.value);
+    const isClient = tapModeIn.value === "client";
+    const client = isClient ? clientSelect.value : null;
+    const command = isClient ? "" : encodeTapMode(cmdInputEl.value.trim(), tapModeIn.value);
     const options = optionRows
       .map((row) => ({
         label: row.labelIn.value.trim(),
@@ -4684,7 +4879,7 @@ function openMacroEditor(existing) {
         insert: row.tapIn.value !== "send",
       }))
       .filter((o) => o.label && o.command);
-    if (!label || (!command && !options.length)) return;
+    if (!label || (!command && !client && !options.length)) return;
     let group = null;
     if (placeSelect.value === "new") {
       group = newGroupInput.value.trim() || null;
@@ -4699,7 +4894,8 @@ function openMacroEditor(existing) {
         group,
         label,
         command,
-        insert: tapModeIn.value !== "send",
+        insert: tapModeIn.value === "insert" || tapModeIn.value === "insert-send",
+        client,
         options,
         color: chosenColor,
         confirm: confirmToggle.checked,

@@ -885,15 +885,20 @@ async fn main() {
                 color,
                 confirm,
                 insert,
+                client,
                 options,
                 original,
             } => {
                 println!(
-                    "EVENT macro_save: label={label:?} command={command:?} insert={insert} options={options:?}"
+                    "EVENT macro_save: label={label:?} command={command:?} insert={insert} client={client:?} options={options:?}"
                 );
                 let button = MacroButton {
                     label,
-                    command: Some(command).filter(|c| !c.is_empty()),
+                    // A client-action button carries no game command.
+                    command: Some(command)
+                        .filter(|c| !c.is_empty())
+                        .filter(|_| client.is_none()),
+                    client,
                     color,
                     confirm,
                     insert,

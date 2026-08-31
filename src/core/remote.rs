@@ -58,6 +58,11 @@ pub struct RemoteMenuItem {
 pub struct RemoteMacros {
     pub groups: Vec<RemoteMacroGroup>,
     pub floating: Vec<RemoteMacroButton>,
+    /// The client-action vocabulary (TOUCH_WHEEL_CLIENT_ACTIONS as
+    /// `[{action,label}]`), so the phone's macro editor renders the same
+    /// picker as the wheel editors without a separate catalog fetch.
+    #[serde(skip_serializing_if = "serde_json::Value::is_null")]
+    pub client_actions: serde_json::Value,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -77,6 +82,11 @@ pub struct RemoteMacroButton {
     /// Type-in button: the client inserts `command` into its input box
     /// instead of sending the id back (a trailing `\r` also submits).
     pub insert: bool,
+    /// Client-side action (wheel-slice vocabulary, e.g. `open:map`,
+    /// `shell:characters`): the client runs it locally instead of sending
+    /// the id back. Ships by definition — there is no server-side text.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub options: Vec<RemoteMacroOption>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -298,6 +308,7 @@ impl RemoteMacros {
                 color: button.color.clone(),
                 confirm: button.confirm,
                 insert: button.insert,
+                client: button.client.clone(),
                 x: button.x,
                 y: button.y,
                 editable: button.editable,
@@ -329,6 +340,7 @@ impl RemoteMacros {
                 .enumerate()
                 .map(|(fi, b)| wire_button(b, format!("f:{fi}")))
                 .collect(),
+            client_actions: crate::config::touch_wheel_action_catalog()["client_actions"].clone(),
         }
     }
 }
@@ -633,6 +645,9 @@ pub enum RemoteEvent {
         /// Type-in button: the client inserts the text instead of
         /// sending the id (options carry their own flag).
         insert: bool,
+        /// Client-side action (wheel-slice vocabulary); wins over
+        /// `command` and never resolves server-side.
+        client: Option<String>,
         /// Non-empty makes this a menu button (tap opens the sheet).
         options: Vec<crate::config::MacroOption>,
         /// Set when editing: the button's previous (group, label).

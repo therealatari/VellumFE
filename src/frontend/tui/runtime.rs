@@ -710,12 +710,17 @@ async fn async_run(
                         color,
                         confirm,
                         insert,
+                        client,
                         options,
                         original,
                     } => {
                         let button = crate::config::MacroButton {
                             label,
-                            command: Some(command).filter(|c| !c.is_empty()),
+                            // A client-action button carries no game command.
+                            command: Some(command)
+                                .filter(|c| !c.is_empty())
+                                .filter(|_| client.is_none()),
+                            client,
                             color,
                             confirm,
                             insert,
