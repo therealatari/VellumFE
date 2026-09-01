@@ -4246,6 +4246,12 @@ if (gamepadPads().length) startGamepadLoop();
 document.addEventListener("click", (ev) => {
   if (sheet.hidden) return;
   if (ev.target.closest("#sheet")) return;
+  // A tapped control may already be detached (its handler re-rendered the
+  // sheet — e.g. the macro editor's Delete opening its confirm step);
+  // closest("#sheet") can't see that, but a detached target by definition
+  // came from inside something a handler just rebuilt, never from the
+  // scrim — so it can't mean "tapped outside".
+  if (!ev.target.isConnected) return;
   // A picked sheet item may already be detached (the pick re-rendered the
   // sheet, e.g. option -> confirm step); closest("#sheet") can't see that,
   // but the class on the detached node itself still matches.
@@ -4638,12 +4644,22 @@ function editableButtons() {
 
 document.getElementById("macro-add").addEventListener("click", () => {
   const editable = editableButtons();
-  if (!editable.length) {
+  const anyButtons = macros
+    && (macros.floating.length || macros.groups.some((g) => g.buttons.length));
+  if (!editable.length && !anyButtons) {
+    // Nothing exists at all — skip the list and go straight to creating.
     openMacroEditor(null);
     return;
   }
   openSheet("Macros");
   sheetButton("＋ New button…", () => openMacroEditor(null));
+  if (!editable.length) {
+    // Buttons exist but none are phone-authored: say why the edit list is
+    // empty instead of silently dumping into the blank form (hand-file
+    // macros.toml buttons are read-only here by design).
+    sheetNote("Your other buttons come from macros.toml on the PC and can only be edited or deleted there.", false);
+    return;
+  }
   const header = document.createElement("div");
   header.className = "sheet-header";
   header.textContent = "Edit";
