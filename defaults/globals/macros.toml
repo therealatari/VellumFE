@@ -21,22 +21,19 @@
 # Per-character overrides: copy this file to your profile directory
 # (profiles/<name>/macros.toml replaces this one wholesale).
 
-[[group]]
-name = "Basics"
-
-  [[group.button]]
-  label = "Look"
-  command = "look"
-
-  [[group.button]]
-  label = "Health"
-  command = "health"
-
-  [[group.button]]
-  label = "Experience"
-  command = "experience"
-
-# Example menu button and floating button (uncomment and adjust):
+# No buttons ship by default — create yours from the phone (settings ->
+# "Add or edit macros"; those save to macros-local.toml and stay editable
+# there) or uncomment the examples below.
+#
+# Example group with an action button, a menu button, and a floating
+# button (uncomment and adjust):
+#
+# [[group]]
+# name = "Basics"
+#
+#   [[group.button]]
+#   label = "Look"
+#   command = "look"
 #
 #   [[group.button]]
 #   label = "Travel"
