@@ -80,7 +80,7 @@ rand = "0.10"
 # Mapdb release downloads (GitHub releases API + asset fetch). Blocking on
 # purpose — it runs on the mapdb-update worker thread. Rides the same
 # native-tls stack as eAccess login; no rustls, no second TLS stack.
-ureq = { version = "2", default-features = false, features = ["native-tls", "gzip"] }
+ureq = { version = "2", default-features = false, features = ["native-tls", "gzip", "cookies"] }
 # Cartographer stringprocs.tar.gz extraction (proc bodies sidecar).
 flate2 = "1"
 tar = "0.4"

@@ -726,6 +726,22 @@ impl Frontend for TuiFrontend {
                 pack_editor.render(screen_area, f.buffer_mut(), &theme);
             }
 
+            // Skill trainer panel: driven by ui_state.skill_trainer.open
+            // (core sets it when the user sends `goals`).
+            if app_core.ui_state.skill_trainer.open {
+                let panel = self
+                    .skill_trainer_panel
+                    .get_or_insert_with(Default::default);
+                panel.render(
+                    screen_area,
+                    f.buffer_mut(),
+                    &app_core.ui_state.skill_trainer,
+                    &theme,
+                );
+            } else if self.skill_trainer_panel.is_some() {
+                self.skill_trainer_panel = None;
+            }
+
             if let Some(ref mut indicator_template_editor) = self.indicator_template_editor {
                 indicator_template_editor.render(screen_area, f.buffer_mut(), &theme);
             }

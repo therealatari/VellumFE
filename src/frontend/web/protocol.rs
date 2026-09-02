@@ -570,6 +570,15 @@ pub fn delta(delta: &RemoteDelta, last_seq: u64) -> String {
             last_seq,
             serde_json::json!({ "connected": connected }),
         ),
+        RemoteDelta::SkillTrainer {
+            open,
+            status,
+            data,
+        } => encode(
+            "skill_trainer",
+            last_seq,
+            serde_json::json!({ "open": open, "status": status, "data": data }),
+        ),
     }
 }
 
@@ -855,6 +864,20 @@ pub enum ClientMessage {
         cid: String,
         value: serde_json::Value,
     },
+    /// Open the skill-trainer panel (fetches `goals` if nothing loaded yet).
+    SkillTrainerOpen,
+    /// Step one skill's goal by `n` (the 1/10/100 +/- buttons).
+    SkillTrainerStep { id: u32, n: u32, raise: bool },
+    /// Submit the current goals to play.net.
+    SkillTrainerApply,
+    /// Re-fetch a fresh skill-manager page.
+    SkillTrainerReload,
+    /// Save the current goals as a named per-character profile.
+    SkillTrainerProfileSave { name: String },
+    /// Load a named profile into the editor.
+    SkillTrainerProfileLoad { name: String },
+    /// Delete a named profile.
+    SkillTrainerProfileDelete { name: String },
 }
 
 fn opt_str(value: Option<&serde_json::Value>) -> Option<String> {
@@ -1272,6 +1295,30 @@ pub fn parse_client_message(raw: &str) -> Option<ClientMessage> {
         "delete_profile" => {
             let name = msg.d.get("name")?.as_str()?.to_string();
             Some(ClientMessage::DeleteProfile { name })
+        }
+        "skill_trainer_open" => Some(ClientMessage::SkillTrainerOpen),
+        "skill_trainer_reload" => Some(ClientMessage::SkillTrainerReload),
+        "skill_trainer_apply" => Some(ClientMessage::SkillTrainerApply),
+        "skill_trainer_step" => {
+            let id = u32::try_from(msg.d.get("id")?.as_u64()?).ok()?;
+            let n = u32::try_from(msg.d.get("n")?.as_u64()?).ok()?;
+            let raise = msg.d.get("raise").and_then(|v| v.as_bool()).unwrap_or(true);
+            Some(ClientMessage::SkillTrainerStep { id, n, raise })
+        }
+        "skill_trainer_profile_save" => {
+            let name = msg.d.get("name")?.as_str()?.trim().to_string();
+            if name.is_empty() {
+                return None;
+            }
+            Some(ClientMessage::SkillTrainerProfileSave { name })
+        }
+        "skill_trainer_profile_load" => {
+            let name = msg.d.get("name")?.as_str()?.to_string();
+            Some(ClientMessage::SkillTrainerProfileLoad { name })
+        }
+        "skill_trainer_profile_delete" => {
+            let name = msg.d.get("name")?.as_str()?.to_string();
+            Some(ClientMessage::SkillTrainerProfileDelete { name })
         }
         _ => None,
     }

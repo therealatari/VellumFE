@@ -814,6 +814,36 @@ impl super::TuiFrontend {
         Ok(None)
     }
 
+    /// Skill trainer panel keys. The panel is ui_state-driven (open flag set
+    /// by core when the user sends `goals`), not an InputMode: it claims all
+    /// keys while `ui_state.skill_trainer.open`.
+    pub(super) fn handle_skill_trainer_panel_keys(
+        &mut self,
+        code: crate::data::input::KeyCode,
+        modifiers: crate::data::input::KeyModifiers,
+        app_core: &mut crate::core::AppCore,
+    ) -> Result<Option<String>> {
+        let panel = self.skill_trainer_panel.get_or_insert_with(Default::default);
+        let ct_event = crossterm::event::KeyEvent::new(
+            super::crossterm_bridge::to_crossterm_keycode(code),
+            super::crossterm_bridge::to_crossterm_modifiers(modifiers),
+        );
+        let result = panel.handle_key(ct_event, app_core);
+        app_core.needs_render = true;
+        match result {
+            crate::frontend::tui::skill_trainer_panel::SkillTrainerPanelResult::None => Ok(None),
+            crate::frontend::tui::skill_trainer_panel::SkillTrainerPanelResult::Close => {
+                // Keep the loaded data; `.goals` reopens instantly.
+                app_core.ui_state.skill_trainer.open = false;
+                self.skill_trainer_panel = None;
+                Ok(None)
+            }
+            crate::frontend::tui::skill_trainer_panel::SkillTrainerPanelResult::Send(cmd) => {
+                Ok(Some(cmd))
+            }
+        }
+    }
+
     pub(super) fn handle_color_palette_browser_mode_keys(
         &mut self,
         code: crate::data::input::KeyCode,

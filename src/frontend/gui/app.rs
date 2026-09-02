@@ -564,6 +564,8 @@ pub struct VellumGuiApp {
     indicator_templates_editor: Option<editors::IndicatorTemplatesEditorState>,
     dashboard_editor: Option<editors::DashboardEditorState>,
     jinx_panel: Option<editors::JinxPanelState>,
+    /// Chrome for the Skill Goals window (open flag lives in ui_state).
+    skill_trainer_panel: editors::SkillTrainerPanelState,
     tab_editor: Option<editors::TabEditorState>,
     custom_windows_editor: Option<editors::CustomWindowsEditorState>,
     known_windows_editor: Option<editors::KnownWindowsEditorState>,
@@ -1107,6 +1109,7 @@ impl VellumGuiApp {
             indicator_templates_editor: None,
             dashboard_editor: None,
             jinx_panel: None,
+            skill_trainer_panel: editors::SkillTrainerPanelState::default(),
             tab_editor: None,
             custom_windows_editor: None,
             known_windows_editor: None,
@@ -2718,6 +2721,11 @@ impl eframe::App for VellumGuiApp {
                     // Explorer's native window.
                     if ui.button("Explorer").clicked() {
                         self.map_explorer.open = true;
+                    }
+
+                    // Native skill trainer (same panel `.goals` opens).
+                    if ui.button("Skill Goals").clicked() {
+                        self.open_skill_trainer_panel();
                     }
                 });
             });

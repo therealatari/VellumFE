@@ -947,6 +947,7 @@ function handleMessage(msg) {
     case "entities": setRoomEntities(msg.d); break;
     case "portals": setPortals(msg.d); break;
     case "charinfo": setCharInfo(msg.d); break;
+    case "skill_trainer": handleSkillTrainer(msg.d); break;
     case "map_scene": setMapScene(msg.d); break;
     case "map_state": setMapState(msg.d); break;
     case "map_locations": handleMapLocations(msg.d); break;
@@ -3640,6 +3641,7 @@ function openSettingsSheet() {
   sheetButton("Highlight rules (global)", () => openHighlightList("global"));
   sheetButton("Colors (this profile)", () => openColorsEditor("profile"));
   sheetButton("Colors (global)", () => openColorsEditor("global"));
+  sheetButton("Skill Goals (train skills)", openSkillTrainer);
   // Raw-TOML editing is an escape hatch, not a front door — editing TOML on
   // a soft keyboard is a footgun and the structured editors above cover the
   // same ground. Tuck the four file buttons behind one disclosure so they're
@@ -6151,6 +6153,234 @@ document.getElementById("colors-close").addEventListener("click", () => {
   colorsOverlay.hidden = true;
   colorsScope = null;
   colorsDoc = null;
+});
+
+// ---- Skill Goals (skill trainer) ------------------------------------------
+// Mirror of the desktop native trainer over the remote bridge. The host owns
+// the cost engine; this panel only renders the pushed state and sends action
+// messages (open/reload/step/apply/profile). On open with no data loaded, we
+// ask the host to fetch the skill-manager page (it sends `goals` to the game).
+
+const sktOverlay = document.getElementById("skt-overlay");
+const sktHeader = document.getElementById("skt-header");
+const sktStatus = document.getElementById("skt-status");
+const sktList = document.getElementById("skt-list");
+const sktProfiles = document.getElementById("skt-profiles");
+const sktApplyBtn = document.getElementById("skt-apply");
+
+// Latest pushed panel state, and the per-touch step size (1/10/100).
+let sktState = null; // { open, status, data }
+let sktStep = 1;
+
+function openSkillTrainer() {
+  closeSheet();
+  sktOverlay.hidden = false;
+  sktStatusMsg("Loading…", false);
+  // The host re-mirrors if a page is loaded, else fetches a fresh one.
+  sendJson("skill_trainer_open", {});
+  renderSkillTrainer();
+}
+
+function sktStatusMsg(text, isError) {
+  sktStatus.textContent = text;
+  sktStatus.classList.toggle("editor-error", !!isError);
+  sktStatus.hidden = !text;
+}
+
+function handleSkillTrainer(d) {
+  sktState = d || null;
+  // Only paint if the panel is open (the push is a broadcast; a client that
+  // never opened the panel just caches it).
+  if (!sktOverlay.hidden) renderSkillTrainer();
+}
+
+// Parse the "idle" | "loading" | "applying" | "error:<msg>" status tag.
+function sktStatusParts() {
+  const raw = (sktState && sktState.status) || "idle";
+  if (raw.startsWith("error:")) return { kind: "error", msg: raw.slice(6) };
+  return { kind: raw, msg: "" };
+}
+
+function renderSkillTrainer() {
+  const { kind, msg } = sktStatusParts();
+  if (kind === "error") sktStatusMsg(msg || "Something went wrong.", true);
+  else if (kind === "loading") sktStatusMsg("Loading the skill manager…", false);
+  else if (kind === "applying") sktStatusMsg("Applying goals…", false);
+  else sktStatusMsg("", false);
+
+  const data = sktState && sktState.data;
+  sktHeader.replaceChildren();
+  sktList.replaceChildren();
+  sktProfiles.replaceChildren();
+  sktApplyBtn.disabled = true;
+
+  if (!data) {
+    sktList.appendChild(Object.assign(document.createElement("p"), {
+      className: "hl-empty",
+      textContent: kind === "loading" ? "Loading…" : "No skill data yet — tap Reload.",
+    }));
+    return;
+  }
+
+  // --- Header: char/level/prof + points + step selector ---
+  const who = document.createElement("div");
+  who.className = "skt-who";
+  const ch = data.char || {};
+  who.textContent = [ch.name, ch.level ? "Level " + ch.level : null, ch.prof]
+    .filter(Boolean).join(" — ");
+  sktHeader.appendChild(who);
+
+  const pts = data.points || {};
+  const ptsLine = document.createElement("div");
+  ptsLine.className = "skt-points";
+  let ptsText = "PTP " + (pts.phy_left ?? 0) + "   MTP " + (pts.mnt_left ?? 0);
+  if (pts.phy_conv) ptsText += "   (+" + pts.phy_conv + " PTP converted)";
+  if (pts.mnt_conv) ptsText += "   (+" + pts.mnt_conv + " MTP converted)";
+  ptsLine.textContent = ptsText;
+  sktHeader.appendChild(ptsLine);
+
+  // Step selector: 1 / 10 / 100 segmented control.
+  const stepBar = document.createElement("div");
+  stepBar.className = "skt-stepbar";
+  const stepLabel = document.createElement("span");
+  stepLabel.className = "skt-step-label";
+  stepLabel.textContent = "Step";
+  stepBar.appendChild(stepLabel);
+  for (const n of [1, 10, 100]) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "skt-step" + (sktStep === n ? " active" : "");
+    b.textContent = String(n);
+    b.addEventListener("click", () => {
+      sktStep = n;
+      renderSkillTrainer();
+    });
+    stepBar.appendChild(b);
+  }
+  sktHeader.appendChild(stepBar);
+
+  // --- Rows grouped by section ---
+  const rows = data.rows || [];
+  let lastSection = null;
+  for (const row of rows) {
+    if (row.section !== lastSection) {
+      lastSection = row.section;
+      const head = document.createElement("div");
+      head.className = "skt-section";
+      head.textContent = row.section || "";
+      sktList.appendChild(head);
+    }
+    sktList.appendChild(sktRow(row));
+  }
+
+  // --- Profiles ---
+  renderSktProfiles(data.profiles || []);
+
+  // Apply is live only when there are unsaved goal changes and we're idle.
+  sktApplyBtn.disabled = !(data.dirty && kind === "idle");
+}
+
+function sktRow(row) {
+  const el = document.createElement("div");
+  el.className = "skt-row";
+
+  const name = document.createElement("span");
+  name.className = "skt-name";
+  name.textContent = row.name || "";
+  el.appendChild(name);
+
+  const cost = document.createElement("span");
+  cost.className = "skt-cost";
+  cost.textContent = (row.phy_cost ?? 0) + "/" + (row.mnt_cost ?? 0);
+  el.appendChild(cost);
+
+  const minus = document.createElement("button");
+  minus.type = "button";
+  minus.className = "skt-step-btn";
+  minus.textContent = "−";
+  minus.addEventListener("click", () =>
+    sendJson("skill_trainer_step", { id: row.id, n: sktStep, raise: false }));
+  el.appendChild(minus);
+
+  const goal = document.createElement("span");
+  goal.className = "skt-goal";
+  goal.textContent = String(row.goal ?? row.ranks ?? 0);
+  // Highlight the goal when it differs from committed ranks.
+  if ((row.goal ?? 0) !== (row.ranks ?? 0)) goal.classList.add("changed");
+  el.appendChild(goal);
+
+  const plus = document.createElement("button");
+  plus.type = "button";
+  plus.className = "skt-step-btn";
+  plus.textContent = "+";
+  plus.addEventListener("click", () =>
+    sendJson("skill_trainer_step", { id: row.id, n: sktStep, raise: true }));
+  el.appendChild(plus);
+
+  const meta = document.createElement("span");
+  meta.className = "skt-meta";
+  meta.textContent = "now " + (row.ranks ?? 0) + " / max " + (row.max ?? 0);
+  el.appendChild(meta);
+
+  return el;
+}
+
+function renderSktProfiles(profiles) {
+  const head = document.createElement("div");
+  head.className = "skt-section";
+  head.textContent = "Profiles";
+  sktProfiles.appendChild(head);
+
+  for (const name of profiles) {
+    const rowEl = document.createElement("div");
+    rowEl.className = "skt-profile-row";
+    const load = document.createElement("button");
+    load.type = "button";
+    load.className = "skt-profile-load";
+    load.textContent = name;
+    load.addEventListener("click", () =>
+      sendJson("skill_trainer_profile_load", { name }));
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "skt-profile-del";
+    del.textContent = "✕";
+    del.setAttribute("aria-label", "Delete profile " + name);
+    del.addEventListener("click", () =>
+      sendJson("skill_trainer_profile_delete", { name }));
+    rowEl.append(load, del);
+    sktProfiles.appendChild(rowEl);
+  }
+
+  // Save-as row: name field + Save.
+  const saveRow = document.createElement("div");
+  saveRow.className = "skt-profile-row";
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "skt-profile-name";
+  input.placeholder = "New profile name…";
+  const save = document.createElement("button");
+  save.type = "button";
+  save.className = "skt-profile-save";
+  save.textContent = "Save";
+  save.addEventListener("click", () => {
+    const name = input.value.trim();
+    if (!name) return;
+    sendJson("skill_trainer_profile_save", { name });
+    input.value = "";
+  });
+  saveRow.append(input, save);
+  sktProfiles.appendChild(saveRow);
+}
+
+document.getElementById("skt-close").addEventListener("click", () => {
+  sktOverlay.hidden = true;
+});
+document.getElementById("skt-reload").addEventListener("click", () => {
+  sktStatusMsg("Loading…", false);
+  sendJson("skill_trainer_reload", {});
+});
+sktApplyBtn.addEventListener("click", () => {
+  sendJson("skill_trainer_apply", {});
 });
 
 // ---- Client settings (registry-backed, saved on the host) ------------------

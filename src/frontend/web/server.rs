@@ -1217,6 +1217,41 @@ async fn handle_client_message(
                 name,
             })
             .is_ok(),
+        ClientMessage::SkillTrainerOpen => state
+            .handles
+            .event_tx
+            .send(RemoteEvent::SkillTrainerOpen)
+            .is_ok(),
+        ClientMessage::SkillTrainerReload => state
+            .handles
+            .event_tx
+            .send(RemoteEvent::SkillTrainerReload)
+            .is_ok(),
+        ClientMessage::SkillTrainerApply => state
+            .handles
+            .event_tx
+            .send(RemoteEvent::SkillTrainerApply)
+            .is_ok(),
+        ClientMessage::SkillTrainerStep { id, n, raise } => state
+            .handles
+            .event_tx
+            .send(RemoteEvent::SkillTrainerStep { id, n, raise })
+            .is_ok(),
+        ClientMessage::SkillTrainerProfileSave { name } => state
+            .handles
+            .event_tx
+            .send(RemoteEvent::SkillTrainerProfileSave { name })
+            .is_ok(),
+        ClientMessage::SkillTrainerProfileLoad { name } => state
+            .handles
+            .event_tx
+            .send(RemoteEvent::SkillTrainerProfileLoad { name })
+            .is_ok(),
+        ClientMessage::SkillTrainerProfileDelete { name } => state
+            .handles
+            .event_tx
+            .send(RemoteEvent::SkillTrainerProfileDelete { name })
+            .is_ok(),
         // Profile list/delete touch only launcher.toml via the config
         // layer — answered here without a round-trip through the app loop.
         ClientMessage::GetProfiles => {

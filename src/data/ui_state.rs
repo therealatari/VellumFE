@@ -117,6 +117,10 @@ pub struct UiState {
     /// (redesign Phase 3e).
     pub window_hints: HashMap<String, Vec<(String, String)>>,
 
+    /// Native skill-goals trainer panel (web skill manager scraped into a
+    /// local editor): open flag, load/apply status, and parsed page data.
+    pub skill_trainer: super::skill_trainer::SkillTrainerUi,
+
     /// Expose verbs awaiting the layout-capable tick (redesign Phase 4d):
     /// (kind, id) from `<exposeDialog>`/`<exposeStream>` — the game
     /// saying "show this window NOW".
@@ -1101,6 +1105,7 @@ impl UiState {
             active_dialog: None,
             dialog_store: HashMap::new(),
             window_hints: HashMap::new(),
+            skill_trainer: Default::default(),
             pending_exposes: Vec::new(),
             pending_expose_closes: Vec::new(),
             expose_shown_ids: std::collections::HashSet::new(),

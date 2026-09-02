@@ -56,6 +56,7 @@ mod runtime;
 mod scrollable_container;
 mod search;
 pub mod settings_editor;
+pub mod skill_trainer_panel;
 mod spacer;
 pub mod spell_color_browser;
 pub mod spell_color_form;
@@ -133,6 +134,8 @@ pub struct TuiFrontend {
     pub settings_editor: Option<settings_editor::SettingsEditor>,
     /// Active pack editor (.packs) for export/import of UI packs
     pub pack_editor: Option<pack_editor::PackEditorWidget>,
+    /// Native skill trainer panel (present while ui_state.skill_trainer.open)
+    pub skill_trainer_panel: Option<skill_trainer_panel::SkillTrainerPanel>,
     /// Debouncer for terminal resize events (100ms debounce)
     resize_debouncer: ResizeDebouncer,
     /// Theme cache to avoid HashMap lookup + clone every render
@@ -299,6 +302,7 @@ impl TuiFrontend {
             theme_editor: None,
             settings_editor: None,
             pack_editor: None,
+            skill_trainer_panel: None,
             resize_debouncer: ResizeDebouncer::new(300), // 300ms debounce
             theme_cache: ThemeCache::new(),
             window_order_cache: WindowOrderCache::default(),

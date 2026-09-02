@@ -2392,6 +2392,12 @@ impl TuiFrontend {
             }
         }
 
+        // Skill trainer panel: ui_state-driven overlay (core opens it when
+        // the user sends `goals`), so it claims all keys while open.
+        if app_core.ui_state.skill_trainer.open {
+            return self.handle_skill_trainer_panel_keys(code, modifiers, app_core);
+        }
+
         // LAYER 1 & 2: Priority windows (browsers, forms, editors) - handle ALL keys
         // These modes get first priority and consume most input
         match app_core.ui_state.input_mode {

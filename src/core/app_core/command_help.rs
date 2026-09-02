@@ -56,6 +56,11 @@ pub(crate) const COMMAND_HELP: &[CommandHelpSection] = &[
             entry!(&["help", "h", "?"], "", "Show this help"),
             entry!(&["version", "ver"], "", "Show version info"),
             entry!(
+                &["goals"],
+                "[refresh|web]",
+                "Open the native skill trainer; 'web' opens the play.net page in your browser instead"
+            ),
+            entry!(
                 &["reconnect"],
                 "",
                 "Reconnect to the game after a dropped connection"

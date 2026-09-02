@@ -284,6 +284,17 @@ impl AppCore {
         // edge label on its ghost-room sketch ("go shop").
         self.map.note_command(&command);
 
+        // A hand-typed GOALS gets the native trainer too: the reply's
+        // LaunchURL is claimed by the panel instead of the system browser.
+        // `goals web` opts out — send it through disarmed to the browser.
+        let trimmed = command.trim();
+        if trimmed.eq_ignore_ascii_case("goals") {
+            self.arm_skill_trainer();
+        } else if trimmed.eq_ignore_ascii_case("goals web") {
+            self.skill_trainer_armed = None;
+            return Ok(CommandOutcome::Game("goals".to_string()));
+        }
+
         // Intercept game "quit" command - save settings before disconnecting
         // This handles the case where users close terminal after game disconnect
         if command.trim().eq_ignore_ascii_case("quit") {
@@ -2383,6 +2394,28 @@ impl AppCore {
             }
             "version" | "ver" => {
                 self.show_version();
+            }
+
+            // Native skill trainer: opens the cached panel, or sends GOALS
+            // to the game and captures the LaunchURL reply for a fresh page.
+            // `.goals refresh` always re-fetches; `.goals web` explicitly
+            // sends GOALS WITHOUT arming, so the LaunchURL falls through to
+            // the system browser (the original play.net web manager).
+            "goals" => {
+                let arg = parts.get(1).map(|s| s.to_lowercase());
+                if arg.as_deref() == Some("web") {
+                    // Leave the trainer disarmed: the reply's LaunchURL opens
+                    // in the browser, exactly as it did before this feature.
+                    self.skill_trainer_armed = None;
+                    return Ok(CommandOutcome::Game("goals".to_string()));
+                }
+                let refresh = arg.as_deref() == Some("refresh")
+                    || self.ui_state.skill_trainer.data.is_none();
+                if refresh {
+                    let cmd = self.skill_trainer_reload_command();
+                    return Ok(CommandOutcome::Game(cmd));
+                }
+                self.ui_state.skill_trainer.open = true;
             }
 
             // Re-establish a dropped game connection. Core can't reach the

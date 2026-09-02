@@ -281,6 +281,44 @@ impl VellumGuiApp {
                         ),
                     }
                 }
+                crate::core::remote::RemoteEvent::SkillTrainerOpen => {
+                    // Re-mirror if a page is loaded, else fetch a fresh one.
+                    if self.app_core.ui_state.skill_trainer.data.is_some() {
+                        self.app_core.ui_state.skill_trainer.open = true;
+                    } else {
+                        let cmd = self.app_core.skill_trainer_reload_command();
+                        self.dispatch_command(cmd);
+                    }
+                    self.app_core.push_skill_trainer_remote();
+                }
+                crate::core::remote::RemoteEvent::SkillTrainerReload => {
+                    // `goals` dispatches through the same path as typed input.
+                    let cmd = self.app_core.skill_trainer_reload_command();
+                    self.dispatch_command(cmd);
+                    self.app_core.push_skill_trainer_remote();
+                }
+                crate::core::remote::RemoteEvent::SkillTrainerStep { id, n, raise } => {
+                    self.app_core.skill_trainer_step(id, n, raise);
+                    self.app_core.push_skill_trainer_remote();
+                }
+                crate::core::remote::RemoteEvent::SkillTrainerApply => {
+                    self.app_core.skill_trainer_apply();
+                    self.app_core.push_skill_trainer_remote();
+                }
+                crate::core::remote::RemoteEvent::SkillTrainerProfileSave { name } => {
+                    self.app_core.skill_trainer_save_profile(&name);
+                    self.app_core.invalidate_skill_trainer_remote();
+                    self.app_core.push_skill_trainer_remote();
+                }
+                crate::core::remote::RemoteEvent::SkillTrainerProfileLoad { name } => {
+                    self.app_core.skill_trainer_load_profile(&name);
+                    self.app_core.push_skill_trainer_remote();
+                }
+                crate::core::remote::RemoteEvent::SkillTrainerProfileDelete { name } => {
+                    self.app_core.skill_trainer_delete_profile(&name);
+                    self.app_core.invalidate_skill_trainer_remote();
+                    self.app_core.push_skill_trainer_remote();
+                }
             }
         }
 

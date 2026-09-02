@@ -2446,6 +2446,193 @@ body.hide-compass #compass { display: none !important; }
 #colors-status { color: var(--fg-dim); font-size: 13px; }
 #colors-status.editor-error { color: var(--hp); }
 
+/* ---- Skill Goals (skill trainer) ------------------------------------------ */
+#skt-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 25;
+  background: var(--bg);
+  display: flex;
+  padding: 12px;
+  padding-top: calc(12px + env(safe-area-inset-top));
+  padding-bottom: calc(12px + env(safe-area-inset-bottom));
+}
+#skt-overlay[hidden] { display: none; }
+
+#skt-card {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+}
+
+#skt-titlebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+#skt-title { color: var(--st); font-size: 15px; }
+#skt-close {
+  padding: 4px 12px;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--fg-dim);
+  font: inherit;
+}
+
+#skt-header { display: flex; flex-direction: column; gap: 6px; }
+.skt-who { color: var(--st); font-size: 14px; }
+.skt-points { color: var(--fg-dim); font-size: 13px; }
+
+.skt-stepbar { display: flex; align-items: center; gap: 6px; }
+.skt-step-label { color: var(--fg-dim); font-size: 13px; margin-right: 2px; }
+.skt-step {
+  min-width: 48px;
+  min-height: 40px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--fg);
+  font: inherit;
+}
+.skt-step.active {
+  color: var(--st);
+  border-color: var(--st);
+}
+
+#skt-status { color: var(--fg-dim); font-size: 13px; }
+#skt-status.editor-error { color: var(--hp); }
+#skt-status[hidden] { display: none; }
+
+#skt-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.skt-section {
+  margin-top: 10px;
+  color: var(--st);
+  font-size: 13px;
+  font-weight: bold;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 2px;
+}
+
+.skt-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.skt-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+.skt-cost {
+  color: var(--fg-dim);
+  font-size: 11px;
+  min-width: 46px;
+  text-align: right;
+}
+.skt-step-btn {
+  min-width: 44px;
+  min-height: 44px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--fg);
+  font-size: 20px;
+  line-height: 1;
+}
+.skt-step-btn:active { background: var(--bg-panel); }
+.skt-goal {
+  min-width: 40px;
+  text-align: center;
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+}
+.skt-goal.changed { color: var(--st); font-weight: bold; }
+.skt-meta {
+  color: var(--fg-dim);
+  font-size: 10px;
+  min-width: 84px;
+  text-align: right;
+}
+
+#skt-profiles { display: flex; flex-direction: column; gap: 4px; }
+.skt-profile-row { display: flex; gap: 6px; align-items: stretch; }
+.skt-profile-load {
+  flex: 1;
+  min-height: 40px;
+  text-align: left;
+  padding: 0 10px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--fg);
+  font: inherit;
+}
+.skt-profile-del {
+  min-width: 44px;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--fg-dim);
+  font-size: 13px;
+}
+.skt-profile-name {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--fg);
+  font: inherit;
+}
+.skt-profile-save {
+  min-width: 64px;
+  background: var(--bg-panel);
+  border: 1px solid var(--st);
+  border-radius: 6px;
+  color: var(--st);
+  font: inherit;
+}
+
+#skt-actions { display: flex; gap: 8px; }
+#skt-reload, #skt-apply {
+  flex: 1;
+  padding: 10px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--fg);
+  font: inherit;
+}
+#skt-apply {
+  color: var(--st);
+  border-color: var(--st);
+}
+#skt-apply:disabled {
+  color: var(--fg-dim);
+  border-color: var(--border);
+  opacity: 0.6;
+}
+
 /* ---- Client settings sheet (registry-backed, saved on the host) ----------- */
 
 #cs-overlay {

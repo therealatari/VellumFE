@@ -2055,14 +2055,12 @@ impl MessageProcessor {
                 self.pending_webui_handshake = Some(handshake.clone());
             }
             ParsedElement::LaunchURL { url } => {
-                // Build full URL by prepending play.net base
-                let full_url = format!("https://www.play.net{}", url);
-                tracing::info!("Launching URL in browser: {}", full_url);
-
-                // Open in default browser
-                if let Err(e) = crate::platform::open_url(&full_url) {
-                    tracing::error!("Failed to open browser: {}", e);
-                }
+                // Routed by AppCore each frame: the native skill trainer
+                // claims it when armed (user just sent GOALS); anything else
+                // opens in the system browser as before.
+                self.chunk_has_silent_updates = true;
+                tracing::info!("LaunchURL received: {}", url);
+                self.pending_launch_url = Some(url.clone());
             }
             ParsedElement::WindowHints { id, attrs } => {
                 // Always-ingest, like the dialog store: the latest

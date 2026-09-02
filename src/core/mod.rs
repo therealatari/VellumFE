@@ -51,6 +51,7 @@ pub mod placement;
 pub mod remote;
 pub mod satellites;
 pub mod session_registry;
+pub mod skill_trainer;
 pub mod sorter;
 pub mod spell_table;
 pub mod state;

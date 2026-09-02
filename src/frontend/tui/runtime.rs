@@ -938,6 +938,42 @@ async fn async_run(
                             let _ = command_tx.send(cmd);
                         }
                     }
+                    crate::core::remote::RemoteEvent::SkillTrainerOpen => {
+                        if app_core.ui_state.skill_trainer.data.is_some() {
+                            app_core.ui_state.skill_trainer.open = true;
+                        } else {
+                            let cmd = app_core.skill_trainer_reload_command();
+                            let _ = command_tx.send(cmd);
+                        }
+                        app_core.push_skill_trainer_remote();
+                    }
+                    crate::core::remote::RemoteEvent::SkillTrainerReload => {
+                        let cmd = app_core.skill_trainer_reload_command();
+                        let _ = command_tx.send(cmd);
+                        app_core.push_skill_trainer_remote();
+                    }
+                    crate::core::remote::RemoteEvent::SkillTrainerStep { id, n, raise } => {
+                        app_core.skill_trainer_step(id, n, raise);
+                        app_core.push_skill_trainer_remote();
+                    }
+                    crate::core::remote::RemoteEvent::SkillTrainerApply => {
+                        app_core.skill_trainer_apply();
+                        app_core.push_skill_trainer_remote();
+                    }
+                    crate::core::remote::RemoteEvent::SkillTrainerProfileSave { name } => {
+                        app_core.skill_trainer_save_profile(&name);
+                        app_core.invalidate_skill_trainer_remote();
+                        app_core.push_skill_trainer_remote();
+                    }
+                    crate::core::remote::RemoteEvent::SkillTrainerProfileLoad { name } => {
+                        app_core.skill_trainer_load_profile(&name);
+                        app_core.push_skill_trainer_remote();
+                    }
+                    crate::core::remote::RemoteEvent::SkillTrainerProfileDelete { name } => {
+                        app_core.skill_trainer_delete_profile(&name);
+                        app_core.invalidate_skill_trainer_remote();
+                        app_core.push_skill_trainer_remote();
+                    }
                 }
             }
         }

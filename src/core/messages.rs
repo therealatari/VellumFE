@@ -306,6 +306,11 @@ pub struct MessageProcessor {
     /// Set on parse; the frontend takes it and connects the WebUI bridge.
     pub pending_webui_handshake: Option<crate::data::webui::WebUiHandshake>,
 
+    /// Latest `<LaunchURL src=.../>` from the game, drained by AppCore each
+    /// frame: routed to the native skill trainer when it's armed (the user
+    /// just sent GOALS), otherwise opened in the system browser.
+    pub pending_launch_url: Option<String>,
+
     /// Pending sounds from highlight processing (to be transferred to GameState)
     pub pending_sounds: Vec<super::highlight_engine::SoundTrigger>,
     /// Custom-status changes from matched highlights, drained by AppCore.
@@ -434,6 +439,7 @@ impl MessageProcessor {
             seen_streams: std::collections::BTreeMap::new(),
             newly_registered_container: None,
             pending_webui_handshake: None,
+            pending_launch_url: None,
             pending_sounds: Vec::new(),
             pending_status_actions: Vec::new(),
             pending_alerts: Vec::new(),

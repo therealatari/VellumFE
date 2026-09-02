@@ -1530,6 +1530,56 @@ fn handle_remote_event(
             app_core.handle_remote_highlight_delete(client_id, request_id, scope, name);
             true
         }
+        RemoteEvent::SkillTrainerOpen => {
+            // Open: if a page is already loaded, just re-mirror it; otherwise
+            // fetch a fresh one (arms the trainer + sends `goals` to the game).
+            if app_core.ui_state.skill_trainer.data.is_some() {
+                app_core.ui_state.skill_trainer.open = true;
+                app_core.push_skill_trainer_remote();
+            } else {
+                let cmd = app_core.skill_trainer_reload_command();
+                push_dispatch_request(dispatch_command(app_core, connection, cmd), session_requests);
+                // Loading state pushes immediately; the loaded page follows
+                // via poll_skill_trainer once the worker parses it.
+                app_core.push_skill_trainer_remote();
+            }
+            true
+        }
+        RemoteEvent::SkillTrainerReload => {
+            let cmd = app_core.skill_trainer_reload_command();
+            push_dispatch_request(dispatch_command(app_core, connection, cmd), session_requests);
+            app_core.push_skill_trainer_remote();
+            true
+        }
+        RemoteEvent::SkillTrainerStep { id, n, raise } => {
+            app_core.skill_trainer_step(id, n, raise);
+            app_core.push_skill_trainer_remote();
+            true
+        }
+        RemoteEvent::SkillTrainerApply => {
+            app_core.skill_trainer_apply();
+            app_core.push_skill_trainer_remote();
+            true
+        }
+        RemoteEvent::SkillTrainerProfileSave { name } => {
+            app_core.skill_trainer_save_profile(&name);
+            // Profile list changed but not the goal revision; force a push by
+            // clearing the fingerprint so the new profile name reaches phones.
+            app_core.invalidate_skill_trainer_remote();
+            app_core.push_skill_trainer_remote();
+            true
+        }
+        RemoteEvent::SkillTrainerProfileLoad { name } => {
+            app_core.skill_trainer_load_profile(&name);
+            app_core.push_skill_trainer_remote();
+            true
+        }
+        RemoteEvent::SkillTrainerProfileDelete { name } => {
+            app_core.skill_trainer_delete_profile(&name);
+            app_core.invalidate_skill_trainer_remote();
+            app_core.push_skill_trainer_remote();
+            true
+        }
     }
 }
 

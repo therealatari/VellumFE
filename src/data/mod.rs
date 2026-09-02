@@ -7,6 +7,7 @@
 pub mod geometry;
 pub mod input;
 pub mod remote_buffer;
+pub mod skill_trainer;
 pub mod ui_action;
 pub mod ui_state;
 pub mod view_kind;

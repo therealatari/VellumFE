@@ -587,6 +587,16 @@ pub enum RemoteDelta {
         level: String,
         text: String,
     },
+    /// The skill-trainer (skill goals) panel state changed: it opened/closed,
+    /// its status changed, or its data revision bumped. Broadcast to every
+    /// client (the panel is a per-session editor, not addressed to one
+    /// client). `data` is the full panel JSON the phone renders directly, or
+    /// None while loading with nothing loaded yet.
+    SkillTrainer {
+        open: bool,
+        status: String,
+        data: Option<serde_json::Value>,
+    },
     /// The WebUI bridge connected or dropped; the phone shows/clears a
     /// "connecting…" state and re-subscribes on reconnect.
     WebUiConnected {
@@ -804,6 +814,22 @@ pub enum RemoteEvent {
         cid: String,
         value: serde_json::Value,
     },
+    /// Open the skill-trainer panel: if no data is loaded, core sends `goals`
+    /// to the game to fetch the skill manager page. The updated state pushes
+    /// back as `RemoteDelta::SkillTrainer`.
+    SkillTrainerOpen,
+    /// Step one skill's goal by `n` ranks (the phone's 1/10/100 +/- buttons).
+    SkillTrainerStep { id: u32, n: u32, raise: bool },
+    /// Submit the current goals to play.net.
+    SkillTrainerApply,
+    /// Re-fetch a fresh skill-manager page (sends `goals` to the game).
+    SkillTrainerReload,
+    /// Save the current goals as a named per-character profile.
+    SkillTrainerProfileSave { name: String },
+    /// Load a named profile into the editor (Apply still required to commit).
+    SkillTrainerProfileLoad { name: String },
+    /// Delete a named profile.
+    SkillTrainerProfileDelete { name: String },
 }
 
 /// Latest coalesced game state, published via `watch` so the server can
@@ -1405,6 +1431,9 @@ pub struct RemoteSink {
     /// Latest Lich WebUI page list, so a connecting client's snapshot carries
     /// it (broadcasts only reach already-connected clients).
     webui_pages: Vec<crate::data::webui::WebUiPageDescriptor>,
+    /// Skill-trainer panel fingerprint as of the last push (open, status-tag,
+    /// data revision), so the panel broadcasts only on an actual change.
+    last_skill_trainer: Option<(bool, String, u64)>,
 }
 
 impl RemoteSink {
@@ -1451,6 +1480,7 @@ impl RemoteSink {
                 last: RemoteStateSnapshot::default(),
                 session: RemoteSessionInfo::default(),
                 webui_pages: Vec::new(),
+                last_skill_trainer: None,
             },
             handles,
             event_rx,
@@ -1717,6 +1747,40 @@ impl RemoteSink {
             rules,
             sounds,
             error,
+        });
+    }
+
+    /// Broadcast the skill-trainer panel state to every client.
+    /// True when the skill-trainer panel fingerprint (open, status, revision)
+    /// differs from the last push — the caller serializes the row JSON only
+    /// when this says so, avoiding rebuilding it every frame.
+    pub fn skill_trainer_changed(&self, open: bool, status: &str, revision: u64) -> bool {
+        match &self.last_skill_trainer {
+            Some((o, s, r)) => *o != open || s != status || *r != revision,
+            None => true,
+        }
+    }
+
+    /// Force the next `skill_trainer_changed` to report a change (used after a
+    /// profile list edit, which the fingerprint doesn't observe).
+    pub fn invalidate_skill_trainer(&mut self) {
+        self.last_skill_trainer = None;
+    }
+
+    /// Broadcast the skill-trainer panel state to every client, recording the
+    /// fingerprint for dedup.
+    pub fn push_skill_trainer(
+        &mut self,
+        open: bool,
+        status: String,
+        revision: u64,
+        data: Option<serde_json::Value>,
+    ) {
+        self.last_skill_trainer = Some((open, status.clone(), revision));
+        let _ = self.delta_tx.send(RemoteDelta::SkillTrainer {
+            open,
+            status,
+            data,
         });
     }
 
