@@ -6189,8 +6189,15 @@ function sktStatusMsg(text, isError) {
 
 function handleSkillTrainer(d) {
   sktState = d || null;
-  // Only paint if the panel is open (the push is a broadcast; a client that
-  // never opened the panel just caches it).
+  // The host sets open=true when the user invokes the trainer (typed `goals`,
+  // `.goals`, or the phone's own open button), so honor it and surface the
+  // overlay — otherwise a typed `goals` would load in the background and make
+  // the user go find the panel in the menu. Only auto-open on a truthy push;
+  // never force it shut here (the user closes via the ✕).
+  if (sktState && sktState.open && sktOverlay.hidden) {
+    closeSheet();
+    sktOverlay.hidden = false;
+  }
   if (!sktOverlay.hidden) renderSkillTrainer();
 }
 
@@ -6233,9 +6240,12 @@ function renderSkillTrainer() {
   const pts = data.points || {};
   const ptsLine = document.createElement("div");
   ptsLine.className = "skt-points";
-  let ptsText = "PTP " + (pts.phy_left ?? 0) + "   MTP " + (pts.mnt_left ?? 0);
-  if (pts.phy_conv) ptsText += "   (+" + pts.phy_conv + " PTP converted)";
-  if (pts.mnt_conv) ptsText += "   (+" + pts.mnt_conv + " MTP converted)";
+  // Compact so it fits one line on a phone without wrapping or clipping.
+  let ptsText = "PTP " + (pts.phy_left ?? 0) + "  MTP " + (pts.mnt_left ?? 0);
+  const conv = [];
+  if (pts.phy_conv) conv.push("+" + pts.phy_conv + "P");
+  if (pts.mnt_conv) conv.push("+" + pts.mnt_conv + "M");
+  if (conv.length) ptsText += "  (" + conv.join(" ") + " conv)";
   ptsLine.textContent = ptsText;
   sktHeader.appendChild(ptsLine);
 
@@ -6281,18 +6291,20 @@ function renderSkillTrainer() {
 }
 
 function sktRow(row) {
+  // Single compact row that fits a phone: name (flexes + ellipsizes) then a
+  // tight − goal + cluster. The old layout also carried a wide "now/max"
+  // meta column that pushed the + button off the right edge; ranks live in
+  // the name's title tooltip and the goal already shows the target.
   const el = document.createElement("div");
   el.className = "skt-row";
 
   const name = document.createElement("span");
   name.className = "skt-name";
   name.textContent = row.name || "";
+  name.title =
+    "now " + (row.ranks ?? 0) + " / max " + (row.max ?? 0) +
+    " · cost " + (row.phy_cost ?? 0) + "/" + (row.mnt_cost ?? 0);
   el.appendChild(name);
-
-  const cost = document.createElement("span");
-  cost.className = "skt-cost";
-  cost.textContent = (row.phy_cost ?? 0) + "/" + (row.mnt_cost ?? 0);
-  el.appendChild(cost);
 
   const minus = document.createElement("button");
   minus.type = "button";
@@ -6316,11 +6328,6 @@ function sktRow(row) {
   plus.addEventListener("click", () =>
     sendJson("skill_trainer_step", { id: row.id, n: sktStep, raise: true }));
   el.appendChild(plus);
-
-  const meta = document.createElement("span");
-  meta.className = "skt-meta";
-  meta.textContent = "now " + (row.ranks ?? 0) + " / max " + (row.max ?? 0);
-  el.appendChild(meta);
 
   return el;
 }
