@@ -97,14 +97,18 @@ impl MessageProcessor {
 
         let Some(pending) = self.pending_remote_room_story.take() else {
             if let Some(native) = native {
-                self.last_remote_story_room = Some(native.identity);
+                self.last_remote_story_room = Some(self.native_capture_identity(&native));
             }
             return;
         };
-        if native
-            .as_ref()
-            .is_some_and(|capture| capture.identity == pending.identity)
-        {
+        // A native block matches the staged fallback when their identities
+        // agree — by uid (explicit, or the navigation uid current at this
+        // prompt) or, failing that, by title. Either match means the native
+        // block already told the Story about this room.
+        if native.as_ref().is_some_and(|capture| {
+            self.native_capture_identity(capture) == pending.identity
+                || pending.title.as_deref() == Some(capture.title.as_str())
+        }) {
             self.last_remote_story_room = Some(pending.identity);
             return;
         }
@@ -148,25 +152,44 @@ impl MessageProcessor {
         self.remote_chunk_has_story_text = true;
     }
 
-    /// Parse the decorated Lich room header used on the ordinary `main`
-    /// stream: `[Title - ROOM] (uUID)`.
-    fn native_room_header_identity(text: &str, current_uid: Option<u64>) -> Option<String> {
+    /// Parse the decorated room header used on the ordinary `main` stream:
+    /// `[Title - ROOM] (uUID)` (Lich), `[Title - ROOM]` (uid display off),
+    /// or `[Title]` (the game's own header / Lich with room numbers off).
+    /// Returns `(title, had_room_number, explicit_uid)`. Numberless,
+    /// uid-less brackets are ambiguous (chat prefixes look identical), so
+    /// the caller must gate those on a matching staged room title.
+    fn native_room_header_parts(text: &str) -> Option<(String, bool, Option<String>)> {
         let text = text.trim();
         let bracketed = text.strip_prefix('[')?;
         let close = bracketed.find(']')?;
         let inside = bracketed.get(..close)?;
-        let (_, room_id) = inside.rsplit_once(" - ")?;
-        if room_id.is_empty() || !room_id.chars().all(|ch| ch.is_ascii_digit()) {
-            return None;
-        }
+        let (title, numbered) = match inside.rsplit_once(" - ") {
+            Some((title, room_id))
+                if !room_id.is_empty() && room_id.chars().all(|ch| ch.is_ascii_digit()) =>
+            {
+                (title, true)
+            }
+            _ => (inside, false),
+        };
         let suffix = bracketed.get(close + 1..)?.trim();
         let uid = suffix
             .strip_prefix("(u")
             .and_then(|rest| rest.strip_suffix(')'))
             .filter(|uid| !uid.is_empty() && uid.chars().all(|ch| ch.is_ascii_digit()))
-            .map(str::to_string)
-            .or_else(|| current_uid.map(|uid| uid.to_string()))?;
-        Some(format!("id:{uid}"))
+            .map(str::to_string);
+        Some((title.trim().to_string(), numbered, uid))
+    }
+
+    /// The dedup identity a native capture resolves to at the prompt:
+    /// explicit uid, else the navigation uid current at the prompt, else
+    /// the title.
+    fn native_capture_identity(&self, capture: &super::NativeRoomCapture) -> String {
+        capture
+            .uid
+            .clone()
+            .or_else(|| self.current_room_uid.map(|uid| uid.to_string()))
+            .map(|uid| format!("id:{uid}"))
+            .unwrap_or_else(|| format!("title:{}", capture.title))
     }
 
     /// Observe finalized main-stream lines so the ordinary decorated Lich
@@ -183,11 +206,23 @@ impl MessageProcessor {
         // Room art may precede the styled header in its own segment. Inspect
         // each segment rather than requiring the concatenated line to begin
         // with `[` so the header remains recognizable with art enabled.
-        if let Some(identity) = line.segments.iter().find_map(|segment| {
-            Self::native_room_header_identity(&segment.text, self.current_room_uid)
+        if let Some((title, uid)) = line.segments.iter().find_map(|segment| {
+            let (title, numbered, uid) = Self::native_room_header_parts(&segment.text)?;
+            // A bare `[Title]` is only trusted as a room header when it
+            // matches the room title staged from the component projection;
+            // any other bracketed text (chat prefixes etc.) is ignored.
+            let recognized = numbered
+                || uid.is_some()
+                || self
+                    .pending_remote_room_story
+                    .as_ref()
+                    .and_then(|pending| pending.title.as_deref())
+                    .is_some_and(|pending_title| pending_title == title);
+            recognized.then_some((title, uid))
         }) {
             self.native_room_capture = Some(super::NativeRoomCapture {
-                identity,
+                title,
+                uid,
                 description: Vec::new(),
                 capturing_description: true,
             });
@@ -431,7 +466,11 @@ impl MessageProcessor {
                 // It's cleared on clearStream (which comes before all entries)
                 // This allows entries from multiple push/pop pairs to accumulate
             }
-            ParsedElement::StreamPop => {
+            ParsedElement::StreamPop | ParsedElement::StreamPopForced => {
+                // A forced pop means the prompt force-closed a stream whose
+                // popStream was eaten upstream: per-stream buffers may be
+                // truncated and must not commit as authoritative snapshots.
+                let torn = matches!(element, ParsedElement::StreamPopForced);
                 self.flush_current_stream_with_tts(ui_state, tts_manager.as_deref_mut());
 
                 if self.current_stream == "room" {
@@ -444,7 +483,15 @@ impl MessageProcessor {
                 }
 
                 // Flush inventory buffer if we're leaving inv stream
-                if self.current_stream == "inv" {
+                if self.current_stream == "inv" && torn {
+                    // Truncated snapshot: keep the previous complete
+                    // inventory instead of committing a torn one.
+                    tracing::warn!(
+                        "inv stream force-closed by prompt - discarding torn snapshot ({} lines)",
+                        self.inventory_buffer.len()
+                    );
+                    self.inventory_buffer.clear();
+                } else if self.current_stream == "inv" {
                     // Worn items into the registry from the same buffer the
                     // window uses (each line's first <a> link = one worn
                     // item; the "Your worn items are:" header and blank
@@ -458,7 +505,11 @@ impl MessageProcessor {
 
                 // Flush reserve buffer if we're leaving reserve stream
                 if self.current_stream == "reserve" {
-                    self.flush_reserve_buffer(ui_state);
+                    if torn {
+                        self.reserve_buffer.clear();
+                    } else {
+                        self.flush_reserve_buffer(ui_state);
+                    }
                 }
 
                 // Flush spells line buffer if we're leaving Spells stream

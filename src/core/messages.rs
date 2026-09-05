@@ -93,7 +93,12 @@ struct PendingRemoteRoomStory {
 }
 
 struct NativeRoomCapture {
-    identity: String,
+    /// Header title with brackets and any ` - <room#>` suffix stripped.
+    title: String,
+    /// Navigation uid from an explicit `(uNNN)` suffix; when absent, the
+    /// identity resolves against `current_room_uid` at the prompt (nav can
+    /// arrive after the header line).
+    uid: Option<String>,
     description: Vec<crate::data::widget::StyledLine>,
     capturing_description: bool,
 }

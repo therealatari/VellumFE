@@ -487,7 +487,7 @@ async fn classic_map_image(
             Vec::new(),
         );
     };
-    match std::fs::read(&asset.path) {
+    match tokio::fs::read(&asset.path).await {
         Ok(bytes) => (StatusCode::OK, [(header::CONTENT_TYPE, asset.mime)], bytes),
         Err(_) => (
             StatusCode::NOT_FOUND,
