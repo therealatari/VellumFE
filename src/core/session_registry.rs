@@ -755,17 +755,22 @@ fn acquire_endpoint_lease_in(
         profile: identity.profile.clone(),
         character: identity.character.clone(),
     };
-    let mut file = OpenOptions::new()
+    // Owner metadata lives in a sidecar, NOT inside the lock file: on
+    // Windows an exclusive lock blocks reads from every other handle
+    // (ERROR_LOCK_VIOLATION), so a loser could never learn who owns the
+    // endpoint if the record sat behind the lock itself.
+    let owner_path = path.with_extension("owner.json");
+    let file = OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .open(&path)?;
     if let Err(lock_error) = file.try_lock() {
-        // The winning process writes this record immediately after taking the
-        // OS lock. Give that tiny metadata write a bounded opportunity to
-        // finish, and ignore a record left by an older dead owner.
+        // The winning process writes the sidecar immediately after taking
+        // the OS lock. Give that tiny metadata write a bounded opportunity
+        // to finish, and ignore a record left by an older dead owner.
         for _ in 0..5 {
-            let existing = fs::read(&path)
+            let existing = fs::read(&owner_path)
                 .ok()
                 .and_then(|bytes| serde_json::from_slice::<EndpointLeaseRecord>(&bytes).ok())
                 .filter(endpoint_owner_is_live);
@@ -782,10 +787,12 @@ fn acquire_endpoint_lease_in(
     }
 
     let body = serde_json::to_vec(&record)?;
-    file.set_len(0)?;
-    file.rewind()?;
-    file.write_all(&body)?;
-    file.sync_all()?;
+    let tmp_path = path.with_extension(format!("owner.tmp-{pid}"));
+    fs::write(&tmp_path, &body)?;
+    if let Err(error) = fs::rename(&tmp_path, &owner_path) {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(error.into());
+    }
     Ok(EndpointLease { _file: file })
 }
 
