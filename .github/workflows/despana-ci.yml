@@ -112,7 +112,7 @@ jobs:
           firefox-version: latest-esr
 
       - name: Install geckodriver
-        uses: browser-actions/setup-geckodriver@bf8266f624ca122cedb6d0381a031f18f6c431cd # master 2026-05-06
+        uses: browser-actions/setup-geckodriver@fac5b0424c584257f32cf12c5eb4ba86014c34f8 # latest (built) branch; master has no index.js
         with:
           geckodriver-version: "0.36.0"
 
