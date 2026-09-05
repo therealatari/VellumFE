@@ -1,6 +1,6 @@
 import DesktopSession, {
+  characterTitleText,
   VELLUM_TOKEN_STORAGE_KEY,
-  presentationTitle,
   shouldShowVellumIdle,
 } from "./session.js";
 import DesktopInteractionCoordinator from "./interactions.js";
@@ -30,6 +30,7 @@ const commandForm = document.getElementById("command-form");
 const commandInput = document.getElementById("command-input");
 const commandButton = commandForm.querySelector("button[type='submit']");
 const commandStatus = document.getElementById("command-status");
+const sessionExitButton = document.getElementById("session-exit-button");
 const vellumIdle = document.getElementById("vellum-idle");
 const vellumIdleTitle = document.getElementById("vellum-idle-title");
 const vellumIdleMessage = document.getElementById("vellum-idle-message");
@@ -43,6 +44,7 @@ let menuAnchor = null;
 let menuTimeout = null;
 
 if (!root) throw new Error("Vellum Despana root is missing");
+if (!sessionExitButton) throw new Error("Vellum Despana session exit control is missing");
 if (!vellumIdle || !vellumIdleTitle || !vellumIdleMessage) {
   throw new Error("Vellum idle-session handoff is missing");
 }
@@ -63,8 +65,8 @@ function renderIdleSurface(view) {
   vellumIdleMessage.textContent = denied
     ? "Return to the VellumFE Launcher to reconnect this presentation. You may also open Vellum's play page separately to enter a new pairing token."
     : waitingForTransport
-      ? "Despana is waiting for VellumFE's authenticated session state."
-      : "Start or attach the character from the VellumFE Launcher. Despana will appear automatically when that session is ready.";
+      ? "Vellum Despana is waiting for VellumFE's authenticated session state."
+      : "Start or attach the character from the VellumFE Launcher. Vellum Despana will appear automatically when that session is ready.";
 }
 
 function pairingToken() {
@@ -1478,7 +1480,7 @@ function renderConnection(view) {
       : state === "denied"
         ? "Pairing required"
         : state.charAt(0).toUpperCase() + state.slice(1);
-  characterTitle.textContent = presentationTitle(view);
+  characterTitle.textContent = characterTitleText(view);
   document.title = characterTitle.textContent;
 }
 
@@ -1486,14 +1488,33 @@ function renderCommandAvailability(view) {
   const ready = isPlayable(view);
   commandInput.disabled = !ready;
   commandButton.disabled = !ready;
+  sessionExitButton.disabled = !ready;
   if (ready && commandStatus.textContent === "Waiting for connection") {
     commandStatus.textContent = "Connected";
   }
 }
 
+sessionExitButton.addEventListener("click", () => {
+  if (!latestView || !isPlayable(latestView)) return;
+  const confirmed = window.confirm(
+    "Exit this Vellum session and log the character out of the game?",
+  );
+  if (!confirmed) return;
+  try {
+    session.dispatch({ kind: "exit-and-logout" });
+    sessionExitButton.disabled = true;
+    commandInput.disabled = true;
+    commandButton.disabled = true;
+    commandStatus.textContent = "Exit requested; waiting for the game to log out.";
+  } catch (error) {
+    commandStatus.textContent = error?.message || "Exit request was not sent";
+    renderCommandAvailability(latestView);
+  }
+});
+
 function submitCommand(text, status = null) {
   try {
-    const receipt = session.dispatch({ kind: "submit-text", text });
+    const receipt = interaction.submit(text);
     commandStatus.textContent = `Sent (unconfirmed): ${status || text}`;
     return receipt;
   } catch (error) {
@@ -1583,6 +1604,19 @@ interaction = new DesktopInteractionCoordinator({
   openUrl(url) {
     window.open(url, "_blank", "noopener,noreferrer");
   },
+  reserveUrl() {
+    const target = window.open("about:blank", "_blank");
+    if (!target) return null;
+    target.opener = null;
+    return {
+      navigate(url) {
+        target.location.replace(url);
+      },
+      close() {
+        if (!target.closed) target.close();
+      },
+    };
+  },
 });
 
 document.addEventListener("pointerdown", (event) => {
@@ -1607,6 +1641,7 @@ session.subscribe((event) => {
   }
   renderConnection(view);
   renderCommandAvailability(view);
+  if (!isPlayable(view)) interaction.cancelPendingUrls();
   switch (event.type) {
     case "snapshot":
       closeGameMenu();
@@ -1643,6 +1678,19 @@ session.subscribe((event) => {
       } catch (error) {
         commandStatus.textContent = error?.message || "Menu could not be loaded";
         closeGameMenu();
+      }
+      break;
+    }
+    case "open-url": {
+      try {
+        const result = interaction.receiveOpenUrl(event.url);
+        commandStatus.textContent = result.dropped
+          ? "Skill manager window was not opened"
+          : result.reserved
+            ? "Opened skill manager"
+            : "Requested skill manager window";
+      } catch (error) {
+        commandStatus.textContent = error?.message || "Skill manager was not opened";
       }
       break;
     }
@@ -1684,6 +1732,7 @@ if (/(?:^#|&)token=/i.test(window.location.hash)) {
 }
 
 window.addEventListener("pagehide", (event) => {
+  interaction.cancelPendingUrls();
   if (event.persisted) return;
   workspace.flush();
   window.removeEventListener("storage", adoptVellumPairingToken);

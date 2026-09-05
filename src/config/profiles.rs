@@ -47,7 +47,7 @@ pub mod help {
          directly; any other host runs it over SSH (set the SSH user and key with .launcher). \
          Leave blank to attach only.";
     pub const FRONTEND: &str =
-        "GUI opens Vellum's native window; Terminal runs the text interface in its own console window; Despana opens the Despana browser interface";
+        "GUI opens Vellum's native window; Terminal runs the text interface in its own console window; Vellum Despana opens the Despana browser interface";
     pub const WEB_PORT: &str =
         "Enable the embedded web server on this port: serves a browser view of this session at localhost:PORT (e.g. for a phone on your LAN)";
     pub const WEB_BIND: &str =
@@ -111,7 +111,7 @@ impl LaunchWebClient {
     /// User-facing launcher label for this browser presentation.
     pub const fn label(self) -> &'static str {
         match self {
-            Self::Despana => "Despana (Web)",
+            Self::Despana => "Vellum Despana",
         }
     }
 }
@@ -263,6 +263,10 @@ impl LauncherProfile {
 /// On-disk container: `[[profiles]]` entries in launcher.toml.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LauncherStore {
+    /// Global launcher preference: skip the confirmation shown before a Lich
+    /// endpoint is switched from one character to another.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub skip_lich_switch_warning: bool,
     #[serde(default)]
     pub profiles: Vec<LauncherProfile>,
 }
@@ -589,6 +593,7 @@ mod tests {
 
         let store = LauncherStore {
             profiles: vec![sample_direct(), sample_lich()],
+            ..Default::default()
         };
         store.save_to(&path).unwrap();
         let loaded = LauncherStore::load_from(&path).unwrap();
@@ -642,6 +647,7 @@ mod tests {
     fn upsert_replaces_by_original_name_on_rename() {
         let mut store = LauncherStore {
             profiles: vec![sample_direct()],
+            ..Default::default()
         };
         let mut renamed = sample_direct();
         renamed.name = "Renamed".to_string();
@@ -659,6 +665,7 @@ mod tests {
                 second.name = "Alt".to_string();
                 second
             }],
+            ..Default::default()
         };
         assert!(store.account_password_in_use("myacct"));
         store.remove("Main");
@@ -675,6 +682,7 @@ mod tests {
         profile.select_web_client(LaunchWebClient::Despana);
         let store = LauncherStore {
             profiles: vec![profile],
+            ..Default::default()
         };
 
         store.save_to(&path).unwrap();
@@ -711,6 +719,36 @@ mod tests {
     #[test]
     fn built_in_web_client_has_stable_identity_metadata() {
         assert_eq!(LaunchWebClient::Despana.route(), "despana");
-        assert_eq!(LaunchWebClient::Despana.label(), "Despana (Web)");
+        assert_eq!(LaunchWebClient::Despana.label(), "Vellum Despana");
+    }
+
+    #[test]
+    fn old_launcher_toml_defaults_to_showing_lich_switch_warning() {
+        let store: LauncherStore =
+            toml::from_str("[[profiles]]\nname = \"Lich local\"\nmode = \"lich\"\n").unwrap();
+
+        assert!(!store.skip_lich_switch_warning);
+    }
+
+    #[test]
+    fn default_lich_switch_warning_preference_is_omitted() {
+        let text = toml::to_string_pretty(&LauncherStore::default()).unwrap();
+
+        assert!(!text.contains("skip_lich_switch_warning"));
+    }
+
+    #[test]
+    fn skipped_lich_switch_warning_round_trips() {
+        let store = LauncherStore {
+            skip_lich_switch_warning: true,
+            profiles: vec![sample_lich()],
+        };
+
+        let text = toml::to_string_pretty(&store).unwrap();
+        assert!(text.contains("skip_lich_switch_warning = true"));
+
+        let loaded: LauncherStore = toml::from_str(&text).unwrap();
+        assert!(loaded.skip_lich_switch_warning);
+        assert_eq!(loaded.profiles.len(), 1);
     }
 }
