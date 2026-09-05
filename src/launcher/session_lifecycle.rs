@@ -554,6 +554,19 @@ fn endpoint_probe_result(
     match result {
         Ok(Ok(_stream)) => Ok(false),
         Ok(Err(error)) if error.kind() == std::io::ErrorKind::ConnectionRefused => Ok(true),
+        // A host without this address family (e.g. Linux with ipv6.disable=1)
+        // cannot be holding the port: treat "family unavailable" as released
+        // rather than failing the whole handoff.
+        Ok(Err(error))
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::AddrNotAvailable
+                    | std::io::ErrorKind::NetworkUnreachable
+                    | std::io::ErrorKind::Unsupported
+            ) =>
+        {
+            Ok(true)
+        }
         Ok(Err(error)) => Err(error).with_context(|| {
             format!("Could not confirm whether Lich endpoint {host}:{port} was released")
         }),
@@ -684,6 +697,30 @@ mod tests {
 
     use super::*;
     use crate::core::session_registry::SessionLifecycleState;
+
+    #[test]
+    fn ipv6_unavailable_error_kinds_fail_the_probe_instead_of_reporting_released() {
+        // On a host with the IPv6 stack absent (e.g. Linux booted with
+        // ipv6.disable=1), connect(::1) returns EADDRNOTAVAIL or
+        // ENETUNREACH, never ECONNREFUSED. probe_endpoint("loopback")
+        // requires BOTH family probes to report Ok(true), so these kinds
+        // must not hard-error or handoff can never complete on such hosts.
+        for kind in [
+            std::io::ErrorKind::AddrNotAvailable,
+            std::io::ErrorKind::NetworkUnreachable,
+            std::io::ErrorKind::Unsupported,
+        ] {
+            let result: std::result::Result<
+                std::io::Result<tokio::net::TcpStream>,
+                tokio::time::error::Elapsed,
+            > = Ok(Err(std::io::Error::from(kind)));
+            let outcome = endpoint_probe_result(result, "::1", 8000);
+            assert!(
+                matches!(outcome, Ok(true)),
+                "probe of ::1 with {kind:?} should report released, got {outcome:?}"
+            );
+        }
+    }
 
     fn identity(profile: &str, character: &str, host: &str, port: u16) -> SessionLaunchIdentity {
         SessionLaunchIdentity {

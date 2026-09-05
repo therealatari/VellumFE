@@ -79,8 +79,12 @@ function renderIdleSurface(view) {
 }
 
 function pairingToken() {
-  return window.localStorage.getItem(VELLUM_TOKEN_STORAGE_KEY) ||
-    new URLSearchParams(window.location.hash.replace(/^#/, "")).get("token") ||
+  // The URL hash must win: a fresh #token= arrives before DesktopSession has
+  // persisted it to localStorage (that happens much later in this module), so
+  // preferring storage here would send a stale token on the first catalog
+  // fetch. Matches DesktopSession's own precedence (session.js).
+  return new URLSearchParams(window.location.hash.replace(/^#/, "")).get("token") ||
+    window.localStorage.getItem(VELLUM_TOKEN_STORAGE_KEY) ||
     "";
 }
 

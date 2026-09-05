@@ -5040,3 +5040,251 @@ fn familiar_stream_strips_moved_prompts_keeping_the_styled_echo() {
         "moved prompt stripped, styled echo kept; familiar lines: {fam:?}"
     );
 }
+
+// ===========================================
+// PR #32 risk probes: remote room-story duplication (Risk A) and torn
+// inventory snapshots (Risk B). Full-pipeline replays: raw XML through the
+// real parser into process_element, flushing at every network-line boundary
+// exactly as AppCore does.
+// ===========================================
+
+/// Full-pipeline replay harness mirroring AppCore's per-network-line flush.
+struct RiskReplay {
+    parser: crate::parser::XmlParser,
+    processor: MessageProcessor,
+    game_state: GameState,
+    ui_state: UiState,
+    room_components: std::collections::HashMap<String, Vec<Vec<TextSegment>>>,
+    current_room_component: Option<String>,
+    room_window_dirty: bool,
+    nav_room_id: Option<String>,
+    lich_room_id: Option<String>,
+    room_subtitle: Option<String>,
+    handles: crate::core::remote::RemoteServerHandles,
+}
+
+impl RiskReplay {
+    fn new() -> Self {
+        let mut processor = create_test_processor();
+        let (sink, handles, _events) = crate::core::remote::RemoteSink::new(100);
+        processor.remote = Some(sink);
+        Self {
+            parser: crate::parser::XmlParser::new(),
+            processor,
+            game_state: GameState::new(),
+            ui_state: UiState::new(),
+            room_components: std::collections::HashMap::new(),
+            current_room_component: None,
+            room_window_dirty: false,
+            nav_room_id: None,
+            lich_room_id: None,
+            room_subtitle: None,
+            handles,
+        }
+    }
+
+    fn replay(&mut self, xml: &str) {
+        for element in self.parser.parse_line(xml) {
+            self.processor.process_element(
+                &element,
+                &mut self.game_state,
+                &mut self.ui_state,
+                &mut self.room_components,
+                &mut self.current_room_component,
+                &mut self.room_window_dirty,
+                &mut self.nav_room_id,
+                &mut self.lich_room_id,
+                &mut self.room_subtitle,
+                None,
+            );
+        }
+        self.processor
+            .flush_current_stream_with_tts(&mut self.ui_state, None);
+    }
+
+    fn story_text(&self) -> Vec<String> {
+        self.handles
+            .buffer
+            .lock()
+            .unwrap()
+            .tail("main", 100)
+            .iter()
+            .map(|line| {
+                line.line
+                    .segments
+                    .iter()
+                    .map(|segment| segment.text.as_str())
+                    .collect()
+            })
+            .collect()
+    }
+}
+
+/// Risk A / variant 1: Lich header WITHOUT the `(uNNN)` suffix (uid display
+/// off) but with `<nav>` arriving BEFORE the header, as in a normal Lich room
+/// block. `native_room_header_identity` falls back to `current_room_uid`, so
+/// the native block should be recognized and the fallback suppressed.
+#[test]
+fn risk_a_header_without_uid_suffix_nav_first_no_duplicate() {
+    let mut rig = RiskReplay::new();
+    rig.replay("<nav rm='7120'/>");
+    rig.replay("<streamWindow id='room' title='Room' subtitle=' - Town Square Central'/>");
+    rig.replay("<pushStream id='room'/>");
+    rig.replay("<compDef id='room desc'>This is the heart of the main square.</compDef>");
+    rig.replay("<compDef id='room exits'>Obvious paths: <d>northeast</d></compDef>");
+    rig.replay("<popStream id='room'/>");
+    rig.replay("<style id='roomName'/>[Town Square Central - 228]<style id=''/>");
+    rig.replay("This is the heart of the main square.");
+    rig.replay("Obvious paths: northeast");
+    rig.replay("<prompt time='1'>&gt;</prompt>");
+
+    let story = rig.story_text();
+    assert_eq!(
+        story
+            .iter()
+            .filter(|line| line.contains("Town Square Central"))
+            .count(),
+        1,
+        "uid-suffix-off header with nav-first must not duplicate: {story:?}"
+    );
+    assert_eq!(
+        story
+            .iter()
+            .filter(|line| line.as_str() == "This is the heart of the main square.")
+            .count(),
+        1,
+        "room prose must appear once: {story:?}"
+    );
+}
+
+/// Risk A / variant 2: header with NO ` - <number>` at all — the format the
+/// game itself sends in direct/no-Lich mode (and Lich with room numbers
+/// disabled): `[Town Square Central]`. `native_room_header_identity` requires
+/// ` - <digits>`, so the native block goes unrecognized.
+#[test]
+fn risk_a_header_without_room_number_duplicates() {
+    let mut rig = RiskReplay::new();
+    rig.replay("<nav rm='7120'/>");
+    rig.replay("<streamWindow id='room' title='Room' subtitle=' - Town Square Central'/>");
+    rig.replay("<pushStream id='room'/>");
+    rig.replay("<compDef id='room desc'>This is the heart of the main square.</compDef>");
+    rig.replay("<compDef id='room exits'>Obvious paths: <d>northeast</d></compDef>");
+    rig.replay("<popStream id='room'/>");
+    rig.replay("<style id='roomName'/>[Town Square Central]<style id=''/>");
+    rig.replay("This is the heart of the main square.");
+    rig.replay("Obvious paths: northeast");
+    rig.replay("<prompt time='1'>&gt;</prompt>");
+
+    let story = rig.story_text();
+    assert_eq!(
+        story
+            .iter()
+            .filter(|line| line.contains("Town Square Central"))
+            .count(),
+        1,
+        "numberless native header must still suppress the fallback: {story:?}"
+    );
+    assert_eq!(
+        story
+            .iter()
+            .filter(|line| line.as_str() == "This is the heart of the main square.")
+            .count(),
+        1,
+        "room prose must appear once: {story:?}"
+    );
+}
+
+/// Risk A / variant 3: no uid suffix AND `<nav>` arriving AFTER the header
+/// line (header printed first, nav late in the same block). The header falls
+/// back to the STALE previous-room uid, mismatching the pending identity.
+#[test]
+fn risk_a_header_before_nav_stale_uid_duplicates() {
+    let mut rig = RiskReplay::new();
+    // Establish a previous room so current_room_uid holds a stale value.
+    rig.replay("<nav rm='7119'/>");
+    rig.replay("<streamWindow id='room' title='Room' subtitle=' - Old Room'/>");
+    rig.replay("<pushStream id='room'/>");
+    rig.replay("<compDef id='room desc'>The old room.</compDef>");
+    rig.replay("<popStream id='room'/>");
+    rig.replay("<style id='roomName'/>[Old Room - 227]<style id=''/>");
+    rig.replay("The old room.");
+    rig.replay("<prompt time='1'>&gt;</prompt>");
+
+    // Movement where the decorated header precedes <nav>.
+    rig.replay("<style id='roomName'/>[Town Square Central - 228]<style id=''/>");
+    rig.replay("This is the heart of the main square.");
+    rig.replay("Obvious paths: northeast");
+    rig.replay("<nav rm='7120'/>");
+    rig.replay("<streamWindow id='room' title='Room' subtitle=' - Town Square Central'/>");
+    rig.replay("<pushStream id='room'/>");
+    rig.replay("<compDef id='room desc'>This is the heart of the main square.</compDef>");
+    rig.replay("<compDef id='room exits'>Obvious paths: <d>northeast</d></compDef>");
+    rig.replay("<popStream id='room'/>");
+    rig.replay("<prompt time='2'>&gt;</prompt>");
+
+    let story = rig.story_text();
+    assert_eq!(
+        story
+            .iter()
+            .filter(|line| line.contains("Town Square Central"))
+            .count(),
+        1,
+        "header-before-nav must not duplicate: {story:?}"
+    );
+    assert_eq!(
+        story
+            .iter()
+            .filter(|line| line.as_str() == "This is the heart of the main square.")
+            .count(),
+        1,
+        "room prose must appear once: {story:?}"
+    );
+}
+
+/// Risk B: a `<prompt>` force-closing a mid-flight `inv` stream (eaten
+/// popStream) makes the parser emit a synthetic StreamPop, and
+/// `flush_inventory_buffer` commits whatever partial lines arrived as the
+/// authoritative snapshot — replacing a complete previous inventory with a
+/// truncated one.
+#[test]
+fn risk_b_prompt_torn_inv_stream_commits_truncated_snapshot() {
+    let mut rig = RiskReplay::new();
+
+    // A complete, healthy snapshot first.
+    rig.replay("<pushStream id='inv'/>Your worn items are:");
+    rig.replay("  <a exist='1' noun='cloak'>a wool cloak</a>");
+    rig.replay("  <a exist='2' noun='boots'>some leather boots</a>");
+    rig.replay("<popStream/>");
+    rig.replay("<prompt time='1'>&gt;</prompt>");
+    assert_eq!(
+        rig.game_state.inventory.len(),
+        3,
+        "complete snapshot must commit 3 lines"
+    );
+
+    // Torn refresh: push + one line, then the popStream is eaten upstream
+    // and a prompt arrives mid-stream.
+    rig.replay("<pushStream id='inv'/>Your worn items are:");
+    rig.replay("<prompt time='2'>&gt;</prompt>");
+
+    let inv: Vec<String> = rig
+        .game_state
+        .inventory
+        .iter()
+        .map(|line| {
+            line.segments
+                .iter()
+                .map(|segment| segment.text.as_str())
+                .collect()
+        })
+        .collect();
+    assert_eq!(
+        inv,
+        vec![
+            "Your worn items are:".to_string(),
+            "  a wool cloak".to_string(),
+            "  some leather boots".to_string(),
+        ],
+        "a torn inv stream must not replace a complete snapshot with a truncated one; committed: {inv:?}"
+    );
+}
