@@ -33,6 +33,7 @@ pub(super) fn router() -> Router<Arc<WebState>> {
         .route("/despana/", get(index_html))
         .route("/despana/app.js", get(app_js))
         .route("/despana/session.js", get(session_js))
+        .route("/despana/inventory-tree.js", get(inventory_tree_js))
         .route("/despana/interactions.js", get(interactions_js))
         .route("/despana/layout.js", get(layout_js))
         .route(
@@ -82,6 +83,11 @@ embedded_asset!(
     session_js,
     "text/javascript; charset=utf-8",
     "../assets/despana/session.js"
+);
+embedded_asset!(
+    inventory_tree_js,
+    "text/javascript; charset=utf-8",
+    "../assets/despana/inventory-tree.js"
 );
 embedded_asset!(
     interactions_js,
