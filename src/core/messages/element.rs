@@ -5,6 +5,217 @@
 use super::*;
 
 impl MessageProcessor {
+    /// Stage a completed room component snapshot as a fallback for remote
+    /// Story.  Publication waits for the prompt because Lich normally follows
+    /// this projection with the same room as authoritative decorated `main`
+    /// text; publishing here would show both copies.
+    fn stage_remote_room_story(
+        &mut self,
+        game_state: &GameState,
+        room_components: &std::collections::HashMap<String, Vec<Vec<TextSegment>>>,
+        nav_room_id: Option<&str>,
+        room_subtitle: Option<&str>,
+    ) {
+        if self.remote.is_none() {
+            return;
+        }
+
+        let title = game_state
+            .room_name
+            .as_deref()
+            .filter(|name| !name.trim().is_empty())
+            .or(room_subtitle.filter(|subtitle| !subtitle.trim().is_empty()));
+        let uid = nav_room_id.filter(|id| !id.trim().is_empty());
+        let Some(identity) = uid
+            .map(|id| format!("id:{}", id.trim()))
+            .or_else(|| title.map(|title| format!("title:{}", title.trim())))
+        else {
+            return;
+        };
+
+        if self.last_remote_story_room.as_deref() == Some(identity.as_str()) {
+            return;
+        }
+
+        const COMPONENT_ORDER: [&str; 4] = ["room desc", "room objs", "room players", "room exits"];
+        if !COMPONENT_ORDER
+            .iter()
+            .any(|id| room_components.contains_key(*id))
+        {
+            return;
+        }
+
+        let title = title
+            .map(str::trim)
+            .map(|title| title.trim_start_matches('-').trim())
+            .map(|title| title.trim_start_matches('[').trim_end_matches(']').trim())
+            .filter(|title| !title.is_empty())
+            .map(str::to_string);
+        let mut component_lines = Vec::new();
+        for component_id in COMPONENT_ORDER {
+            if let Some(lines) = room_components.get(component_id) {
+                component_lines.extend(lines.iter().filter_map(|segments| {
+                    let text: String = segments
+                        .iter()
+                        .map(|segment| segment.text.as_str())
+                        .collect();
+                    (!segments.is_empty() && !super::room_description_is_disabled(&text)).then(|| {
+                        let mut segments = segments.clone();
+                        super::flush_line::style_player_title_prefixes(&mut segments);
+                        crate::data::widget::StyledLine {
+                            segments,
+                            stream: "main".to_string(),
+                            timestamp: None,
+                        }
+                    })
+                }));
+            }
+        }
+
+        self.pending_remote_room_story = Some(super::PendingRemoteRoomStory {
+            identity,
+            title,
+            uid: uid.map(|id| id.trim().to_string()),
+            component_lines,
+        });
+    }
+
+    /// Complete native-room capture and publish a staged component fallback
+    /// only when no matching native block arrived before the prompt.
+    fn finalize_remote_room_story(&mut self, game_state: &mut GameState) {
+        let native = self.native_room_capture.take();
+        if let Some(new_description) = native
+            .as_ref()
+            .map(|capture| capture.description.clone())
+            .filter(|description| !description.is_empty())
+        {
+            if game_state.room_description != new_description {
+                game_state.room_description = new_description;
+                game_state.room_description_generation += 1;
+            }
+        }
+
+        let Some(pending) = self.pending_remote_room_story.take() else {
+            if let Some(native) = native {
+                self.last_remote_story_room = Some(native.identity);
+            }
+            return;
+        };
+        if native
+            .as_ref()
+            .is_some_and(|capture| capture.identity == pending.identity)
+        {
+            self.last_remote_story_room = Some(pending.identity);
+            return;
+        }
+
+        if self.last_remote_story_room.as_deref() == Some(pending.identity.as_str()) {
+            return;
+        }
+
+        let display_id = super::canonical_room_id(None, pending.uid.as_deref());
+        let header = match (pending.title.as_deref(), display_id.as_deref()) {
+            (Some(title), Some(id)) => format!("[{title} - {id}]"),
+            (Some(title), None) => format!("[{title}]"),
+            (None, Some(id)) => format!("[Room {id}]"),
+            (None, None) => "[Room]".to_string(),
+        };
+        let room_name_preset = self.config.colors.presets.get("roomName");
+        let header_fg = room_name_preset
+            .and_then(|preset| preset.fg.as_ref())
+            .map(|color| self.config.resolve_palette_color(color));
+        let header_bg = room_name_preset
+            .and_then(|preset| preset.bg.as_ref())
+            .map(|color| self.config.resolve_palette_color(color));
+        let header = crate::data::widget::StyledLine {
+            segments: vec![TextSegment {
+                text: header,
+                fg: header_fg,
+                bg: header_bg,
+                bold: true,
+                ..Default::default()
+            }],
+            stream: "main".to_string(),
+            timestamp: None,
+        };
+
+        if let Some(remote) = self.remote.as_mut() {
+            for line in std::iter::once(header).chain(pending.component_lines.into_iter()) {
+                remote.push_text("main", std::sync::Arc::new(line));
+            }
+        }
+        self.last_remote_story_room = Some(pending.identity);
+        self.remote_chunk_has_story_text = true;
+    }
+
+    /// Parse the decorated Lich room header used on the ordinary `main`
+    /// stream: `[Title - ROOM] (uUID)`.
+    fn native_room_header_identity(text: &str, current_uid: Option<u64>) -> Option<String> {
+        let text = text.trim();
+        let bracketed = text.strip_prefix('[')?;
+        let close = bracketed.find(']')?;
+        let inside = bracketed.get(..close)?;
+        let (_, room_id) = inside.rsplit_once(" - ")?;
+        if room_id.is_empty() || !room_id.chars().all(|ch| ch.is_ascii_digit()) {
+            return None;
+        }
+        let suffix = bracketed.get(close + 1..)?.trim();
+        let uid = suffix
+            .strip_prefix("(u")
+            .and_then(|rest| rest.strip_suffix(')'))
+            .filter(|uid| !uid.is_empty() && uid.chars().all(|ch| ch.is_ascii_digit()))
+            .map(str::to_string)
+            .or_else(|| current_uid.map(|uid| uid.to_string()))?;
+        Some(format!("id:{uid}"))
+    }
+
+    /// Observe finalized main-stream lines so the ordinary decorated Lich
+    /// room block can suppress the component fallback and refresh Room prose.
+    pub(super) fn observe_native_room_line(&mut self, line: &crate::data::widget::StyledLine) {
+        if self.current_stream != "main" {
+            return;
+        }
+        let text: String = line
+            .segments
+            .iter()
+            .map(|segment| segment.text.as_str())
+            .collect();
+        // Room art may precede the styled header in its own segment. Inspect
+        // each segment rather than requiring the concatenated line to begin
+        // with `[` so the header remains recognizable with art enabled.
+        if let Some(identity) = line.segments.iter().find_map(|segment| {
+            Self::native_room_header_identity(&segment.text, self.current_room_uid)
+        }) {
+            self.native_room_capture = Some(super::NativeRoomCapture {
+                identity,
+                description: Vec::new(),
+                capturing_description: true,
+            });
+            return;
+        }
+
+        let Some(capture) = self.native_room_capture.as_mut() else {
+            return;
+        };
+        if !capture.capturing_description || text.trim().is_empty() {
+            return;
+        }
+        let trimmed = text.trim();
+        if trimmed.starts_with("You also see ")
+            || trimmed.starts_with("Also here:")
+            || trimmed.starts_with("Obvious exits:")
+            || trimmed.starts_with("Obvious paths:")
+        {
+            capture.capturing_description = false;
+            return;
+        }
+        if !super::room_description_is_disabled(trimmed) {
+            let mut description = line.clone();
+            description.stream = "room".to_string();
+            capture.description.push(description);
+        }
+    }
+
     /// Registry entry for a held item from the `<left>`/`<right>` feed;
     /// None for an empty hand (the game sends the literal "Empty").
     pub(super) fn hand_game_item(
@@ -127,6 +338,13 @@ impl MessageProcessor {
                 tracing::debug!("Character name from <app>: {}", character);
             }
             ParsedElement::RoomId { id } => {
+                // A changed navigation UID begins a new room identity. The
+                // decorated Lich room number arrives later on `main`; keeping
+                // the previous room's number through this interval would
+                // briefly publish a false pair such as `228 (u7121)`.
+                if nav_room_id.as_deref() != Some(id.as_str()) {
+                    *lich_room_id = None;
+                }
                 *nav_room_id = Some(id.clone());
                 // Mirror onto the processor so the `sprite` component (which
                 // arrives later in the same room block, and does not receive
@@ -216,6 +434,15 @@ impl MessageProcessor {
             ParsedElement::StreamPop => {
                 self.flush_current_stream_with_tts(ui_state, tts_manager.as_deref_mut());
 
+                if self.current_stream == "room" {
+                    self.stage_remote_room_story(
+                        game_state,
+                        room_components,
+                        nav_room_id.as_deref(),
+                        room_subtitle.as_deref(),
+                    );
+                }
+
                 // Flush inventory buffer if we're leaving inv stream
                 if self.current_stream == "inv" {
                     // Worn items into the registry from the same buffer the
@@ -226,7 +453,7 @@ impl MessageProcessor {
                     game_state
                         .objects
                         .set_worn_from_lines(&self.inventory_buffer);
-                    self.flush_inventory_buffer(ui_state);
+                    self.flush_inventory_buffer(game_state, ui_state);
                 }
 
                 // Flush reserve buffer if we're leaving reserve stream
@@ -283,10 +510,8 @@ impl MessageProcessor {
                 if self.stream_has_target_window(ui_state, id) {
                     self.discard_current_stream = false;
                 } else {
-                    self.discard_current_stream = matches!(
-                        self.resolve_orphaned_stream(id),
-                        RouteDecision::Discard
-                    );
+                    self.discard_current_stream =
+                        matches!(self.resolve_orphaned_stream(id), RouteDecision::Discard);
                 }
             }
             ParsedElement::ClearStream { id } => {
@@ -469,6 +694,12 @@ impl MessageProcessor {
                         game_state.spellbook_generation += 1;
                     }
                 }
+
+                // Lich sends its native decorated room block after the room
+                // component projection.  Resolve the two at their shared
+                // prompt boundary: native wins; component-only connections
+                // receive the staged fallback exactly once.
+                self.finalize_remote_room_story(game_state);
 
                 // Decide whether to show this prompt based on chunk tracking
                 // Skip if: no main text was received since last prompt AND prompt text is unchanged

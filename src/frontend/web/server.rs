@@ -22,10 +22,13 @@ use tokio::sync::broadcast;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::config::WebConfig;
-use crate::core::remote::{RemoteDelta, RemoteEvent, RemoteServerHandles};
+use crate::core::classic_maps::ClassicMapCatalog;
+use crate::core::remote::{RemoteDelta, RemoteEvent, RemoteLaunchEndpoint, RemoteServerHandles};
 use crate::data::remote_buffer::RemoteLine;
 
 use super::protocol::{self, ClientMessage, SnapshotMode};
+
+mod despana;
 
 /// Scrollback lines per stream included in a connect-time snapshot.
 const SNAPSHOT_LINES_PER_STREAM: usize = 300;
@@ -40,10 +43,15 @@ static NEXT_CLIENT_ID: AtomicU64 = AtomicU64::new(1);
 
 struct WebState {
     handles: RemoteServerHandles,
+    /// Classic map filesystem authority for this game session only.
+    classic_maps: Arc<ClassicMapCatalog>,
     /// Pairing token every WS connection must present first.
     auth_token: String,
     /// Timestamps of recent auth failures, for throttling.
     auth_failures: std::sync::Mutex<Vec<std::time::Instant>>,
+    /// Preserve request order across tabs/reloads so an older workspace write
+    /// cannot finish after a newer one.
+    workspace_write_lock: tokio::sync::Mutex<()>,
 }
 
 /// After this many failures inside AUTH_WINDOW, reject connections until
@@ -94,6 +102,24 @@ pub async fn serve(
     config: WebConfig,
     handles: RemoteServerHandles,
     session_label: String,
+) -> Result<()> {
+    serve_with_classic_maps(
+        config,
+        handles,
+        session_label,
+        Arc::new(ClassicMapCatalog::new()),
+    )
+    .await
+}
+
+/// Bind and serve with the classic-art catalog owned by the same game
+/// session. Runtime entry points use this; the compatibility wrapper above
+/// keeps non-map embedders source-compatible with an isolated empty catalog.
+pub async fn serve_with_classic_maps(
+    config: WebConfig,
+    handles: RemoteServerHandles,
+    session_label: String,
+    classic_maps: Arc<ClassicMapCatalog>,
 ) -> Result<()> {
     let mut listener = None;
     let mut bound_port = config.port;
@@ -149,12 +175,9 @@ pub async fn serve(
         )));
     }
 
-    // Session registry entry: one file per instance so the dashboard can
-    // list sessions by character. Best-effort; the dashboard also
-    // health-checks each port, so a stale entry only costs a hidden card.
-    registry::write_entry(bound_port, &session_label);
-    let _ = handles.bound_port.set(bound_port);
-
+    // Load once here: this exact value configures authentication and is then
+    // published with the bound port. Callers must not race it with their own
+    // first-run token creation.
     let auth_token = match crate::config::Config::load_or_create_web_token() {
         Ok(token) => token,
         Err(e) => {
@@ -165,7 +188,29 @@ pub async fn serve(
         }
     };
 
-    serve_listener_with_token_mode(listener, handles, auth_token, config.local_status_only()).await
+    // Publish readiness only after every prerequisite for an authenticated
+    // client is available. Headless startup uses this value to advertise a
+    // launchable URL; setting it before token creation could briefly surface
+    // a dead endpoint when token setup fails.
+    //
+    // The session registry is best-effort. Its health checks hide stale
+    // entries, while launch readiness below carries the authenticated truth.
+    registry::write_entry(bound_port, &session_label);
+    handles
+        .launch_endpoint_tx
+        .send_replace(Some(RemoteLaunchEndpoint::new(
+            bound_port,
+            auth_token.clone(),
+        )));
+
+    serve_listener_with_token_mode_and_catalog(
+        listener,
+        handles,
+        auth_token,
+        config.local_status_only(),
+        classic_maps,
+    )
+    .await
 }
 
 /// Session registry: files in ~/.vellum-fe/web-sessions/, one per running
@@ -190,7 +235,26 @@ pub async fn serve_listener_with_token(
     handles: RemoteServerHandles,
     auth_token: String,
 ) -> Result<()> {
-    serve_listener_with_token_mode(listener, handles, auth_token, false).await
+    serve_listener_with_token_and_catalog(
+        listener,
+        handles,
+        auth_token,
+        Arc::new(ClassicMapCatalog::new()),
+    )
+    .await
+}
+
+/// As [`serve_listener_with_token`], with an explicit session-owned classic
+/// map catalog. Production runtimes use the catalog owned by `MapService`;
+/// integration tests can provide isolated catalogs directly.
+pub async fn serve_listener_with_token_and_catalog(
+    listener: tokio::net::TcpListener,
+    handles: RemoteServerHandles,
+    auth_token: String,
+    classic_maps: Arc<ClassicMapCatalog>,
+) -> Result<()> {
+    serve_listener_with_token_mode_and_catalog(listener, handles, auth_token, false, classic_maps)
+        .await
 }
 
 /// As above, with `status_only` selecting the reduced router.
@@ -207,10 +271,31 @@ pub async fn serve_listener_with_token_mode(
     auth_token: String,
     status_only: bool,
 ) -> Result<()> {
-    let state = Arc::new(WebState {
+    serve_listener_with_token_mode_and_catalog(
+        listener,
         handles,
         auth_token,
+        status_only,
+        Arc::new(ClassicMapCatalog::new()),
+    )
+    .await
+}
+
+/// As [`serve_listener_with_token_mode`], with an explicit session-owned
+/// classic map catalog.
+pub async fn serve_listener_with_token_mode_and_catalog(
+    listener: tokio::net::TcpListener,
+    handles: RemoteServerHandles,
+    auth_token: String,
+    status_only: bool,
+    classic_maps: Arc<ClassicMapCatalog>,
+) -> Result<()> {
+    let state = Arc::new(WebState {
+        handles,
+        classic_maps,
+        auth_token,
         auth_failures: std::sync::Mutex::new(Vec::new()),
+        workspace_write_lock: tokio::sync::Mutex::new(()),
     });
     let router = if status_only {
         Router::new()
@@ -227,6 +312,8 @@ fn full_router(state: Arc<WebState>) -> Router {
     Router::new()
         .route("/", get(dashboard_html))
         .route("/play", get(index_html))
+        .route("/api/v1/maps/classic", get(classic_map_catalog))
+        .route("/api/v1/maps/classic/{name}", get(classic_map_image))
         .route("/characters", get(characters_html))
         .route("/creatures", get(creatures_html))
         .route("/sessions", get(sessions_json))
@@ -245,6 +332,7 @@ fn full_router(state: Arc<WebState>) -> Router {
         .route("/doll.json", get(doll_json))
         .route("/doll/image", get(doll_image))
         .route("/ws", get(ws_upgrade))
+        .merge(despana::router())
         .with_state(state)
 }
 
@@ -329,6 +417,67 @@ async fn index_html() -> impl IntoResponse {
         [(header::CACHE_CONTROL, "no-cache")],
         Html(include_str!("assets/index.html")),
     )
+}
+
+/// List classic annotated maps discovered from the active local Lich install.
+/// The browser receives display names and registry keys only, never paths.
+async fn classic_map_catalog(
+    Query(params): Query<std::collections::HashMap<String, String>>,
+    State(state): State<Arc<WebState>>,
+) -> impl IntoResponse {
+    use axum::http::StatusCode;
+    if !params
+        .get("token")
+        .is_some_and(|t| token_matches(t, &state.auth_token))
+    {
+        return (
+            StatusCode::FORBIDDEN,
+            [(header::CONTENT_TYPE, "application/json")],
+            "[]".to_string(),
+        );
+    }
+    let maps = state.classic_maps.entries();
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/json")],
+        serde_json::to_string(&maps).unwrap_or_else(|_| "[]".to_string()),
+    )
+}
+
+/// Serve one classic map by a name already discovered in the trusted maps
+/// directory. Registry lookup is the traversal guard; client paths are never
+/// joined to the filesystem.
+async fn classic_map_image(
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+    State(state): State<Arc<WebState>>,
+) -> impl IntoResponse {
+    use axum::http::StatusCode;
+    if !params
+        .get("token")
+        .is_some_and(|t| token_matches(t, &state.auth_token))
+    {
+        return (
+            StatusCode::FORBIDDEN,
+            [(header::CONTENT_TYPE, "text/plain")],
+            Vec::new(),
+        );
+    }
+    let Some(asset) = state.classic_maps.get(&name) else {
+        return (
+            StatusCode::NOT_FOUND,
+            [(header::CONTENT_TYPE, "text/plain")],
+            Vec::new(),
+        );
+    };
+    match std::fs::read(&asset.path) {
+        Ok(bytes) => (StatusCode::OK, [(header::CONTENT_TYPE, asset.mime)], bytes),
+        Err(_) => (
+            StatusCode::NOT_FOUND,
+            [(header::CONTENT_TYPE, "text/plain")],
+            Vec::new(),
+        ),
+    }
 }
 
 async fn app_js() -> impl IntoResponse {

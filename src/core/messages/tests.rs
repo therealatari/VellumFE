@@ -1634,14 +1634,14 @@ fn test_room_players_dead_body_of() {
         &mut game_state,
         "room players",
         "Also here: <a exist=\"-1\" noun=\"Braendon\">Braendon</a>, \
-             the body of <a exist=\"-2\" noun=\"Regyy\">Regyy</a> (prone)",
+             the body of <a exist=\"-2\" noun=\"Briar\">Briar</a> (prone)",
     );
     assert_eq!(game_state.room_players.len(), 2);
     assert!(!game_state.room_players[0].dead);
-    let regyy = &game_state.room_players[1];
-    assert_eq!(regyy.name, "Regyy");
-    assert!(regyy.dead, "\"the body of\" must set dead");
-    assert_eq!(regyy.secondary_status.as_deref(), Some("prone"));
+    let briar = &game_state.room_players[1];
+    assert_eq!(briar.name, "Briar");
+    assert!(briar.dead, "\"the body of\" must set dead");
+    assert_eq!(briar.secondary_status.as_deref(), Some("prone"));
 }
 
 /// The stacked case straight from live logs: dead AND verbose posture.
@@ -1878,6 +1878,106 @@ fn test_spellbook_mirrors_to_game_state_on_prompt_flush() {
     assert!(
         game_state.spellbook_generation >= 1,
         "spellbook generation must bump on first population"
+    );
+}
+
+#[test]
+fn inventory_pop_commits_styled_complete_replacements() {
+    fn feed_snapshot(
+        parser: &mut crate::parser::XmlParser,
+        processor: &mut MessageProcessor,
+        game_state: &mut GameState,
+        ui_state: &mut UiState,
+        xml: &str,
+    ) {
+        for raw_line in xml.lines() {
+            for element in parser.parse_line(raw_line) {
+                processor.process_element(
+                    &element,
+                    game_state,
+                    ui_state,
+                    &mut std::collections::HashMap::new(),
+                    &mut None,
+                    &mut false,
+                    &mut None,
+                    &mut None,
+                    &mut None,
+                    None,
+                );
+            }
+            processor.flush_current_stream_with_tts(ui_state, None);
+        }
+    }
+
+    let mut parser = crate::parser::XmlParser::new();
+    let mut processor = create_test_processor();
+    let mut game_state = GameState::new();
+    let mut ui_state = UiState::default();
+    let mut inventory_window = crate::data::window::WindowState::new_text("inventory", 100);
+    inventory_window.widget_type = crate::data::window::WidgetType::Inventory;
+    inventory_window.content =
+        WindowContent::Inventory(crate::data::TextContent::new("inventory".to_string(), 100));
+    ui_state.set_window("inventory".to_string(), inventory_window);
+
+    feed_snapshot(
+        &mut parser,
+        &mut processor,
+        &mut game_state,
+        &mut ui_state,
+        "<pushStream id='inv'/>Your worn items are:\n  a <a exist='535703780' noun='backpack'>patchwork dwarf skin backpack</a>\n<popStream/>",
+    );
+    assert_eq!(game_state.inventory.len(), 2);
+    assert_eq!(game_state.inventory[0].stream, "inv");
+    assert_eq!(line_text(&game_state.inventory[0]), "Your worn items are:");
+    let link = game_state.inventory[1]
+        .segments
+        .iter()
+        .find_map(|segment| segment.link_data.as_ref())
+        .expect("inventory item link retained");
+    assert_eq!(link.exist_id, "535703780");
+    assert_eq!(link.noun, "backpack");
+    assert_eq!(link.text, "patchwork dwarf skin backpack");
+    let WindowContent::Inventory(content) = &ui_state.windows["inventory"].content else {
+        panic!("test inventory window changed content type");
+    };
+    assert_eq!(content.lines.len(), 2, "open inventory window is populated");
+
+    feed_snapshot(
+        &mut parser,
+        &mut processor,
+        &mut game_state,
+        &mut ui_state,
+        "<pushStream id='inv'/>You are holding:\n  a <a exist='42' noun='orb'>crystal orb</a>\n<popStream/>",
+    );
+    assert_eq!(game_state.inventory.len(), 2, "the new snapshot replaces");
+    assert_eq!(line_text(&game_state.inventory[0]), "You are holding:");
+    assert_eq!(
+        game_state.inventory[1].segments.iter().find_map(|segment| {
+            segment
+                .link_data
+                .as_ref()
+                .map(|link| link.exist_id.as_str())
+        }),
+        Some("42")
+    );
+
+    feed_snapshot(
+        &mut parser,
+        &mut processor,
+        &mut game_state,
+        &mut ui_state,
+        "<pushStream id='inv'/><popStream/>",
+    );
+    assert!(
+        game_state.inventory.is_empty(),
+        "an empty complete snapshot clears stale inventory"
+    );
+    let WindowContent::Inventory(content) = &ui_state.windows["inventory"].content else {
+        panic!("test inventory window changed content type");
+    };
+    assert!(
+        content.lines.is_empty(),
+        "an empty complete snapshot clears an open inventory window"
     );
 }
 
@@ -2308,6 +2408,397 @@ fn push_test_segment(processor: &mut MessageProcessor, text: &str) {
         custom_emoji: None,
         inline_image: None,
     });
+}
+
+/// Room components are a latest-state projection, but the remote Story is a
+/// chronological feed. A real movement must copy one styled room block into
+/// Story, while a LOOK/same-room component refresh must only update Room.
+#[test]
+fn remote_story_gets_one_styled_block_per_room_identity() {
+    fn replay_room_xml(
+        xml: &str,
+        parser: &mut crate::parser::XmlParser,
+        processor: &mut MessageProcessor,
+        game_state: &mut GameState,
+        ui_state: &mut UiState,
+        room_components: &mut std::collections::HashMap<String, Vec<Vec<TextSegment>>>,
+        current_room_component: &mut Option<String>,
+        room_window_dirty: &mut bool,
+        nav_room_id: &mut Option<String>,
+        lich_room_id: &mut Option<String>,
+        room_subtitle: &mut Option<String>,
+    ) {
+        for element in parser.parse_line(xml) {
+            processor.process_element(
+                &element,
+                game_state,
+                ui_state,
+                room_components,
+                current_room_component,
+                room_window_dirty,
+                nav_room_id,
+                lich_room_id,
+                room_subtitle,
+                None,
+            );
+        }
+    }
+
+    let mut processor = create_test_processor();
+    let (sink, handles, _events) = crate::core::remote::RemoteSink::new(100);
+    processor.remote = Some(sink);
+
+    let mut parser = crate::parser::XmlParser::new();
+    let mut game_state = GameState::new();
+    let mut ui_state = UiState::new();
+    let mut room_components = std::collections::HashMap::new();
+    let mut current_room_component = None;
+    let mut room_window_dirty = false;
+    let mut nav_room_id = None;
+    let mut lich_room_id = None;
+    let mut room_subtitle = None;
+
+    replay_room_xml(
+        r#"<nav rm='101'/><streamWindow id='room' title='Room' subtitle=' - First Room'/><pushStream id='room'/><compDef id='room desc'>A <a exist='11' noun='wall'>granite wall</a> surrounds you.</compDef><compDef id='room objs'><pushBold/>a troll<popBold/></compDef><compDef id='room players'>Also here: Great Noble <a exist='-12' noun='Hero'>Hero</a></compDef><compDef id='room exits'>Obvious exits: <d>north</d></compDef><popStream id='room'/>"#,
+        &mut parser,
+        &mut processor,
+        &mut game_state,
+        &mut ui_state,
+        &mut room_components,
+        &mut current_room_component,
+        &mut room_window_dirty,
+        &mut nav_room_id,
+        &mut lich_room_id,
+        &mut room_subtitle,
+    );
+    replay_room_xml(
+        "<prompt time='1'></prompt>",
+        &mut parser,
+        &mut processor,
+        &mut game_state,
+        &mut ui_state,
+        &mut room_components,
+        &mut current_room_component,
+        &mut room_window_dirty,
+        &mut nav_room_id,
+        &mut lich_room_id,
+        &mut room_subtitle,
+    );
+
+    let first = handles.buffer.lock().unwrap().tail("main", 100);
+    let first_text: Vec<String> = first
+        .iter()
+        .map(|line| {
+            line.line
+                .segments
+                .iter()
+                .map(|segment| segment.text.as_str())
+                .collect()
+        })
+        .collect();
+    assert_eq!(
+        first_text,
+        vec![
+            "[First Room - u101]",
+            "A granite wall surrounds you.",
+            "a troll",
+            "Also here: Great Noble Hero",
+            "Obvious exits: north",
+        ],
+        "header and canonical room components must reach Story in order"
+    );
+    assert!(
+        first[1]
+            .line
+            .segments
+            .iter()
+            .any(|segment| segment.link_data.is_some()),
+        "room-description links must retain their structured styling"
+    );
+    assert!(
+        first[2]
+            .line
+            .segments
+            .iter()
+            .any(|segment| segment.span_type == SpanType::Monsterbold),
+        "monsterbold styling must survive the Story copy"
+    );
+    assert!(
+        first[3]
+            .line
+            .segments
+            .iter()
+            .any(|segment| segment.span_type == SpanType::PlayerTitle
+                && segment.text == "Great Noble "
+                && segment.link_data.is_none()),
+        "component-only Story must style the title without making it clickable"
+    );
+
+    // Same room identity: a fresh LOOK may replace components, and Room must
+    // reflect it, but Story must not receive another movement block.
+    replay_room_xml(
+        r#"<nav rm='101'/><streamWindow id='room' title='Room' subtitle=' - First Room'/><pushStream id='room'/><compDef id='room desc'>A refreshed description.</compDef><compDef id='room exits'>Obvious exits: <d>north</d></compDef><popStream id='room'/>"#,
+        &mut parser,
+        &mut processor,
+        &mut game_state,
+        &mut ui_state,
+        &mut room_components,
+        &mut current_room_component,
+        &mut room_window_dirty,
+        &mut nav_room_id,
+        &mut lich_room_id,
+        &mut room_subtitle,
+    );
+    replay_room_xml(
+        "<prompt time='2'></prompt>",
+        &mut parser,
+        &mut processor,
+        &mut game_state,
+        &mut ui_state,
+        &mut room_components,
+        &mut current_room_component,
+        &mut room_window_dirty,
+        &mut nav_room_id,
+        &mut lich_room_id,
+        &mut room_subtitle,
+    );
+    assert_eq!(
+        handles.buffer.lock().unwrap().tail("main", 100).len(),
+        first.len(),
+        "same-room component refresh must not duplicate Story"
+    );
+    let latest_room_desc: String = game_state.room_description[0]
+        .segments
+        .iter()
+        .map(|segment| segment.text.as_str())
+        .collect();
+    assert_eq!(latest_room_desc, "A refreshed description.");
+
+    // Seed the prior room's Lich id. A changed navigation UID must invalidate
+    // it so neither Story nor the remote Room header pairs the new UID with
+    // the preceding room number.
+    lich_room_id = Some("999".to_string());
+    replay_room_xml(
+        r#"<nav rm='102'/><streamWindow id='room' title='Room' subtitle=' - Second Room'/><pushStream id='room'/><compDef id='room desc'>The second description.</compDef><compDef id='room objs'></compDef><compDef id='room players'></compDef><compDef id='room exits'>Obvious exits: <d>south</d></compDef><popStream id='room'/>"#,
+        &mut parser,
+        &mut processor,
+        &mut game_state,
+        &mut ui_state,
+        &mut room_components,
+        &mut current_room_component,
+        &mut room_window_dirty,
+        &mut nav_room_id,
+        &mut lich_room_id,
+        &mut room_subtitle,
+    );
+    replay_room_xml(
+        "<prompt time='3'></prompt>",
+        &mut parser,
+        &mut processor,
+        &mut game_state,
+        &mut ui_state,
+        &mut room_components,
+        &mut current_room_component,
+        &mut room_window_dirty,
+        &mut nav_room_id,
+        &mut lich_room_id,
+        &mut room_subtitle,
+    );
+    let all = handles.buffer.lock().unwrap().tail("main", 100);
+    let all_text: Vec<String> = all
+        .iter()
+        .map(|line| {
+            line.line
+                .segments
+                .iter()
+                .map(|segment| segment.text.as_str())
+                .collect()
+        })
+        .collect();
+    assert_eq!(
+        &all_text[first.len()..],
+        [
+            "[Second Room - u102]",
+            "The second description.",
+            "Obvious exits: south",
+        ],
+        "next movement must append exactly one new canonical room block"
+    );
+    assert_eq!(
+        all_text
+            .iter()
+            .filter(|line| line.as_str() == "The second description.")
+            .count(),
+        1,
+        "the movement description must appear exactly once"
+    );
+    assert!(
+        lich_room_id.is_none(),
+        "new navigation UID must clear the preceding room's Lich id"
+    );
+}
+
+/// Lich can send two projections for one movement: first a room-component
+/// snapshot whose description is the sentinel used when its room window is
+/// disabled, then the authoritative decorated room block on `main`.  The
+/// remote Story must show the authoritative block once, and the Room snapshot
+/// must retain its real prose. This mirrors the ordering captured from a live
+/// session in Town Square Central (Lich room 228, navigation UID 7120).
+#[test]
+fn lich_native_room_block_replaces_disabled_component_without_story_duplicate() {
+    fn replay_network_line(
+        xml: &str,
+        parser: &mut crate::parser::XmlParser,
+        processor: &mut MessageProcessor,
+        game_state: &mut GameState,
+        ui_state: &mut UiState,
+        room_components: &mut std::collections::HashMap<String, Vec<Vec<TextSegment>>>,
+        current_room_component: &mut Option<String>,
+        room_window_dirty: &mut bool,
+        nav_room_id: &mut Option<String>,
+        lich_room_id: &mut Option<String>,
+        room_subtitle: &mut Option<String>,
+    ) {
+        for element in parser.parse_line(xml) {
+            processor.process_element(
+                &element,
+                game_state,
+                ui_state,
+                room_components,
+                current_room_component,
+                room_window_dirty,
+                nav_room_id,
+                lich_room_id,
+                room_subtitle,
+                None,
+            );
+        }
+        // AppCore flushes after every network line; keeping that boundary in
+        // the fixture is what reproduces the duplicate seen in the browser.
+        processor.flush_current_stream_with_tts(ui_state, None);
+    }
+
+    let mut processor = create_test_processor();
+    let (sink, handles, _events) = crate::core::remote::RemoteSink::new(100);
+    processor.remote = Some(sink);
+
+    let mut parser = crate::parser::XmlParser::new();
+    let mut game_state = GameState::new();
+    let mut ui_state = UiState::new();
+    let mut room_components = std::collections::HashMap::new();
+    let mut current_room_component = None;
+    let mut room_window_dirty = false;
+    let mut nav_room_id = None;
+    let mut lich_room_id = None;
+    let mut room_subtitle = None;
+
+    let mut replay = |line: &str| {
+        replay_network_line(
+            line,
+            &mut parser,
+            &mut processor,
+            &mut game_state,
+            &mut ui_state,
+            &mut room_components,
+            &mut current_room_component,
+            &mut room_window_dirty,
+            &mut nav_room_id,
+            &mut lich_room_id,
+            &mut room_subtitle,
+        );
+    };
+
+    replay("<nav rm='7120'/>");
+    replay("<streamWindow id='room' title='Room' subtitle=' - Town Square Central'/>");
+    replay("<pushStream id='room'/>");
+    replay("<compDef id='room desc'>[Room window disabled at this location.]</compDef>");
+    replay("<compDef id='room exits'>Obvious paths: <d>northeast</d>, <d>east</d>, <d>southeast</d>, <d>southwest</d>, <d>west</d>, <d>northwest</d></compDef>");
+    replay("<popStream id='room'/>");
+    replay("<style id='roomName'/>[Town Square Central - 228]<style id=''/> (u7120)");
+    replay("This is the heart of the main square of Wehnimer's Landing.");
+    replay("The oak is tall and straight, and it is apparent that the roots run deep.");
+    replay("Obvious paths: <d>northeast</d>, <d>east</d>, <d>southeast</d>, <d>southwest</d>, <d>west</d>, <d>northwest</d>");
+    replay("<prompt time='1'>&gt;</prompt>");
+
+    drop(replay);
+    let story = handles.buffer.lock().unwrap().tail("main", 100);
+    let story_text: Vec<String> = story
+        .iter()
+        .map(|line| {
+            line.line
+                .segments
+                .iter()
+                .map(|segment| segment.text.as_str())
+                .collect()
+        })
+        .collect();
+
+    assert_eq!(
+        story_text
+            .iter()
+            .filter(|line| line.contains("Town Square Central"))
+            .count(),
+        1,
+        "one movement must create one Story room header: {story_text:?}"
+    );
+    assert!(
+        story_text
+            .iter()
+            .any(|line| line == "[Town Square Central - 228] (u7120)"),
+        "the canonical header must distinguish Lich room id 228 from navigation uid 7120: {story_text:?}"
+    );
+    assert_eq!(
+        story_text
+            .iter()
+            .filter(|line| line.as_str()
+                == "This is the heart of the main square of Wehnimer's Landing.")
+            .count(),
+        1,
+        "authoritative room prose must appear once in Story: {story_text:?}"
+    );
+    assert!(
+        !story_text
+            .iter()
+            .any(|line| line.contains("Room window disabled at this location")),
+        "the disabled-room sentinel is transport metadata, not Story content: {story_text:?}"
+    );
+
+    let room_description: Vec<String> = game_state
+        .room_description
+        .iter()
+        .map(|line| {
+            line.segments
+                .iter()
+                .map(|segment| segment.text.as_str())
+                .collect()
+        })
+        .collect();
+    assert_eq!(
+        room_description,
+        [
+            "This is the heart of the main square of Wehnimer's Landing.",
+            "The oak is tall and straight, and it is apparent that the roots run deep.",
+        ],
+        "Room must retain the complete authoritative native description"
+    );
+    assert_eq!(lich_room_id.as_deref(), Some("228"));
+    assert_eq!(nav_room_id.as_deref(), Some("7120"));
+}
+
+#[test]
+fn canonical_room_identity_keeps_lich_id_and_navigation_uid_distinct() {
+    assert_eq!(
+        canonical_room_id(Some("228"), Some("7120")).as_deref(),
+        Some("228 (u7120)")
+    );
+    assert_eq!(
+        canonical_room_id(Some("228"), Some("228")).as_deref(),
+        Some("228")
+    );
+    assert_eq!(
+        canonical_room_id(None, Some("7120")).as_deref(),
+        Some("u7120")
+    );
 }
 
 /// Rysk's mobile prompt spam (beta 43): on a headless host whose layout has
@@ -4276,7 +4767,9 @@ fn loot_stream_reaches_tabbed_loot_tab_and_standalone_window() {
             .collect()
     };
     assert!(
-        standalone_texts.iter().any(|t| t.contains("tiny black pearl")),
+        standalone_texts
+            .iter()
+            .any(|t| t.contains("tiny black pearl")),
         "the standalone loot window must also receive the lines; lines: {standalone_texts:?}"
     );
 }

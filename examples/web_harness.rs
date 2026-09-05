@@ -360,6 +360,7 @@ async fn main() {
             location: Some("Harness Town".into()),
             room: Some(102),
             cell: Some([2, 0]),
+            classic: None,
             in_ghost: false,
             // Scripted trip in progress: exercises the banner + Stop button.
             travel: Some(vellum_fe::core::remote::RemoteTravelStatus {
