@@ -500,7 +500,7 @@ fn list_and_gc_in(
     dir: &std::path::Path,
     live_pids: impl FnOnce(&[u32]) -> std::collections::HashSet<u32>,
 ) -> Vec<SessionEntry> {
-    list_and_gc_directories(&[dir], live_pids)
+    list_and_gc_directories(&[(dir, false)], unix_now(), live_pids)
 }
 
 fn list_and_gc_roots(
@@ -508,22 +508,31 @@ fn list_and_gc_roots(
     legacy: &[PathBuf],
     live_pids: impl FnOnce(&[u32]) -> std::collections::HashSet<u32>,
 ) -> Vec<SessionEntry> {
+    list_and_gc_roots_at(current, legacy, unix_now(), live_pids)
+}
+
+fn list_and_gc_roots_at(
+    current: Option<&std::path::Path>,
+    legacy: &[PathBuf],
+    now: u64,
+    live_pids: impl FnOnce(&[u32]) -> std::collections::HashSet<u32>,
+) -> Vec<SessionEntry> {
     let mut roots = Vec::new();
     if let Some(current) = current {
-        roots.push(current);
+        roots.push((current, false));
     }
     for root in legacy {
-        if !roots.contains(&root.as_path()) {
-            roots.push(root);
+        if !roots.iter().any(|(path, _)| *path == root.as_path()) {
+            roots.push((root.as_path(), true));
         }
     }
 
-    let entries = list_and_gc_directories(&roots, live_pids);
+    let entries = list_and_gc_directories(&roots, now, live_pids);
     for root in legacy {
-        if current != Some(root.as_path()) {
-            // Best-effort migration cleanup. This succeeds only when stale or
-            // malformed legacy entries were removed and no live old build is
-            // still publishing into the directory.
+        if current != Some(root.as_path()) && file_is_stale(root, now, LEGACY_REGISTRY_GRACE_SECS) {
+            // An old build creates this directory before writing its entry.
+            // Retire only an empty directory older than that startup window;
+            // remove_dir itself still protects a live populated registry.
             let _ = fs::remove_dir(root);
         }
     }
@@ -531,15 +540,15 @@ fn list_and_gc_roots(
 }
 
 fn list_and_gc_directories(
-    directories: &[&std::path::Path],
+    directories: &[(&std::path::Path, bool)],
+    now: u64,
     live_pids: impl FnOnce(&[u32]) -> std::collections::HashSet<u32>,
 ) -> Vec<SessionEntry> {
     // Read every entry first, then ask about all the pids at once: the
     // liveness probe refreshes the whole process table per call, so asking
     // pid-by-pid would rescan for each file.
     let mut candidates: Vec<(PathBuf, SessionEntry)> = Vec::new();
-    let now = unix_now();
-    for directory in directories {
+    for (directory, is_legacy) in directories {
         let Ok(read) = fs::read_dir(directory) else {
             continue;
         };
@@ -556,10 +565,15 @@ fn list_and_gc_directories(
             };
             match serde_json::from_str::<SessionEntry>(&text) {
                 Ok(entry) => candidates.push((path, entry)),
-                // Unparseable file: a truncated write or an older format.
-                // Either way it names no live session, so drop it.
+                // Current entries are atomically published and therefore
+                // malformed only after a failed/crashed write. Old builds
+                // wrote directly into the legacy path, so a new reader may
+                // observe their file mid-write; give those files a bounded
+                // opportunity to become valid before cleaning them up.
                 Err(_) => {
-                    let _ = fs::remove_file(&path);
+                    if !is_legacy || file_is_stale(&path, now, LEGACY_REGISTRY_GRACE_SECS) {
+                        let _ = fs::remove_file(&path);
+                    }
                 }
             }
         }
@@ -584,6 +598,7 @@ fn list_and_gc_directories(
 }
 
 const ENTRY_TEMP_TTL_SECS: u64 = 120;
+const LEGACY_REGISTRY_GRACE_SECS: u64 = ENTRY_TEMP_TTL_SECS;
 
 /// Remove only sidecars whose base name has the exact current session-entry
 /// shape. Backups are never live. Temporary files may belong to a concurrent
@@ -959,18 +974,18 @@ mod tests {
     }
 
     #[test]
-    fn dead_legacy_entries_are_cleaned_and_empty_directory_is_retired() {
+    fn dead_legacy_entries_are_cleaned() {
         let root = tempfile::tempdir().unwrap();
         let current = root.path().join("runtime/web-sessions");
         let legacy = root.path().join(".vellum-fe/web-sessions");
         fs::create_dir_all(&current).unwrap();
         fs::create_dir_all(&legacy).unwrap();
+        let legacy_path = legacy.join("10.json");
         fs::write(
-            legacy.join("10.json"),
+            &legacy_path,
             br#"{"character":"Aster","port":8040,"pid":10,"started_at":"then"}"#,
         )
         .unwrap();
-        fs::write(legacy.join("11.json"), b"truncated").unwrap();
 
         let got = list_and_gc_roots(Some(&current), std::slice::from_ref(&legacy), |_| {
             std::collections::HashSet::new()
@@ -981,9 +996,105 @@ mod tests {
             current.exists(),
             "the current registry root is not migration debris"
         );
+        assert!(!legacy_path.exists());
+    }
+
+    #[test]
+    fn fresh_malformed_legacy_entry_is_retained_during_old_writer_grace() {
+        let root = tempfile::tempdir().unwrap();
+        let current = root.path().join("runtime/web-sessions");
+        let legacy = root.path().join(".vellum-fe/web-sessions");
+        fs::create_dir_all(&current).unwrap();
+        fs::create_dir_all(&legacy).unwrap();
+        let malformed = legacy.join("10.json");
+        fs::write(&malformed, b"truncated").unwrap();
+
+        let got = list_and_gc_roots_at(
+            Some(&current),
+            std::slice::from_ref(&legacy),
+            unix_now(),
+            |pids| {
+                assert!(pids.is_empty());
+                std::collections::HashSet::new()
+            },
+        );
+
+        assert!(got.is_empty());
+        assert!(malformed.exists());
+        assert!(legacy.exists());
+    }
+
+    #[test]
+    fn aged_malformed_legacy_entry_is_cleaned() {
+        let root = tempfile::tempdir().unwrap();
+        let current = root.path().join("runtime/web-sessions");
+        let legacy = root.path().join(".vellum-fe/web-sessions");
+        fs::create_dir_all(&current).unwrap();
+        fs::create_dir_all(&legacy).unwrap();
+        let malformed = legacy.join("10.json");
+        fs::write(&malformed, b"truncated").unwrap();
+
+        let got = list_and_gc_roots_at(
+            Some(&current),
+            std::slice::from_ref(&legacy),
+            u64::MAX,
+            |_| std::collections::HashSet::new(),
+        );
+
+        assert!(got.is_empty());
+        assert!(!malformed.exists());
+    }
+
+    #[test]
+    fn malformed_current_entry_is_removed_eagerly() {
+        let root = tempfile::tempdir().unwrap();
+        let malformed = root.path().join("10.json");
+        fs::write(&malformed, b"truncated").unwrap();
+
+        let got = list_and_gc_in(root.path(), |_| std::collections::HashSet::new());
+
+        assert!(got.is_empty());
+        assert!(!malformed.exists());
+    }
+
+    #[test]
+    fn fresh_empty_legacy_directory_is_retained_during_old_writer_grace() {
+        let root = tempfile::tempdir().unwrap();
+        let current = root.path().join("runtime/web-sessions");
+        let legacy = root.path().join(".vellum-fe/web-sessions");
+        fs::create_dir_all(&current).unwrap();
+        fs::create_dir_all(&legacy).unwrap();
+
+        let got = list_and_gc_roots_at(
+            Some(&current),
+            std::slice::from_ref(&legacy),
+            unix_now(),
+            |_| std::collections::HashSet::new(),
+        );
+
+        assert!(got.is_empty());
+        assert!(legacy.exists());
+    }
+
+    #[test]
+    fn aged_empty_legacy_directory_is_retired() {
+        let root = tempfile::tempdir().unwrap();
+        let current = root.path().join("runtime/web-sessions");
+        let legacy = root.path().join(".vellum-fe/web-sessions");
+        fs::create_dir_all(&current).unwrap();
+        fs::create_dir_all(&legacy).unwrap();
+
+        let got = list_and_gc_roots_at(
+            Some(&current),
+            std::slice::from_ref(&legacy),
+            u64::MAX,
+            |_| std::collections::HashSet::new(),
+        );
+
+        assert!(got.is_empty());
         assert!(
             !legacy.exists(),
-            "an empty legacy registry should be retired"
+            "an aged empty legacy registry should be retired"
         );
     }
 
