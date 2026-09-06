@@ -6,7 +6,9 @@
 //! profiles may use different data roots, but they still need one shared view
 //! of which processes and Lich detachable-client endpoints are already owned.
 //! Crashed instances leave their file behind, so reads garbage-collect entries
-//! whose pid is gone.
+//! whose pid is gone. For one release, reads also merge the former
+//! `~/.vellum-fe/web-sessions` registry (and the active `VELLUM_FE_DIR`
+//! equivalent) so an older running Vellum remains visible during upgrade.
 //!
 //! Lives in core rather than the web frontend: the file IS written when the
 //! sidecar starts, but it is plain filesystem discovery, and the
@@ -275,6 +277,26 @@ pub fn dir() -> Option<PathBuf> {
     .clone()
 }
 
+/// Registry roots used before the machine-local registry was introduced.
+///
+/// Keep this compatibility read for one release containing the migration.
+/// The configured root protects users running an old build with
+/// `VELLUM_FE_DIR`; the home root protects the normal old default even when a
+/// newer launcher is currently using an override.
+fn legacy_dirs() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Ok(configured) = crate::config::Config::base_dir() {
+        roots.push(configured.join("web-sessions"));
+    }
+    if let Some(home) = dirs::home_dir() {
+        let default = home.join(".vellum-fe").join("web-sessions");
+        if !roots.contains(&default) {
+            roots.push(default);
+        }
+    }
+    roots
+}
+
 fn entry_path(pid: u32, instance_id: &str) -> Option<PathBuf> {
     use sha1::{Digest, Sha1};
     let digest = Sha1::digest(instance_id.as_bytes());
@@ -466,39 +488,79 @@ pub fn set_lifecycle(state: SessionLifecycleState) {
 /// All current entries. Also garbage-collects files whose pid is no
 /// longer running (crashed instances).
 pub fn list_and_gc() -> Vec<SessionEntry> {
-    let Some(dir) = dir() else { return Vec::new() };
-    list_and_gc_in(&dir, |pids| crate::process_probe::live_pids(pids))
+    let current = dir();
+    let legacy = legacy_dirs();
+    list_and_gc_roots(current.as_deref(), &legacy, |pids| {
+        crate::process_probe::live_pids(pids)
+    })
 }
 
+#[cfg(test)]
 fn list_and_gc_in(
     dir: &std::path::Path,
     live_pids: impl FnOnce(&[u32]) -> std::collections::HashSet<u32>,
 ) -> Vec<SessionEntry> {
-    let Ok(read) = fs::read_dir(&dir) else {
-        return Vec::new();
-    };
+    list_and_gc_directories(&[dir], live_pids)
+}
 
+fn list_and_gc_roots(
+    current: Option<&std::path::Path>,
+    legacy: &[PathBuf],
+    live_pids: impl FnOnce(&[u32]) -> std::collections::HashSet<u32>,
+) -> Vec<SessionEntry> {
+    let mut roots = Vec::new();
+    if let Some(current) = current {
+        roots.push(current);
+    }
+    for root in legacy {
+        if !roots.contains(&root.as_path()) {
+            roots.push(root);
+        }
+    }
+
+    let entries = list_and_gc_directories(&roots, live_pids);
+    for root in legacy {
+        if current != Some(root.as_path()) {
+            // Best-effort migration cleanup. This succeeds only when stale or
+            // malformed legacy entries were removed and no live old build is
+            // still publishing into the directory.
+            let _ = fs::remove_dir(root);
+        }
+    }
+    entries
+}
+
+fn list_and_gc_directories(
+    directories: &[&std::path::Path],
+    live_pids: impl FnOnce(&[u32]) -> std::collections::HashSet<u32>,
+) -> Vec<SessionEntry> {
     // Read every entry first, then ask about all the pids at once: the
     // liveness probe refreshes the whole process table per call, so asking
     // pid-by-pid would rescan for each file.
     let mut candidates: Vec<(PathBuf, SessionEntry)> = Vec::new();
-    for file in read.flatten() {
-        let path = file.path();
-        if cleanup_entry_cache_artifact(&path, unix_now()) {
-            continue;
-        }
-        if path.extension().is_none_or(|e| e != "json") {
-            continue;
-        }
-        let Ok(text) = fs::read_to_string(&path) else {
+    let now = unix_now();
+    for directory in directories {
+        let Ok(read) = fs::read_dir(directory) else {
             continue;
         };
-        match serde_json::from_str::<SessionEntry>(&text) {
-            Ok(entry) => candidates.push((path, entry)),
-            // Unparseable file: a truncated write or an older format. Either
-            // way it names no live session, so drop it.
-            Err(_) => {
-                let _ = fs::remove_file(&path);
+        for file in read.flatten() {
+            let path = file.path();
+            if cleanup_entry_cache_artifact(&path, now) {
+                continue;
+            }
+            if path.extension().is_none_or(|e| e != "json") {
+                continue;
+            }
+            let Ok(text) = fs::read_to_string(&path) else {
+                continue;
+            };
+            match serde_json::from_str::<SessionEntry>(&text) {
+                Ok(entry) => candidates.push((path, entry)),
+                // Unparseable file: a truncated write or an older format.
+                // Either way it names no live session, so drop it.
+                Err(_) => {
+                    let _ = fs::remove_file(&path);
+                }
             }
         }
     }
@@ -853,6 +915,76 @@ mod tests {
         assert_eq!(got, vec![entry(20)]);
         assert!(!dir.join("10.json").exists());
         assert!(dir.join("20.json").exists());
+    }
+
+    #[test]
+    fn current_and_live_legacy_registries_are_merged_for_upgrade() {
+        let root = tempfile::tempdir().unwrap();
+        let current = root.path().join("runtime/web-sessions");
+        let legacy = root.path().join(".vellum-fe/web-sessions");
+        fs::create_dir_all(&current).unwrap();
+        fs::create_dir_all(&legacy).unwrap();
+
+        let mut current_entry = entry(20);
+        current_entry.character = "Briar".to_string();
+        let current_path = current.join(format!("20-{}.json", "a".repeat(40)));
+        fs::write(&current_path, serde_json::to_vec(&current_entry).unwrap()).unwrap();
+        let legacy_path = legacy.join("10.json");
+        fs::write(
+            &legacy_path,
+            br#"{"character":"Aster","port":8040,"pid":10,"started_at":"then"}"#,
+        )
+        .unwrap();
+
+        let got = list_and_gc_roots(Some(&current), std::slice::from_ref(&legacy), |pids| {
+            assert_eq!(pids.len(), 2);
+            [10, 20].into_iter().collect()
+        });
+
+        assert_eq!(
+            got.iter()
+                .map(|entry| entry.character.as_str())
+                .collect::<Vec<_>>(),
+            ["Aster", "Briar"]
+        );
+        assert!(current_path.exists());
+        assert!(
+            legacy_path.exists(),
+            "a live old build must remain registered"
+        );
+        assert!(
+            legacy.exists(),
+            "a live legacy registry must not be removed"
+        );
+    }
+
+    #[test]
+    fn dead_legacy_entries_are_cleaned_and_empty_directory_is_retired() {
+        let root = tempfile::tempdir().unwrap();
+        let current = root.path().join("runtime/web-sessions");
+        let legacy = root.path().join(".vellum-fe/web-sessions");
+        fs::create_dir_all(&current).unwrap();
+        fs::create_dir_all(&legacy).unwrap();
+        fs::write(
+            legacy.join("10.json"),
+            br#"{"character":"Aster","port":8040,"pid":10,"started_at":"then"}"#,
+        )
+        .unwrap();
+        fs::write(legacy.join("11.json"), b"truncated").unwrap();
+
+        let got = list_and_gc_roots(Some(&current), std::slice::from_ref(&legacy), |_| {
+            std::collections::HashSet::new()
+        });
+
+        assert!(got.is_empty());
+        assert!(
+            current.exists(),
+            "the current registry root is not migration debris"
+        );
+        assert!(
+            !legacy.exists(),
+            "an empty legacy registry should be retired"
+        );
     }
 
     #[test]
