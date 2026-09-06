@@ -52,9 +52,11 @@ pub fn start_with_classic_maps(
     let (sink, handles, event_rx) = RemoteSink::new(DEFAULT_MAX_LINES_PER_STREAM);
     let config = config.clone();
     tokio::spawn(async move {
-        if let Err(e) =
-            server::serve_with_classic_maps(config, handles, session_label, classic_maps).await
-        {
+        let options = server::ServeOptions {
+            status_only: config.local_status_only(),
+            classic_maps,
+        };
+        if let Err(e) = server::serve(config, handles, session_label, options).await {
             tracing::error!("web server error: {e:#}");
         }
     });

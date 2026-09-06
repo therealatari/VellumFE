@@ -21,13 +21,14 @@ is no npm install step. Run the same focused checks as CI from the repository
 root:
 
 ```bash
-# Session, workspace layout/storage, interactions, and map behavior
+# Session, workspace layout/storage, interactions, map, and font-scale behavior
 node --test \
   src/frontend/web/assets/despana/session.test.mjs \
   src/frontend/web/assets/despana/layout.test.mjs \
   src/frontend/web/assets/despana/layout-storage.test.mjs \
   src/frontend/web/assets/despana/interactions.test.mjs \
-  src/frontend/web/assets/despana/map.test.mjs
+  src/frontend/web/assets/despana/map.test.mjs \
+  src/frontend/web/assets/despana/font-scale.test.mjs
 
 # Feature-independent Rust unit and integration tests
 cargo test --no-default-features

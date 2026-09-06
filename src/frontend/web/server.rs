@@ -92,6 +92,22 @@ impl WebState {
 /// How many ports above the base an unpinned instance will try.
 const PORT_WALK_RANGE: u16 = 20;
 
+/// Optional behavior and session-owned resources for a web server.
+#[derive(Clone)]
+pub struct ServeOptions {
+    pub status_only: bool,
+    pub classic_maps: Arc<ClassicMapCatalog>,
+}
+
+impl Default for ServeOptions {
+    fn default() -> Self {
+        Self {
+            status_only: false,
+            classic_maps: Arc::new(ClassicMapCatalog::new()),
+        }
+    }
+}
+
 /// Bind and serve until the process exits. Runs as a detached tokio task.
 ///
 /// Unpinned: tries `config.port` and walks upward (multiple characters
@@ -102,24 +118,7 @@ pub async fn serve(
     config: WebConfig,
     handles: RemoteServerHandles,
     session_label: String,
-) -> Result<()> {
-    serve_with_classic_maps(
-        config,
-        handles,
-        session_label,
-        Arc::new(ClassicMapCatalog::new()),
-    )
-    .await
-}
-
-/// Bind and serve with the classic-art catalog owned by the same game
-/// session. Runtime entry points use this; the compatibility wrapper above
-/// keeps non-map embedders source-compatible with an isolated empty catalog.
-pub async fn serve_with_classic_maps(
-    config: WebConfig,
-    handles: RemoteServerHandles,
-    session_label: String,
-    classic_maps: Arc<ClassicMapCatalog>,
+    options: ServeOptions,
 ) -> Result<()> {
     let mut listener = None;
     let mut bound_port = config.port;
@@ -159,7 +158,7 @@ pub async fn serve_with_classic_maps(
         "web server listening on http://{}:{} ({})",
         config.effective_bind(),
         bound_port,
-        if config.local_status_only() {
+        if options.status_only {
             "multi-account status only"
         } else {
             "phone client + status"
@@ -168,7 +167,7 @@ pub async fn serve_with_classic_maps(
     // Only surface the port walk to a user who is trying to reach a URL. In
     // status-only mode the port is an implementation detail -- siblings find
     // each other through the registry, not by typing it.
-    if bound_port != config.port && !config.local_status_only() {
+    if bound_port != config.port && !options.status_only {
         let _ = handles.event_tx.send(RemoteEvent::Notice(format!(
             "Web server on port {} (base {} was taken)",
             bound_port, config.port
@@ -218,14 +217,7 @@ pub async fn serve_with_classic_maps(
             auth_token.clone(),
         )));
 
-    serve_listener_with_token_mode_and_catalog(
-        listener,
-        handles,
-        auth_token,
-        config.local_status_only(),
-        classic_maps,
-    )
-    .await
+    serve_listener(listener, handles, auth_token, options).await
 }
 
 /// Session registry, re-exported from core so existing call sites keep
@@ -244,66 +236,16 @@ pub use crate::core::session_registry as registry;
 /// be force-closing the app). There is no reliable accept-side error to
 /// react to, so a watchdog dials our own port and rebinds the listener
 /// when it stops answering.
-pub async fn serve_listener_with_token(
+pub async fn serve_listener(
     listener: tokio::net::TcpListener,
     handles: RemoteServerHandles,
     auth_token: String,
+    options: ServeOptions,
 ) -> Result<()> {
-    serve_listener_with_token_and_catalog(
-        listener,
-        handles,
-        auth_token,
-        Arc::new(ClassicMapCatalog::new()),
-    )
-    .await
-}
-
-/// As [`serve_listener_with_token`], with an explicit session-owned classic
-/// map catalog. Production runtimes use the catalog owned by `MapService`;
-/// integration tests can provide isolated catalogs directly.
-pub async fn serve_listener_with_token_and_catalog(
-    listener: tokio::net::TcpListener,
-    handles: RemoteServerHandles,
-    auth_token: String,
-    classic_maps: Arc<ClassicMapCatalog>,
-) -> Result<()> {
-    serve_listener_with_token_mode_and_catalog(listener, handles, auth_token, false, classic_maps)
-        .await
-}
-
-/// As above, with `status_only` selecting the reduced router.
-///
-/// In status-only mode (multiaccount on, phone server off -- the default
-/// config) the listener exists solely so sibling instances can watch this
-/// session. Serving the whole phone surface there -- /play, assets,
-/// /sessions, doll art -- exposed far more than the feature needs to a mode
-/// the user never opted into; the reduced router is /ws plus the authenticated
-/// launcher handoff control, and /health for the dashboard's liveness probes.
-pub async fn serve_listener_with_token_mode(
-    listener: tokio::net::TcpListener,
-    handles: RemoteServerHandles,
-    auth_token: String,
-    status_only: bool,
-) -> Result<()> {
-    serve_listener_with_token_mode_and_catalog(
-        listener,
-        handles,
-        auth_token,
+    let ServeOptions {
         status_only,
-        Arc::new(ClassicMapCatalog::new()),
-    )
-    .await
-}
-
-/// As [`serve_listener_with_token_mode`], with an explicit session-owned
-/// classic map catalog.
-pub async fn serve_listener_with_token_mode_and_catalog(
-    listener: tokio::net::TcpListener,
-    handles: RemoteServerHandles,
-    auth_token: String,
-    status_only: bool,
-    classic_maps: Arc<ClassicMapCatalog>,
-) -> Result<()> {
+        classic_maps,
+    } = options;
     let state = Arc::new(WebState {
         handles,
         classic_maps,
