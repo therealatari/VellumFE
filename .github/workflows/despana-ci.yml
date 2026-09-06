@@ -6,7 +6,7 @@ on:
     paths:
       - "Cargo.toml"
       - "Cargo.lock"
-      - "src/**"
+      - "src/frontend/web/**"
       - "tests/**"
       - "examples/**"
       - ".github/workflows/despana-ci.yml"
@@ -14,7 +14,7 @@ on:
     paths:
       - "Cargo.toml"
       - "Cargo.lock"
-      - "src/**"
+      - "src/frontend/web/**"
       - "tests/**"
       - "examples/**"
       - ".github/workflows/despana-ci.yml"
@@ -51,6 +51,7 @@ jobs:
           src/frontend/web/assets/despana/map.test.mjs
           src/frontend/web/assets/despana/inventory-refresh.test.mjs
           src/frontend/web/assets/despana/inventory-tree.test.mjs
+          src/frontend/web/assets/despana/font-scale.test.mjs
 
   rust-tests:
     name: Rust tests (no default frontend)

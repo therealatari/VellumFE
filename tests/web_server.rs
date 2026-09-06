@@ -52,11 +52,14 @@ async fn start_server_with_catalog(
         .expect("bind ephemeral port");
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
-        let _ = server::serve_listener_with_token_and_catalog(
+        let _ = server::serve_listener(
             listener,
             handles,
             TEST_TOKEN.to_string(),
-            classic_maps,
+            server::ServeOptions {
+                status_only: false,
+                classic_maps,
+            },
         )
         .await;
     });
@@ -93,7 +96,13 @@ async fn process_isolation_fixture_host() {
         .await
         .expect("bind fixture server");
     tokio::spawn(async move {
-        let _ = server::serve_listener_with_token(listener, handles, TEST_TOKEN.to_string()).await;
+        let _ = server::serve_listener(
+            listener,
+            handles,
+            TEST_TOKEN.to_string(),
+            server::ServeOptions::default(),
+        )
+        .await;
     });
 
     // Model the real frontend/core event pump: a command received by this
@@ -137,6 +146,7 @@ async fn walked_port_readiness_fixture_host() {
         config,
         handles,
         "walked-port-readiness".to_string(),
+        server::ServeOptions::default(),
     ));
 
     if std::env::var_os(TOKEN_FAILURE_FIXTURE_ENV).is_some() {
@@ -633,7 +643,12 @@ async fn pinned_occupied_port_failure_never_publishes_readiness() {
 
     let result = tokio::time::timeout(
         Duration::from_secs(2),
-        server::serve(config, handles, "pinned-port-failure".to_string()),
+        server::serve(
+            config,
+            handles,
+            "pinned-port-failure".to_string(),
+            server::ServeOptions::default(),
+        ),
     )
     .await
     .expect("pinned bind failure must return promptly");
@@ -670,7 +685,13 @@ async fn authenticated_stop_is_delivered_for_recoverable_but_not_connected_sessi
         .expect("bind ephemeral port");
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
-        let _ = server::serve_listener_with_token(listener, handles, TEST_TOKEN.to_string()).await;
+        let _ = server::serve_listener(
+            listener,
+            handles,
+            TEST_TOKEN.to_string(),
+            server::ServeOptions::default(),
+        )
+        .await;
     });
     sink.set_session_control(true);
     sink.set_session_state(RemoteSessionInfo {
@@ -729,7 +750,13 @@ async fn authenticated_exit_logout_requires_the_exact_connected_session() {
         .expect("bind ephemeral port");
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
-        let _ = server::serve_listener_with_token(listener, handles, TEST_TOKEN.to_string()).await;
+        let _ = server::serve_listener(
+            listener,
+            handles,
+            TEST_TOKEN.to_string(),
+            server::ServeOptions::default(),
+        )
+        .await;
     });
 
     sink.set_session_control(true);
@@ -775,9 +802,16 @@ async fn status_only_server_accepts_authenticated_exit_logout() {
         .expect("bind ephemeral port");
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
-        let _ =
-            server::serve_listener_with_token_mode(listener, handles, TEST_TOKEN.to_string(), true)
-                .await;
+        let _ = server::serve_listener(
+            listener,
+            handles,
+            TEST_TOKEN.to_string(),
+            server::ServeOptions {
+                status_only: true,
+                ..Default::default()
+            },
+        )
+        .await;
     });
     sink.set_session_control(true);
     sink.set_session_state(RemoteSessionInfo {
@@ -853,6 +887,7 @@ async fn health_and_static_assets_are_served() {
         );
     }
     assert!(despana.contains("workspace-menu-button"));
+    assert!(despana.contains("font-scale"));
     assert!(despana.contains("map-mode-classic"));
     assert!(despana.contains("map-mode-local"));
     assert!(despana.contains("map-selector"));
@@ -881,6 +916,9 @@ async fn health_and_static_assets_are_served() {
     let despana_inventory_tree = http_get(addr, "/despana/inventory-tree.js").await;
     assert!(despana_inventory_tree.contains("text/javascript"));
     assert!(despana_inventory_tree.contains("export function projectInventoryItems"));
+    let despana_font_scale = http_get(addr, "/despana/font-scale.js").await;
+    assert!(despana_font_scale.contains("text/javascript"));
+    assert!(despana_font_scale.contains("export function normalizeFontScale"));
 
     let despana_interactions = http_get(addr, "/despana/interactions.js").await;
     assert!(despana_interactions.contains("text/javascript"));

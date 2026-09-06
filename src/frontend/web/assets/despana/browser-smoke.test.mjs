@@ -680,6 +680,35 @@ test("Despana desktop composes state, interactions, and persistent workspace in 
     ],
     closedOnSessionDisconnect: [true, true],
   });
+  const fontScale = await driver.execute(`
+    const bodyBefore = Number.parseFloat(getComputedStyle(document.body).fontSize);
+    const input = document.querySelector('#font-scale');
+    document.querySelector('#view-menu-button').click();
+    input.value = '150';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    return {
+      bodyBefore,
+      bodyAfter: Number.parseFloat(getComputedStyle(document.body).fontSize),
+      output: document.querySelector('#font-scale-value').textContent,
+      expanded: document.querySelector('#view-menu-button').getAttribute('aria-expanded'),
+      stored: localStorage.getItem('vellum-despana-font-scale-v1'),
+    };
+  `);
+  assert.equal(fontScale.bodyBefore, 13);
+  assert.equal(fontScale.bodyAfter, 19.5);
+  assert.equal(fontScale.output, '150%');
+  assert.equal(fontScale.expanded, 'true');
+  assert.equal(fontScale.stored, '150');
+
+  const resetFontScale = await driver.execute(`
+    document.querySelector('#font-scale-reset').click();
+    return {
+      body: Number.parseFloat(getComputedStyle(document.body).fontSize),
+      stored: localStorage.getItem('vellum-despana-font-scale-v1'),
+    };
+  `);
+  assert.deepEqual(resetFontScale, { body: 13, stored: '100' });
 
   const mapGestures = await driver.execute(`
     document.querySelector('#map-mode-local').click();

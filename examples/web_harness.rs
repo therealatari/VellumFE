@@ -390,7 +390,13 @@ async fn main() {
         .expect("bind 8399");
     println!("harness: http://127.0.0.1:8399/play#token={TOKEN}");
     tokio::spawn(async move {
-        let _ = server::serve_listener_with_token(listener, handles, TOKEN.to_string()).await;
+        let _ = server::serve_listener(
+            listener,
+            handles,
+            TOKEN.to_string(),
+            server::ServeOptions::default(),
+        )
+        .await;
     });
 
     let session = |state, character: &Option<String>| RemoteSessionInfo {

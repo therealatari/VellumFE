@@ -18,6 +18,10 @@ use super::Config;
 /// File name inside the vellum-fe base directory.
 const LAUNCHER_FILE: &str = "launcher.toml";
 
+/// Process-private handoff preserving the launcher's data root when a saved
+/// profile selects a different root for its child session.
+pub(crate) const LAUNCHER_ROOT_ENV: &str = "VELLUM_FE_LAUNCHER_ROOT";
+
 /// Keyring service identifier (the "folder" credentials appear under).
 #[cfg(feature = "desktop")]
 const KEYRING_SERVICE: &str = "vellum-fe";
@@ -343,6 +347,64 @@ impl LauncherStore {
             .iter()
             .any(|profile| profile.password_saved && profile.account.eq_ignore_ascii_case(account))
     }
+}
+
+/// Preserve the root containing the launcher store before a child applies a
+/// profile-specific `VELLUM_FE_DIR` override.
+pub(crate) fn remember_launcher_root(root: &Path) {
+    std::env::set_var(LAUNCHER_ROOT_ENV, root);
+}
+
+/// All data roots known to this process: its effective root, the root its
+/// launcher used, the normal home default, and data roots named by profiles in
+/// any of those launcher stores.
+pub(crate) fn known_data_roots() -> Vec<PathBuf> {
+    let configured = Config::base_dir().ok();
+    let launcher = std::env::var_os(LAUNCHER_ROOT_ENV)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    known_data_roots_from(
+        configured.as_deref(),
+        launcher.as_deref(),
+        dirs::home_dir().as_deref(),
+    )
+}
+
+pub(crate) fn known_data_roots_from(
+    configured: Option<&Path>,
+    launcher: Option<&Path>,
+    home: Option<&Path>,
+) -> Vec<PathBuf> {
+    let mut data_roots = Vec::new();
+    for root in [configured, launcher].into_iter().flatten() {
+        if !data_roots.iter().any(|known| known == root) {
+            data_roots.push(root.to_path_buf());
+        }
+    }
+    if let Some(home) = home {
+        let default = home.join(".vellum-fe");
+        if !data_roots.contains(&default) {
+            data_roots.push(default);
+        }
+    }
+
+    let launcher_roots = data_roots.clone();
+    for launcher_root in launcher_roots {
+        let Ok(store) = LauncherStore::load_from(&launcher_root.join(LAUNCHER_FILE)) else {
+            continue;
+        };
+        for profile in store.profiles {
+            let Some(data_dir) = profile.data_dir.filter(|dir| !dir.is_empty()) else {
+                continue;
+            };
+            let data_root = PathBuf::from(data_dir);
+            if !data_roots.contains(&data_root) {
+                data_roots.push(data_root);
+            }
+        }
+    }
+
+    data_roots
 }
 
 /// Keyring entry for an account. Keyed by account (not per-character or
