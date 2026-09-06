@@ -20,6 +20,7 @@
   --stamina: #b18a43;
   --spirit: #a9aeb7;
   --gap: 5px;
+  --font-scale: 100%;
   --font-ui: Inter, "Segoe UI", system-ui, -apple-system, sans-serif;
   --font-text: "Iosevka", "Cascadia Mono", "DejaVu Sans Mono", monospace;
 }
@@ -33,6 +34,10 @@ body {
   width: 100%;
   height: 100%;
   margin: 0;
+}
+
+html {
+  font-size: var(--font-scale);
 }
 
 .vellum-login {
@@ -59,7 +64,7 @@ body {
   overflow: hidden;
   background: var(--canvas);
   color: var(--text);
-  font: 13px/1.42 var(--font-ui);
+  font: 0.8125rem/1.42 var(--font-ui);
 }
 
 button,
@@ -109,7 +114,7 @@ input:focus-visible {
   padding: 0 12px;
   border-bottom: 1px solid var(--line);
   color: var(--muted);
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 
 .application-name {
@@ -126,6 +131,30 @@ input:focus-visible {
 
 .workspace-menu-control {
   position: relative;
+}
+
+.view-menu {
+  width: 240px;
+  padding: 10px;
+}
+
+.font-scale-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--text-strong);
+  font-weight: 600;
+}
+
+.font-scale-heading output {
+  color: var(--amber-bright);
+  font-variant-numeric: tabular-nums;
+}
+
+.view-menu input[type="range"] {
+  width: 100%;
+  margin: 8px 0;
+  accent-color: var(--amber);
 }
 
 .menu-button {
@@ -151,7 +180,7 @@ input:focus-visible {
 .title-bar h1 {
   margin: 0;
   color: var(--text-strong);
-  font-size: 14px;
+  font-size: 0.875rem;
   font-weight: 600;
   letter-spacing: 0.02em;
 }
@@ -167,7 +196,7 @@ input:focus-visible {
   max-width: min(36vw, 360px);
   overflow: hidden;
   color: var(--quiet);
-  font-size: 11px;
+  font-size: 0.6875rem;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -177,7 +206,7 @@ input:focus-visible {
   align-items: center;
   gap: 7px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 
 .connection-status::before {
@@ -227,7 +256,7 @@ input:focus-visible {
 .detail-label,
 .vital-label {
   color: var(--muted);
-  font-size: 10px;
+  font-size: 0.625rem;
   font-weight: 650;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -395,7 +424,7 @@ input:focus-visible {
 .module-menu-heading {
   padding: 7px 8px 3px;
   color: var(--amber);
-  font-size: 10px;
+  font-size: 0.625rem;
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -530,7 +559,7 @@ input:focus-visible {
 .footer-module h2 {
   margin: 0;
   color: var(--amber);
-  font-size: 10px;
+  font-size: 0.625rem;
   font-weight: 700;
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -543,7 +572,7 @@ input:focus-visible {
   border-radius: 2px;
   background: var(--surface-inset);
   color: var(--muted);
-  font-size: 10px;
+  font-size: 0.625rem;
   cursor: pointer;
 }
 
@@ -566,14 +595,14 @@ input:focus-visible {
 .text-output {
   background: var(--surface-inset);
   color: var(--text);
-  font: 13px/1.47 var(--font-text);
+  font: 0.8125rem/1.47 var(--font-text);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
 .compact-output {
   padding: 6px 8px;
-  font-size: 11px;
+  font-size: 0.6875rem;
   line-height: 1.35;
 }
 
@@ -652,7 +681,7 @@ input:focus-visible {
 .story-pane .text-output {
   padding: 11px 13px;
   color: #e5e2da;
-  font-size: 14px;
+  font-size: 0.875rem;
   line-height: 1.52;
 }
 
@@ -684,7 +713,7 @@ input:focus-visible {
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 3px 8px;
   color: var(--text);
-  font: 11px var(--font-text);
+  font: 0.6875rem var(--font-text);
 }
 
 .effect-entry > time {
@@ -743,7 +772,7 @@ input:focus-visible {
 .target-status,
 .objective-meta {
   color: var(--muted);
-  font-size: 10px;
+  font-size: 0.625rem;
 }
 
 .stance-actions,
@@ -761,7 +790,7 @@ input:focus-visible {
   border-radius: 2px;
   background: #242b31;
   color: var(--text);
-  font-size: 10px;
+  font-size: 0.625rem;
   cursor: pointer;
 }
 
@@ -923,7 +952,7 @@ input:focus-visible {
 #room-title {
   margin: 0;
   color: var(--amber-bright);
-  font-size: 14px;
+  font-size: 0.875rem;
   font-weight: 650;
 }
 
@@ -973,7 +1002,7 @@ input:focus-visible {
   border-radius: 3px;
   background: #242b31;
   color: var(--amber);
-  font-size: 11px;
+  font-size: 0.6875rem;
   font-weight: 700;
 }
 
@@ -1027,7 +1056,7 @@ input:focus-visible {
   border-radius: 2px;
   background: var(--surface-inset);
   color: var(--amber-bright);
-  font-size: 11px;
+  font-size: 0.6875rem;
 }
 
 .condition-pill:not(.active) {
@@ -1080,7 +1109,7 @@ input:focus-visible {
   padding: 10px;
   background: rgb(65 20 20 / 94%);
   color: #ffb0a9;
-  font: 12px/1.4 var(--font-text);
+  font: 0.75rem/1.4 var(--font-text);
 }
 
 #command-form {
@@ -1128,7 +1157,7 @@ input:focus-visible {
   margin-top: 5px;
   overflow: hidden;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 0.6875rem;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1166,7 +1195,7 @@ input:focus-visible {
 
 .vital-row output {
   color: var(--text);
-  font: 11px var(--font-text);
+  font: 0.6875rem var(--font-text);
   text-align: right;
 }
 
@@ -1183,7 +1212,7 @@ input:focus-visible {
   border: 1px solid var(--line);
   border-radius: 2px;
   color: var(--muted);
-  font: 10px var(--font-text);
+  font: 0.625rem var(--font-text);
   text-overflow: ellipsis;
   white-space: nowrap;
 }

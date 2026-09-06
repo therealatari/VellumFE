@@ -14,7 +14,17 @@
       <nav class="menu-bar" aria-label="Application menu">
         <span class="application-name">Vellum Despana</span>
         <span class="menu-label">Session</span>
-        <span class="menu-label">View</span>
+        <div class="workspace-menu-control">
+          <button id="view-menu-button" class="menu-button" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="view-menu">View</button>
+          <div id="view-menu" class="module-menu view-menu" role="dialog" aria-modal="false" aria-labelledby="view-menu-button" hidden>
+            <div class="font-scale-heading">
+              <label for="font-scale">Font scale</label>
+              <output id="font-scale-value" for="font-scale">100%</output>
+            </div>
+            <input id="font-scale" type="range" min="75" max="200" step="5" value="100">
+            <button id="font-scale-reset" type="button">Reset to 100%</button>
+          </div>
+        </div>
         <div class="workspace-menu-control">
           <button id="workspace-menu-button" class="menu-button" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="workspace-menu">Workspace</button>
           <div id="workspace-menu" class="module-menu" role="menu" aria-labelledby="workspace-menu-button" hidden></div>

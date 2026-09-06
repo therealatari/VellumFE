@@ -7,6 +7,12 @@ import DesktopInteractionCoordinator from "./interactions.js";
 import { DesktopMapViewport } from "./map.js";
 import { DesktopWorkspace } from "./workspace.js";
 import { createDesktopWorkspaceStore } from "./workspace-persistence.js";
+import {
+  DEFAULT_FONT_SCALE,
+  normalizeFontScale,
+  readFontScale,
+  writeFontScale,
+} from "./font-scale.js";
 
 const MAX_MOUNTED_LINES = 1000;
 const EXIT_ALIASES = Object.freeze({
@@ -41,11 +47,13 @@ let clockOffsetSeconds = 0;
 let interaction = null;
 let menuAnchor = null;
 let menuTimeout = null;
+let currentFontScale = readFontScale(window.localStorage);
 
 if (!root) throw new Error("Vellum Despana root is missing");
 if (!vellumIdle || !vellumIdleTitle || !vellumIdleMessage) {
   throw new Error("Vellum idle-session handoff is missing");
 }
+document.documentElement.style.setProperty("--font-scale", `${currentFontScale}%`);
 function renderIdleSurface(view) {
   const visible = shouldShowVellumIdle(view);
   vellumIdle.hidden = !visible;
@@ -96,6 +104,7 @@ const mapController = createMapController(
     selector: document.getElementById("map-selector"),
     classicButton: document.getElementById("map-mode-classic"),
     localButton: document.getElementById("map-mode-local"),
+    fontScale: () => currentFontScale / 100,
     token: pairingToken,
     requestLocations(requestId) {
       return session.dispatch({ kind: "map-locations", requestId });
@@ -116,6 +125,51 @@ const mapController = createMapController(
     },
   },
 );
+
+const viewMenuButton = document.getElementById("view-menu-button");
+const viewMenu = document.getElementById("view-menu");
+const fontScaleInput = document.getElementById("font-scale");
+const fontScaleValue = document.getElementById("font-scale-value");
+const fontScaleReset = document.getElementById("font-scale-reset");
+if (!viewMenuButton || !viewMenu || !fontScaleInput || !fontScaleValue || !fontScaleReset) {
+  throw new Error("Font scale controls are missing");
+}
+
+function showFontScale(value, persist = false) {
+  currentFontScale = persist
+    ? writeFontScale(window.localStorage, value)
+    : normalizeFontScale(value);
+  document.documentElement.style.setProperty("--font-scale", `${currentFontScale}%`);
+  fontScaleInput.value = String(currentFontScale);
+  fontScaleValue.textContent = `${currentFontScale}%`;
+  mapController.refreshTypography();
+}
+
+function setViewMenuOpen(open, focusControl = false) {
+  viewMenu.hidden = !open;
+  viewMenuButton.setAttribute("aria-expanded", String(open));
+  if (open && focusControl) fontScaleInput.focus();
+}
+
+showFontScale(currentFontScale);
+viewMenuButton.addEventListener("click", (event) => {
+  event.preventDefault();
+  setViewMenuOpen(viewMenu.hidden, true);
+});
+fontScaleInput.addEventListener("input", () => showFontScale(Number(fontScaleInput.value)));
+fontScaleInput.addEventListener("change", () => showFontScale(Number(fontScaleInput.value), true));
+fontScaleReset.addEventListener("click", () => showFontScale(DEFAULT_FONT_SCALE, true));
+document.addEventListener("pointerdown", (event) => {
+  if (viewMenu.hidden) return;
+  if (viewMenu.contains(event.target) || viewMenuButton.contains(event.target)) return;
+  setViewMenuOpen(false);
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape" || viewMenu.hidden) return;
+  event.preventDefault();
+  setViewMenuOpen(false);
+  viewMenuButton.focus();
+});
 
 function empty(container, message) {
   container.replaceChildren();
@@ -977,7 +1031,7 @@ function createMapController(canvas, emptyState, options = {}) {
         context.stroke();
         if (edge.kind === 1 && showLabels && edge.label) {
           context.setLineDash([]);
-          context.font = "10px system-ui, sans-serif";
+          context.font = `${10 * options.fontScale()}px system-ui, sans-serif`;
           context.textAlign = "center";
           context.fillText(edge.label, (a.x + b.x) / 2, (a.y + b.y) / 2);
         }
@@ -1002,7 +1056,7 @@ function createMapController(canvas, emptyState, options = {}) {
           context.stroke();
           if (showIds && partner !== null) {
             context.setLineDash([]);
-            context.font = "9px system-ui, sans-serif";
+            context.font = `${9 * options.fontScale()}px system-ui, sans-serif`;
             context.textAlign = "center";
             context.fillText(
               String(partner),
@@ -1060,7 +1114,7 @@ function createMapController(canvas, emptyState, options = {}) {
       context.stroke();
     }
     context.fillStyle = "#aeb6bc";
-    context.font = "10px system-ui, sans-serif";
+    context.font = `${10 * options.fontScale()}px system-ui, sans-serif`;
     context.textAlign = "center";
     for (const label of scene.labels || []) {
       const p = point(label.x, label.y);
@@ -1270,6 +1324,9 @@ function createMapController(canvas, emptyState, options = {}) {
   loadClassicCatalog();
 
   return Object.freeze({
+    refreshTypography() {
+      scheduleDraw();
+    },
     render(next) {
       liveFrame = next || { scene: null, state: null };
       if (mode === "classic") {
