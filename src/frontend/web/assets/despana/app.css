@@ -14,6 +14,7 @@
   --text-strong: #f0eee8;
   --muted: #8c969f;
   --quiet: #626c75;
+  --good: #79d08f;
   --danger: #d66f64;
   --health: #a94f4f;
   --mana: #5376b8;
@@ -714,7 +715,6 @@ input:focus-visible {
   align-items: center;
   gap: 4px;
   margin-left: auto;
-  margin-right: 24px;
   color: var(--muted);
   font-size: 10px;
   white-space: nowrap;
@@ -730,6 +730,27 @@ input:focus-visible {
 .inventory-nesting-toggle:hover,
 .inventory-nesting-toggle:focus-within {
   color: var(--amber-bright);
+}
+
+.inventory-refresh {
+  margin-right: 24px;
+}
+
+.inventory-refresh-status {
+  margin: 0;
+  padding: 3px 8px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.inventory-refresh-status[data-state="timed-out"],
+.inventory-refresh-status[data-state="error"] {
+  color: var(--danger);
+}
+
+.inventory-refresh-status[data-state="ready"] {
+  color: var(--good);
 }
 
 .inventory-item-children[hidden] {

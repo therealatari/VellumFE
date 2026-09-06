@@ -874,6 +874,10 @@ async fn health_and_static_assets_are_served() {
     assert!(despana_session.contains("text/javascript"));
     assert!(despana_session.contains("export class DesktopSession"));
 
+    let despana_inventory_refresh = http_get(addr, "/despana/inventory-refresh.js").await;
+    assert!(despana_inventory_refresh.contains("text/javascript"));
+    assert!(despana_inventory_refresh.contains("export class InventoryRefreshTracker"));
+
     let despana_inventory_tree = http_get(addr, "/despana/inventory-tree.js").await;
     assert!(despana_inventory_tree.contains("text/javascript"));
     assert!(despana_inventory_tree.contains("export function projectInventoryItems"));

@@ -436,6 +436,11 @@ test("Despana desktop composes state, interactions, and persistent workspace in 
         type: document.querySelector('#inventory-show-nested')?.type,
         checked: document.querySelector('#inventory-show-nested')?.checked,
       },
+      inventoryRefresh: {
+        tag: document.querySelector('#inventory-refresh')?.tagName,
+        disabled: document.querySelector('#inventory-refresh')?.disabled,
+        statusHidden: document.querySelector('#inventory-refresh-status')?.hidden,
+      },
       nestedInventoryRows: document.querySelectorAll(
         '#inventory-output [data-inventory-item-id]'
       ).length,
@@ -470,6 +475,11 @@ test("Despana desktop composes state, interactions, and persistent workspace in 
     tag: "INPUT",
     type: "checkbox",
     checked: false,
+  });
+  assert.deepEqual(composition.inventoryRefresh, {
+    tag: "BUTTON",
+    disabled: true,
+    statusHidden: true,
   });
   assert.equal(composition.nestedInventoryRows, 0);
   assert.equal(composition.injuriesFilter, "injuries");
@@ -1032,6 +1042,8 @@ test("Despana desktop composes state, interactions, and persistent workspace in 
       flatBefore,
       checkboxChecked: checkbox.checked,
       refreshCommands: afterRefresh - beforeRefresh,
+      refreshButtonDisabled: document.querySelector('#inventory-refresh').disabled,
+      refreshStatus: document.querySelector('#inventory-refresh-status').textContent,
       packExpanded: pack?.querySelector(':scope > .inventory-item-row > .inventory-disclosure')
         ?.getAttribute('aria-expanded'),
       packVisible: visible(pack),
@@ -1044,6 +1056,8 @@ test("Despana desktop composes state, interactions, and persistent workspace in 
   assert.match(nestedInventory.flatBefore, /polished oak runestaff/);
   assert.equal(nestedInventory.checkboxChecked, true);
   assert.equal(nestedInventory.refreshCommands, 1);
+  assert.equal(nestedInventory.refreshButtonDisabled, false);
+  assert.equal(nestedInventory.refreshStatus, "Inventory refreshed.");
   assert.equal(nestedInventory.packExpanded, "false");
   assert.equal(nestedInventory.packVisible, true);
   assert.equal(nestedInventory.pouchVisible, false);
@@ -1102,7 +1116,21 @@ test("Despana desktop composes state, interactions, and persistent workspace in 
   });
 
   const incompleteInventory = await driver.execute(`
-    window.__desktopTest.sockets[0].receive({
+    const socket = window.__desktopTest.sockets[0];
+    const refresh = document.querySelector('#inventory-refresh');
+    const status = document.querySelector('#inventory-refresh-status');
+    const before = socket.sent.filter(
+      (frame) => frame.t === 'cmd' && frame.d.text === '.invsync'
+    ).length;
+    refresh.click();
+    const pending = {
+      disabled: refresh.disabled,
+      status: status.textContent,
+      commands: socket.sent.filter(
+        (frame) => frame.t === 'cmd' && frame.d.text === '.invsync'
+      ).length - before,
+    };
+    socket.receive({
       v: 1,
       seq: 76,
       t: 'inventory_tree',
@@ -1131,12 +1159,28 @@ test("Despana desktop composes state, interactions, and persistent workspace in 
         }],
       },
     });
-    return document.querySelector('#inventory-output .inventory-snapshot-warning')?.textContent;
+    return {
+      warning: document.querySelector('#inventory-output .inventory-snapshot-warning')?.textContent,
+      pending,
+      completed: {
+        disabled: refresh.disabled,
+        status: status.textContent,
+      },
+    };
   `);
   assert.equal(
-    incompleteInventory,
+    incompleteInventory.warning,
     "Inventory snapshot is incomplete; some items may be missing",
   );
+  assert.deepEqual(incompleteInventory.pending, {
+    disabled: true,
+    status: "Refreshing nested inventory…",
+    commands: 1,
+  });
+  assert.deepEqual(incompleteInventory.completed, {
+    disabled: false,
+    status: "Inventory refreshed.",
+  });
 
   const nestingToggle = await driver.execute(`
     const checkbox = document.querySelector('#inventory-show-nested');

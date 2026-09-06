@@ -5,6 +5,7 @@ import DesktopSession, {
 } from "./session.js";
 import DesktopInteractionCoordinator from "./interactions.js";
 import { DesktopMapViewport } from "./map.js";
+import { InventoryRefreshTracker } from "./inventory-refresh.js";
 import { projectInventoryItems } from "./inventory-tree.js";
 import { DesktopWorkspace } from "./workspace.js";
 import { createDesktopWorkspaceStore } from "./workspace-persistence.js";
@@ -34,6 +35,8 @@ const commandStatus = document.getElementById("command-status");
 const sessionExitButton = document.getElementById("session-exit-button");
 const injuriesFilter = document.getElementById("injuries-filter");
 const inventoryShowNested = document.getElementById("inventory-show-nested");
+const inventoryRefreshButton = document.getElementById("inventory-refresh");
+const inventoryRefreshStatus = document.getElementById("inventory-refresh-status");
 const vellumIdle = document.getElementById("vellum-idle");
 const vellumIdleTitle = document.getElementById("vellum-idle-title");
 const vellumIdleMessage = document.getElementById("vellum-idle-message");
@@ -54,9 +57,25 @@ if (!root) throw new Error("Vellum Despana root is missing");
 if (!sessionExitButton) throw new Error("Vellum Despana session exit control is missing");
 if (!injuriesFilter) throw new Error("Vellum Despana injury filter is missing");
 if (!inventoryShowNested) throw new Error("Vellum Despana Inventory nesting control is missing");
+if (!inventoryRefreshButton || !inventoryRefreshStatus) {
+  throw new Error("Vellum Despana Inventory refresh controls are missing");
+}
 if (!vellumIdle || !vellumIdleTitle || !vellumIdleMessage) {
   throw new Error("Vellum idle-session handoff is missing");
 }
+
+const inventoryRefresh = new InventoryRefreshTracker({
+  onChange(state) {
+    inventoryRefreshStatus.hidden = state.kind === "idle";
+    inventoryRefreshStatus.dataset.state = state.kind;
+    inventoryRefreshStatus.textContent = state.message;
+    inventoryRefreshButton.disabled =
+      state.kind === "pending" ||
+      !showNestedInventory ||
+      !latestView ||
+      !isPlayable(latestView);
+  },
+});
 function renderIdleSurface(view) {
   const visible = shouldShowVellumIdle(view);
   vellumIdle.hidden = !visible;
@@ -1620,6 +1639,8 @@ function renderCommandAvailability(view) {
   commandInput.disabled = !ready;
   commandButton.disabled = !ready;
   sessionExitButton.disabled = !ready;
+  inventoryRefreshButton.disabled =
+    !ready || !showNestedInventory || inventoryRefresh.state.kind === "pending";
   if (ready && commandStatus.textContent === "Waiting for connection") {
     commandStatus.textContent = "Connected";
   }
@@ -1654,18 +1675,23 @@ function submitCommand(text, status = null) {
   }
 }
 
-function requestNestedInventorySnapshot() {
+function requestNestedInventorySnapshot({ manual = false } = {}) {
   if (
     !showNestedInventory ||
     !nestedInventoryCharacter ||
-    nestedInventoryRefreshCharacter === nestedInventoryCharacter ||
+    (!manual && nestedInventoryRefreshCharacter === nestedInventoryCharacter) ||
     !interaction ||
     !latestView ||
     !isPlayable(latestView)
   ) {
     return false;
   }
-  if (!submitCommand(".invsync", "Refreshing nested inventory")) return false;
+  if (!manual) nestedInventoryRefreshCharacter = nestedInventoryCharacter;
+  inventoryRefresh.begin(nestedInventoryCharacter);
+  if (!submitCommand(".invsync", "Refreshing nested inventory")) {
+    inventoryRefresh.fail("Inventory refresh could not be sent. Select Refresh to try again.");
+    return false;
+  }
   nestedInventoryRefreshCharacter = nestedInventoryCharacter;
   return true;
 }
@@ -1676,7 +1702,10 @@ function adoptInventoryNestingPreference(snapshot) {
   nestedInventoryCharacter = character;
   showNestedInventory = snapshot?.preferences?.inventory?.showNested === true;
   inventoryShowNested.checked = showNestedInventory;
-  if (characterChanged || !showNestedInventory) nestedInventoryRefreshCharacter = null;
+  if (characterChanged || !showNestedInventory) {
+    nestedInventoryRefreshCharacter = null;
+    inventoryRefresh.reset();
+  }
   if (latestView) renderInventory(document.getElementById("inventory-output"), latestView);
   requestNestedInventorySnapshot();
 }
@@ -1721,6 +1750,10 @@ inventoryShowNested.addEventListener("change", () => {
     inventoryShowNested.checked = showNestedInventory;
     commandStatus.textContent = error?.message || "Nested Inventory preference was not saved";
   }
+});
+
+inventoryRefreshButton.addEventListener("click", () => {
+  requestNestedInventorySnapshot({ manual: true });
 });
 
 function setStoryPaused(paused) {
@@ -1804,6 +1837,12 @@ session.subscribe((event) => {
   latestView = view;
   renderIdleSurface(view);
   workspace.setCharacter(view.character || view.session?.character);
+  if (event.type === "state" && event.changed?.includes("inventoryTree")) {
+    inventoryRefresh.receive(view.character || view.session?.character);
+  }
+  if (!isPlayable(view)) {
+    inventoryRefresh.fail("Connection lost before inventory refresh completed.");
+  }
   requestNestedInventorySnapshot();
   if (
     event.type === "snapshot" ||
@@ -1913,6 +1952,7 @@ window.addEventListener("pagehide", (event) => {
   workspace.flush();
   window.removeEventListener("storage", adoptVellumPairingToken);
   clearInterval(timerTick);
+  inventoryRefresh.destroy();
   closeGameMenu();
   gameContextMenu.remove();
   mapController.destroy();

@@ -225,7 +225,9 @@
                 <input id="inventory-show-nested" type="checkbox">
                 <span>Show Nested</span>
               </label>
+              <button id="inventory-refresh" class="pane-action inventory-refresh" type="button" disabled>Refresh</button>
             </header>
+            <p id="inventory-refresh-status" class="inventory-refresh-status" role="status" aria-live="polite" hidden></p>
             <div id="inventory-output" class="pane-output text-output compact-output" data-module-body aria-live="polite">
               <p class="empty-state">No inventory data received</p>
             </div>
