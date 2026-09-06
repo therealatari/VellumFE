@@ -1066,6 +1066,7 @@ fn apply_launch_profile(cli: &mut Cli, name: &str) -> Result<AppliedLaunchProfil
     let auto_connect_lich = profile_auto_connects_lich(&profile, web_client);
     if cli.data_dir.is_none() {
         if let Some(dir) = profile.data_dir.as_deref().filter(|d| !d.is_empty()) {
+            profiles::remember_launcher_root(&config::Config::base_dir()?);
             std::env::set_var("VELLUM_FE_DIR", dir);
             tracing::info!("Using data directory from launcher profile: {}", dir);
         }
@@ -1237,6 +1238,56 @@ mod tests {
     }
 
     #[test]
+    fn profile_data_dir_keeps_nondefault_launcher_root_and_sibling_roots_discoverable() {
+        let _guard = crate::config::VELLUM_FE_DIR_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let root = tempfile::tempdir().expect("temporary roots");
+        let launcher_root = root.path().join("launcher");
+        let selected_root = root.path().join("selected");
+        let sibling_root = root.path().join("sibling");
+        let original_data_root = std::env::var_os("VELLUM_FE_DIR");
+        let original_launcher_root = std::env::var_os(crate::config::profiles::LAUNCHER_ROOT_ENV);
+        std::env::set_var("VELLUM_FE_DIR", &launcher_root);
+        std::env::remove_var(crate::config::profiles::LAUNCHER_ROOT_ENV);
+
+        let mut selected = LauncherProfile::new_direct();
+        selected.name = "Aster".to_string();
+        selected.account = "Account".to_string();
+        selected.character = "Aster".to_string();
+        selected.data_dir = Some(selected_root.to_string_lossy().into_owned());
+        let mut sibling = LauncherProfile::new_direct();
+        sibling.name = "Briar".to_string();
+        sibling.account = "Account".to_string();
+        sibling.character = "Briar".to_string();
+        sibling.data_dir = Some(sibling_root.to_string_lossy().into_owned());
+        crate::config::profiles::LauncherStore {
+            profiles: vec![selected, sibling],
+            ..Default::default()
+        }
+        .save()
+        .expect("save launcher profiles");
+
+        apply_launch_profile(&mut cli(), "Aster").expect("apply selected profile");
+        let effective_root = config::Config::base_dir().expect("effective profile root");
+        let known_roots = crate::config::profiles::known_data_roots();
+
+        match original_data_root {
+            Some(path) => std::env::set_var("VELLUM_FE_DIR", path),
+            None => std::env::remove_var("VELLUM_FE_DIR"),
+        }
+        match original_launcher_root {
+            Some(path) => std::env::set_var(crate::config::profiles::LAUNCHER_ROOT_ENV, path),
+            None => std::env::remove_var(crate::config::profiles::LAUNCHER_ROOT_ENV),
+        }
+
+        assert_eq!(effective_root, selected_root);
+        assert!(known_roots.contains(&launcher_root));
+        assert!(known_roots.contains(&selected_root));
+        assert!(known_roots.contains(&sibling_root));
+    }
+
+    #[test]
     fn blank_direct_profile_character_is_rejected_before_identity_or_login_resolution() {
         let _guard = crate::config::VELLUM_FE_DIR_TEST_LOCK
             .lock()
@@ -1278,8 +1329,7 @@ mod tests {
         confirmed.name = "Aster".to_string();
         confirmed.account = "Account".to_string();
         confirmed.character = "Aster".to_string();
-        let fingerprint =
-            launcher::session_lifecycle::launch_target_fingerprint(&confirmed);
+        let fingerprint = launcher::session_lifecycle::launch_target_fingerprint(&confirmed);
 
         let mut edited = confirmed.clone();
         edited.character = "Briar".to_string();
@@ -1298,6 +1348,8 @@ mod tests {
             Some(path) => std::env::set_var("VELLUM_FE_DIR", path),
             None => std::env::remove_var("VELLUM_FE_DIR"),
         }
-        assert!(error.to_string().contains("changed after launch confirmation"));
+        assert!(error
+            .to_string()
+            .contains("changed after launch confirmation"));
     }
 }

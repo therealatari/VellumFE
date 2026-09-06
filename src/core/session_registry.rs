@@ -286,40 +286,7 @@ pub fn dir() -> Option<PathBuf> {
 /// select their own data roots, so include each profile's effective legacy
 /// registry too.
 fn legacy_dirs() -> Vec<PathBuf> {
-    let configured = crate::config::Config::base_dir().ok();
-    legacy_dirs_from(configured.as_deref(), dirs::home_dir().as_deref())
-}
-
-fn legacy_dirs_from(configured: Option<&Path>, home: Option<&Path>) -> Vec<PathBuf> {
-    let mut data_roots = Vec::new();
-    if let Some(configured) = configured {
-        data_roots.push(configured.to_path_buf());
-    }
-    if let Some(home) = home {
-        let default = home.join(".vellum-fe");
-        if !data_roots.contains(&default) {
-            data_roots.push(default);
-        }
-    }
-
-    let launcher_roots = data_roots.clone();
-    for launcher_root in launcher_roots {
-        let launcher_path = launcher_root.join("launcher.toml");
-        let Ok(store) = crate::config::profiles::LauncherStore::load_from(&launcher_path) else {
-            continue;
-        };
-        for profile in store.profiles {
-            let Some(data_dir) = profile.data_dir.filter(|dir| !dir.is_empty()) else {
-                continue;
-            };
-            let data_root = PathBuf::from(data_dir);
-            if !data_roots.contains(&data_root) {
-                data_roots.push(data_root);
-            }
-        }
-    }
-
-    data_roots
+    crate::config::profiles::known_data_roots()
         .into_iter()
         .map(|root| root.join("web-sessions"))
         .collect()
@@ -1020,7 +987,11 @@ mod tests {
         };
         store.save_to(&launcher_root.join("launcher.toml")).unwrap();
 
-        let roots = legacy_dirs_from(Some(&launcher_root), None);
+        let roots =
+            crate::config::profiles::known_data_roots_from(Some(&launcher_root), None, None)
+                .into_iter()
+                .map(|root| root.join("web-sessions"))
+                .collect::<Vec<_>>();
 
         assert!(roots.contains(&launcher_root.join("web-sessions")));
         assert!(roots.contains(&profile_root.join("web-sessions")));
