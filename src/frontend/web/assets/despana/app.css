@@ -744,6 +744,7 @@ input:focus-visible {
   font-size: 9px;
 }
 
+.inventory-refresh-status[data-state="incomplete"],
 .inventory-refresh-status[data-state="timed-out"],
 .inventory-refresh-status[data-state="error"] {
   color: var(--danger);

@@ -1838,7 +1838,10 @@ session.subscribe((event) => {
   renderIdleSurface(view);
   workspace.setCharacter(view.character || view.session?.character);
   if (event.type === "state" && event.changed?.includes("inventoryTree")) {
-    inventoryRefresh.receive(view.character || view.session?.character);
+    inventoryRefresh.receive(
+      view.character || view.session?.character,
+      view.inventoryTree,
+    );
   }
   if (!isPlayable(view)) {
     inventoryRefresh.fail("Connection lost before inventory refresh completed.");

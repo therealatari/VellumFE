@@ -1179,7 +1179,30 @@ test("Despana desktop composes state, interactions, and persistent workspace in 
   });
   assert.deepEqual(incompleteInventory.completed, {
     disabled: false,
-    status: "Inventory refreshed.",
+    status: "Inventory refresh is incomplete. Select Refresh to try again.",
+  });
+
+  const malformedInventory = await driver.execute(`
+    const socket = window.__desktopTest.sockets[0];
+    const refresh = document.querySelector('#inventory-refresh');
+    const status = document.querySelector('#inventory-refresh-status');
+    refresh.click();
+    socket.receive({
+      v: 1,
+      seq: 77,
+      t: 'inventory_tree',
+      d: { room: '23780', complete: true, generation: 'invalid', items: [] },
+    });
+    return {
+      disabled: refresh.disabled,
+      status: status.textContent,
+      state: status.dataset.state,
+    };
+  `);
+  assert.deepEqual(malformedInventory, {
+    disabled: false,
+    status: "Inventory refresh returned invalid data. Select Refresh to try again.",
+    state: "error",
   });
 
   const nestingToggle = await driver.execute(`

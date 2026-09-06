@@ -47,17 +47,40 @@ test("an unanswered inventory refresh becomes visibly retryable after the core d
 });
 
 
-test("only a fresh tree for the requesting character completes the refresh", () => {
+test("only a complete tree for the requesting character completes the refresh", () => {
   const { tracker, callbacks } = harness();
   tracker.begin("calvix");
 
-  assert.equal(tracker.receive("Rabki"), false);
+  assert.equal(tracker.receive("Rabki", { complete: true }), false);
   assert.equal(tracker.state.kind, "pending");
-  assert.equal(tracker.receive("Calvix"), true);
+  assert.equal(tracker.receive("Calvix", { complete: true }), true);
   assert.deepEqual(tracker.state, {
     kind: "ready",
     character: "calvix",
     message: "Inventory refreshed.",
+  });
+  assert.equal(callbacks.size, 0);
+});
+
+
+test("incomplete and malformed trees surface retryable failure states", () => {
+  const { tracker, callbacks } = harness();
+
+  tracker.begin("Calvix");
+  assert.equal(tracker.receive("Calvix", { complete: false }), true);
+  assert.deepEqual(tracker.state, {
+    kind: "incomplete",
+    character: "Calvix",
+    message: "Inventory refresh is incomplete. Select Refresh to try again.",
+  });
+  assert.equal(callbacks.size, 0);
+
+  tracker.begin("Calvix");
+  assert.equal(tracker.receive("Calvix", null), true);
+  assert.deepEqual(tracker.state, {
+    kind: "error",
+    character: "Calvix",
+    message: "Inventory refresh returned invalid data. Select Refresh to try again.",
   });
   assert.equal(callbacks.size, 0);
 });

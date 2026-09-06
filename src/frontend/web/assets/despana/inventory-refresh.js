@@ -55,7 +55,7 @@ export class InventoryRefreshTracker {
     }, this._timeoutMs);
   }
 
-  receive(character) {
+  receive(character, inventoryTree) {
     if (
       this._state.kind !== "pending" ||
       !sameCharacter(this._state.character, character)
@@ -64,6 +64,22 @@ export class InventoryRefreshTracker {
     }
     const name = this._state.character;
     this._cancelTimer();
+    if (!inventoryTree || typeof inventoryTree !== "object") {
+      this._publish(
+        "error",
+        name,
+        "Inventory refresh returned invalid data. Select Refresh to try again.",
+      );
+      return true;
+    }
+    if (inventoryTree.complete !== true) {
+      this._publish(
+        "incomplete",
+        name,
+        "Inventory refresh is incomplete. Select Refresh to try again.",
+      );
+      return true;
+    }
     this._publish("ready", name, "Inventory refreshed.");
     return true;
   }
